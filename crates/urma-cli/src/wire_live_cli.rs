@@ -1,10 +1,10 @@
-use crate::{key_cli::VaultAccess, node_cli::NodeArgs, print_json};
+use crate::{approve_publication, key_cli::VaultAccess, node_cli::NodeArgs, print_report};
 use bitcoin::{Block, BlockHash, Transaction, Txid, XOnlyPublicKey};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use urma::error::Error;
-use urma_core::format::{PublicRecord, Urma};
+use urma_core::format::PublicRecord;
 use urma_runtime::{
     node::Node,
     plan::{PlanLimits, PublicationPlan},
@@ -17,31 +17,31 @@ pub(crate) struct PlanArgs {
     access: VaultAccess,
     #[command(flatten)]
     node: NodeArgs,
-    #[arg(long)]
-    record: PathBuf,
-    #[arg(long)]
+    #[arg(help = "Public post text")]
+    text: String,
+    #[arg(long, default_value = "wire-plan.json")]
     output: PathBuf,
-    #[arg(long)]
+    #[arg(long, default_value_t = 1)]
     fee_rate: u64,
-    #[arg(long)]
+    #[arg(long, default_value_t = 100_000)]
     max_fee: u64,
 }
 #[derive(Args)]
 pub(crate) struct PublishArgs {
     #[command(flatten)]
     node: NodeArgs,
-    #[arg(long)]
+    #[arg(long, default_value = "wire-plan.json")]
     plan: PathBuf,
-    #[arg(long)]
-    approve: String,
-    #[arg(long)]
+    #[arg(short, long, help = "Approve the displayed exact plan and fee")]
+    yes: bool,
+    #[arg(long, default_value = "wire-progress.json")]
     journal: PathBuf,
 }
 #[derive(Args)]
 pub(crate) struct IndexArgs {
     #[command(flatten)]
     node: NodeArgs,
-    #[arg(long)]
+    #[arg(long, default_value = "wire-index.json")]
     index: PathBuf,
     #[arg(long, default_value_t = 0)]
     start_height: u64,
@@ -51,18 +51,18 @@ pub(crate) struct IndexArgs {
 #[derive(Subcommand)]
 pub(crate) enum ReadCommand {
     Feed {
-        #[arg(long)]
+        #[arg(long, default_value = "wire-index.json")]
         index: PathBuf,
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
     Record {
-        #[arg(long)]
+        #[arg(long, default_value = "wire-index.json")]
         index: PathBuf,
         txid: Txid,
     },
     Identity {
-        #[arg(long)]
+        #[arg(long, default_value = "wire-index.json")]
         index: PathBuf,
         author: XOnlyPublicKey,
     },
@@ -72,10 +72,7 @@ pub(crate) fn plan(args: PlanArgs) -> Result<Value, Error> {
     let node = args.node.connect()?;
     let vault = args.access.open()?;
     let signer = vault.keyring().active()?;
-    let record = PublicRecord::decode(&urma::storage::read_bounded(
-        &args.record,
-        Urma::MAX_PUBLIC_BYTES,
-    )?)?;
+    let record = PublicRecord::Post(args.text);
     let plan = urma_runtime::plan::prepare_atomic(
         &node,
         &signer,
@@ -95,8 +92,10 @@ pub(crate) fn publish(args: PublishArgs) -> Result<Value, Error> {
     urma_runtime::publish::ensure_journal_distinct(&args.plan, &args.journal)?;
     let plan = PublicationPlan::load(&args.plan)?;
     let node = args.node.connect()?;
-    let report = urma_runtime::publish::publish(&node, &plan, &args.approve, &args.journal)?;
-    print_json(serde_json::to_value(&report)?)?;
+    let id = plan.id()?;
+    approve_publication("Publish public Wire text", &id, plan.total_fee, args.yes)?;
+    let report = urma_runtime::publish::publish(&node, &plan, &id, &args.journal)?;
+    print_report(serde_json::to_value(&report)?)?;
     urma::error::ensure!(
         report.complete,
         "publication paused; inspect report and resume exact plan"

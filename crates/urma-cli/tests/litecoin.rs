@@ -683,7 +683,8 @@ fn cli_quote_and_offline_draft_require_no_daemon_and_never_overwrite() {
     let amount = litecoin::quote(4, 1).unwrap().minimum_funding_litoshis;
     std::fs::write(&funding_path, serde_json::to_vec(&funding(amount)).unwrap()).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_urma"))
-        .args(["archive", "litecoin"])
+        .env("URMA_OUTPUT", "json")
+        .args(["expert", "litecoin"])
         .args(["quote", "--input-bytes", "404"])
         .output()
         .unwrap();
@@ -693,7 +694,8 @@ fn cli_quote_and_offline_draft_require_no_daemon_and_never_overwrite() {
         config::LITECOIN_NETWORK
     );
     let mut command = Command::new(env!("CARGO_BIN_EXE_urma"));
-    command.args(["archive", "litecoin"]);
+    command.env("URMA_OUTPUT", "json");
+    command.args(["expert", "litecoin"]);
     command
         .args(["prepare", "--bundle"])
         .arg(&bundle)
@@ -717,14 +719,16 @@ fn cli_quote_and_offline_draft_require_no_daemon_and_never_overwrite() {
         0o600
     );
     let output = Command::new(env!("CARGO_BIN_EXE_urma"))
-        .args(["archive", "litecoin"])
+        .env("URMA_OUTPUT", "json")
+        .args(["expert", "litecoin"])
         .args(["inspect", "--journal"])
         .arg(&journal)
         .output()
         .unwrap();
     assert!(output.status.success());
     let output = Command::new(env!("CARGO_BIN_EXE_urma"))
-        .args(["archive", "litecoin"])
+        .env("URMA_OUTPUT", "json")
+        .args(["expert", "litecoin"])
         .args(["--network", "main", "quote", "--input-bytes", "404"])
         .output()
         .unwrap();

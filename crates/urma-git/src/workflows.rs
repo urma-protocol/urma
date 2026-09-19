@@ -286,6 +286,7 @@ pub fn parse_root(node: &Node, text: &str) -> Result<Txid, Error> {
         [value] => *value,
         [chain, value] => {
             let expected = match node.chain() {
+                urma_chain::observation::Chain::LitecoinMainnet => "litecoin-mainnet",
                 urma_chain::observation::Chain::LitecoinTestnet => "litecoin-testnet",
                 urma_chain::observation::Chain::BitcoinTestnet4 => "bitcoin-testnet4",
                 urma_chain::observation::Chain::BitcoinRegtest => "bitcoin-regtest",

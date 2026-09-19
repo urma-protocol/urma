@@ -100,13 +100,12 @@ fn nested_cli_help_and_missing_arguments_are_honest() {
         );
     }
     for args in [
-        vec!["git", "prepare", "missing-repository"],
+        vec!["git", "clone", "not-a-txid"],
         vec!["git", "publish", "missing-plan"],
         vec!["git", "resume", "missing-plan"],
         vec!["capture", "ingest", "missing-image"],
         vec!["capture", "recover", "missing-directory"],
-        vec!["wire", "index"],
-        vec!["wallet", "status"],
+        vec!["wire", "plan"],
     ] {
         let output = Command::new(binary).args(args).output().unwrap();
         assert_eq!(output.status.code(), Some(2));
@@ -130,20 +129,9 @@ fn nested_cli_help_and_missing_arguments_are_honest() {
 
 #[test]
 fn quote_is_pure_bounded_arithmetic_and_no_wallet_claim() {
-    let genesis = "01".repeat(32);
     let output = Command::new(env!("CARGO_BIN_EXE_urma"))
-        .args([
-            "wallet",
-            "quote",
-            "--genesis",
-            &genesis,
-            "--vbytes",
-            "100",
-            "--rate",
-            "2",
-            "--max-fee",
-            "200",
-        ])
+        .env("URMA_OUTPUT", "json")
+        .args(["wallet", "quote", "100", "--rate", "2", "--max-fee", "200"])
         .output()
         .unwrap();
     assert!(output.status.success());
@@ -152,20 +140,46 @@ fn quote_is_pure_bounded_arithmetic_and_no_wallet_claim() {
     assert_eq!(value["estimate_only"], true);
     assert_eq!(value["broadcast"], false);
     let over = Command::new(env!("CARGO_BIN_EXE_urma"))
-        .args([
-            "wallet",
-            "quote",
-            "--genesis",
-            &genesis,
-            "--vbytes",
-            "101",
-            "--rate",
-            "2",
-            "--max-fee",
-            "200",
-        ])
+        .env("URMA_OUTPUT", "json")
+        .args(["wallet", "quote", "101", "--rate", "2", "--max-fee", "200"])
         .output()
         .unwrap();
     assert!(!over.status.success());
     assert!(over.stdout.is_empty());
+}
+
+#[test]
+fn clone_accepts_the_human_interface_and_refuses_node_flags() {
+    let binary = env!("CARGO_BIN_EXE_urma");
+    let help = Command::new(binary)
+        .args(["git", "clone", "--help"])
+        .output()
+        .unwrap();
+    let text = String::from_utf8(help.stdout).unwrap();
+    assert!(text.contains("Litecoin mainnet is the default"));
+    for plumbing in ["--cookie", "--rpc-url", "--vault", "--limits", "--chain"] {
+        assert!(!text.contains(plumbing));
+        let rejected = Command::new(binary)
+            .args(["git", "clone", &"0".repeat(64), plumbing, "unused"])
+            .output()
+            .unwrap();
+        assert_eq!(rejected.status.code(), Some(2));
+    }
+    let directory = tempfile::tempdir().unwrap();
+    std::fs::create_dir(directory.path().join("urma-000000000000")).unwrap();
+    for network in [vec![], vec!["--testnet"]] {
+        let output = Command::new(binary)
+            .current_dir(directory.path())
+            .args(["git", "clone", &"0".repeat(64)])
+            .args(network)
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(output.stdout.is_empty());
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("already exists; choose another directory")
+        );
+    }
 }

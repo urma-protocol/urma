@@ -1,24 +1,25 @@
-use crate::public_cli::PublicChain;
+use crate::config;
 use clap::Args;
-use std::path::PathBuf;
 use urma::error::Error;
-use urma_runtime::node::{Node, NodeConfig};
+use urma_chain::observation::Chain;
+use urma_runtime::node::Node;
 
 #[derive(Args)]
 pub(crate) struct NodeArgs {
-    #[arg(long, value_enum, default_value = "litecoin-testnet")]
-    pub(crate) chain: PublicChain,
-    #[arg(long)]
-    pub(crate) rpc_url: String,
-    #[arg(long)]
-    pub(crate) cookie: PathBuf,
+    #[arg(long, help = "Use Litecoin testnet instead of mainnet")]
+    testnet: bool,
 }
+
 impl NodeArgs {
+    pub(crate) fn chain(&self) -> Result<Chain, Error> {
+        config::chain(self.testnet)
+    }
+
     pub(crate) fn connect(&self) -> Result<Node, Error> {
-        Node::connect(NodeConfig {
-            chain: self.chain.into(),
-            rpc_url: self.rpc_url.clone(),
-            cookie_file: self.cookie.clone(),
-        })
+        let chain = self.chain()?;
+        match config::connection(chain)? {
+            config::Connection::Local(local) => Node::connect(local),
+            config::Connection::Public => Node::public(chain),
+        }
     }
 }

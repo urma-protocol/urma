@@ -1326,6 +1326,7 @@ dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
  "hex",
+ "minreq",
  "serde",
  "serde_json",
  "sha2",

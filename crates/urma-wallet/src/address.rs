@@ -10,6 +10,12 @@ pub fn receive_address(signer: &impl IdentitySigner, chain: Chain) -> Result<Str
     match chain {
         Chain::BitcoinRegtest => Ok(Address::p2wpkh(&public, Network::Regtest).to_string()),
         Chain::BitcoinTestnet4 => Ok(Address::p2wpkh(&public, Network::Testnet4).to_string()),
+        Chain::LitecoinMainnet => segwit::encode(
+            Hrp::parse("ltc").map_err(WalletError::AddressPrefix)?,
+            segwit::VERSION_0,
+            public.wpubkey_hash().as_byte_array(),
+        )
+        .map_err(WalletError::AddressEncoding),
         Chain::LitecoinTestnet => segwit::encode(
             Hrp::parse("tltc").map_err(WalletError::AddressPrefix)?,
             segwit::VERSION_0,

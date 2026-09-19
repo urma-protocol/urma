@@ -1,4 +1,6 @@
-use crate::{key_cli::VaultAccess, node_cli::NodeArgs, print_json};
+use crate::{
+    approve_publication, config, key_cli::VaultAccess, node_cli::NodeArgs, print_report, progress,
+};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
@@ -7,26 +9,19 @@ use urma_git::{inventory::Limits, workflows};
 use urma_runtime::plan::PlanLimits;
 
 #[derive(Args)]
-pub(crate) struct GitLimits {
-    #[arg(long)]
-    limits: Option<PathBuf>,
-}
+pub(crate) struct GitLimits {}
 
 impl GitLimits {
     fn load(&self) -> Result<Limits, Error> {
-        let mut limits = Limits::default();
-        for path in self.limits.iter() {
-            limits = serde_json::from_slice(&urma::storage::read_bounded(path, 4096)?)?;
-        }
-        Ok(limits)
+        config::git_limits()
     }
 }
 
 #[derive(Args)]
 pub(crate) struct PrepareArgs {
-    #[arg(long)]
+    #[arg(default_value = ".")]
     repo: PathBuf,
-    #[arg(long)]
+    #[arg(long, default_value = ".urma-plan")]
     output: PathBuf,
     #[command(flatten)]
     node: NodeArgs,
@@ -36,18 +31,24 @@ pub(crate) struct PrepareArgs {
     resources: GitLimits,
     #[arg(long, default_value_t = 1)]
     fee_rate: u64,
-    #[arg(long)]
+    #[arg(
+        long,
+        default_value_t = 100_000,
+        help = "Maximum total fee in litoshis; planning never broadcasts"
+    )]
     max_fee: u64,
-    #[arg(long, default_value_t = 1024)]
-    max_records: u32,
 }
 
 #[derive(Args)]
 pub(crate) struct ResumeArgs {
-    #[arg(long)]
+    #[arg(long, default_value = ".urma-plan")]
     plan: PathBuf,
     #[arg(long)]
-    approve: String,
+    #[arg(
+        short,
+        help = "Approve the displayed plan and exact fee without a prompt"
+    )]
+    yes: bool,
     #[command(flatten)]
     node: NodeArgs,
 }
@@ -65,30 +66,46 @@ pub(crate) struct RecoverArgs {
 
 #[derive(Subcommand)]
 pub(crate) enum GitCommand {
+    #[command(about = "Freeze HEAD, scan content and quote publication (no broadcast)")]
     Prepare(PrepareArgs),
+    #[command(about = "Show the frozen content, funding and fee")]
     Inspect {
-        #[arg(long)]
+        #[arg(long, default_value = ".urma-plan")]
         plan: PathBuf,
     },
+    #[command(about = "Record content review for the frozen plan")]
     Review {
-        #[arg(long)]
+        #[arg(long, default_value = ".urma-plan")]
         plan: PathBuf,
         #[arg(long)]
         classify_public_test_material: Vec<String>,
     },
+    #[command(about = "Approve and publish the reviewed plan")]
     Publish(ResumeArgs),
+    #[command(about = "Continue the same publication after confirmation")]
     Resume(ResumeArgs),
+    #[command(about = "Recover content and transaction proofs without checkout")]
     Recover(RecoverArgs),
-    Fetch(RecoverArgs),
-    InspectRoot(RecoverArgs),
+    #[command(
+        about = "Clone a published Git snapshot into an editable repository",
+        after_help = "Examples:
+  urma git clone <TXID>
+  urma git clone <TXID> --testnet
+  urma git clone <TXID> my-project
+
+Litecoin mainnet is the default. No wallet or account is needed to clone."
+    )]
     Clone {
-        root: String,
-        directory: PathBuf,
+        #[arg(value_name = "TXID", help = "URMA Git root transaction ID")]
+        root: bitcoin::Txid,
+        #[arg(help = "Destination directory [default: urma-<first 12 TXID characters>]")]
+        directory: Option<PathBuf>,
         #[command(flatten)]
         node: NodeArgs,
         #[command(flatten)]
         resources: GitLimits,
     },
+    #[command(about = "Verify retained transaction proofs and Git content offline")]
     Verify {
         #[arg(long)]
         snapshot: PathBuf,
@@ -114,7 +131,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
         PlanLimits {
             fee_rate: args.fee_rate,
             max_fee: args.max_fee,
-            max_records: args.max_records,
+            max_records: urma_runtime::plan::PublicationPlan::MAX_RECORDS,
         },
     )
     .map_err(boundary)?;
@@ -123,12 +140,19 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
 
 fn publish(args: ResumeArgs) -> Result<Value, Error> {
     let node = args.node.connect()?;
-    let report = workflows::publish(&node, &args.plan, &args.approve).map_err(boundary)?;
+    let reviewed = workflows::inspect_plan(&args.plan).map_err(boundary)?;
+    approve_publication(
+        "Publish Git snapshot",
+        &reviewed.plan_id,
+        reviewed.total_fee,
+        args.yes,
+    )?;
+    let report = workflows::publish(&node, &args.plan, &reviewed.plan_id).map_err(boundary)?;
     let mut value = serde_json::to_value(&report)?;
     value["publication_plan_id"] = json!(report.plan_id);
-    value["plan_id"] = json!(args.approve);
+    value["plan_id"] = json!(reviewed.plan_id);
     if !report.complete {
-        print_json(value)?;
+        print_report(value)?;
         return Err(Error::Missing(format!(
             "Git publication remains incomplete: {}",
             report.blocked_reason
@@ -162,21 +186,37 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
             classify_public_test_material,
         } => review(&plan, &classify_public_test_material),
         GitCommand::Publish(args) | GitCommand::Resume(args) => publish(args),
-        GitCommand::Recover(args) | GitCommand::Fetch(args) | GitCommand::InspectRoot(args) => {
-            recover(args)
-        }
+        GitCommand::Recover(args) => recover(args),
         GitCommand::Clone {
             root,
             directory,
             node,
             resources,
         } => {
+            let directory =
+                config::clone_directory(config::CloneDestination(directory), &root.to_string())?;
+            urma::error::ensure!(
+                !directory.try_exists()?,
+                "destination '{}' already exists; choose another directory",
+                directory.display()
+            );
+            progress(format!("Cloning into '{}'...", directory.display()));
+            progress(format!("Connecting to {}...", node.chain()?.label()));
             let node = node.connect()?;
-            let root = workflows::parse_root(&node, &root).map_err(boundary)?;
-            Ok(serde_json::to_value(
-                workflows::clone_root(&node, root, &directory, &resources.load()?)
-                    .map_err(boundary)?,
-            )?)
+            progress("Receiving and verifying URMA objects...".into());
+            let report = workflows::clone_root(&node, root, &directory, &resources.load()?)
+                .map_err(boundary)?;
+            progress(format!(
+                "Receiving objects: {} bytes, done.",
+                report.snapshot.descriptor.pack_length
+            ));
+            progress("Verifying signatures, hashes and Git PACK: done.".into());
+            progress(format!(
+                "Checking out {}: done.",
+                hex::encode(&report.snapshot.descriptor.head)
+            ));
+            progress(format!("Ready in '{}'.", directory.display()));
+            Ok(Value::Null)
         }
         GitCommand::Verify {
             snapshot,

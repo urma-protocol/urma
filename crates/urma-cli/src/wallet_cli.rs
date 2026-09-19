@@ -1,51 +1,53 @@
-use crate::{key_cli::VaultAccess, node_cli::NodeArgs, public_cli::PublicChain};
-use bitcoin::BlockHash;
+use crate::{key_cli::VaultAccess, node_cli::NodeArgs};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
 use urma::error::Error;
-use urma_chain::observation::ChainId;
 use urma_wallet::wallet::{FeeBudget, FeeRate};
 
 #[derive(Subcommand)]
 pub(crate) enum WalletCommand {
+    #[command(about = "Show your receiving address and confirmed spendable balance")]
     Status {
         #[command(flatten)]
         access: VaultAccess,
         #[command(flatten)]
         node: NodeArgs,
     },
+    #[command(about = "List confirmed spendable outputs for your active identity")]
     Utxos {
         #[command(flatten)]
         access: VaultAccess,
         #[command(flatten)]
         node: NodeArgs,
     },
+    #[command(about = "Show your receiving address (offline)")]
     Address {
         #[command(flatten)]
         access: VaultAccess,
-        #[arg(long, value_enum)]
-        chain: PublicChain,
+        #[command(flatten)]
+        node: NodeArgs,
     },
+    #[command(about = "Estimate a fee from virtual transaction size (offline)")]
     Quote {
-        #[arg(long)]
-        genesis: BlockHash,
-        #[arg(long)]
+        #[command(flatten)]
+        node: NodeArgs,
+        #[arg(help = "Estimated transaction virtual bytes")]
         vbytes: u64,
-        #[arg(long)]
+        #[arg(long, default_value = "1")]
         rate: NonZeroU64,
-        #[arg(long)]
+        #[arg(long, default_value_t = 100_000)]
         max_fee: u64,
     },
 }
 
 pub(crate) fn run(command: WalletCommand) -> Result<Value, Error> {
     match command {
-        WalletCommand::Address { access, chain } => {
+        WalletCommand::Address { access, node } => {
             let vault = access.open()?;
             let signer = vault.keyring().active()?;
             Ok(
-                json!({"author":signer.author().0.to_string(), "receive_address":urma_wallet::address::receive_address(&signer, chain.into())?, "balance_checked":false}),
+                json!({"author":signer.author().0.to_string(), "receive_address":urma_wallet::address::receive_address(&signer, node.chain()?)?, "balance_checked":false}),
             )
         }
         WalletCommand::Status { access, node } | WalletCommand::Utxos { access, node } => {
@@ -59,17 +61,18 @@ pub(crate) fn run(command: WalletCommand) -> Result<Value, Error> {
                     .ok_or_else(|| Error::Capacity("balance overflow".into()))
             })?;
             Ok(
-                json!({"author":signer.author().0.to_string(), "chain":urma_chain::observation::Chain::from(node.chain), "receive_address":urma_wallet::address::receive_address(&signer, node.chain.into())?, "utxos":utxos, "spendable_confirmed_balance":spendable, "network_verified":true, "broadcast":false}),
+                json!({"author":signer.author().0.to_string(), "chain":node.chain()?, "receive_address":urma_wallet::address::receive_address(&signer, node.chain()?)?, "utxos":utxos, "spendable_confirmed_balance":spendable, "network_verified":true, "broadcast":false}),
             )
         }
         WalletCommand::Quote {
-            genesis,
+            node,
             vbytes,
             rate,
             max_fee,
         } => {
+            let genesis = node.chain()?.genesis()?.0;
             let budget = FeeBudget {
-                chain: ChainId(genesis),
+                chain: node.chain()?.genesis()?,
                 rate: FeeRate(rate),
                 maximum_base_units: max_fee,
             };

@@ -25,6 +25,7 @@ pub enum PublicKind {
 pub enum PublicChain {
     BitcoinRegtest,
     BitcoinTestnet4,
+    LitecoinMainnet,
     LitecoinTestnet,
 }
 
@@ -33,6 +34,7 @@ impl From<PublicChain> for Chain {
         match chain {
             PublicChain::BitcoinRegtest => Self::BitcoinRegtest,
             PublicChain::BitcoinTestnet4 => Self::BitcoinTestnet4,
+            PublicChain::LitecoinMainnet => Self::LitecoinMainnet,
             PublicChain::LitecoinTestnet => Self::LitecoinTestnet,
         }
     }
@@ -40,14 +42,28 @@ impl From<PublicChain> for Chain {
 
 #[derive(Subcommand)]
 pub(crate) enum PublicCommand {
+    #[command(about = "Sync your local confirmed feed and reconcile reorgs")]
     Index(wire_live_cli::IndexArgs),
+    #[command(about = "Prepare and quote an atomic public post (no broadcast)")]
     Plan(wire_live_cli::PlanArgs),
+    #[command(about = "Approve and publish the prepared post")]
     Publish(wire_live_cli::PublishArgs),
+    #[command(about = "Continue the same post publication after confirmation")]
     Resume(wire_live_cli::PublishArgs),
+    #[command(about = "Read verified records from your local index")]
     Read {
         #[command(subcommand)]
         command: wire_live_cli::ReadCommand,
     },
+    #[command(about = "Low-level atomic record encoding and offline signing")]
+    Expert {
+        #[command(subcommand)]
+        command: PublicTools,
+    },
+}
+
+#[derive(Subcommand)]
+pub(crate) enum PublicTools {
     Encode {
         #[arg(long, value_enum)]
         kind: PublicKind,
@@ -117,13 +133,19 @@ pub(crate) fn run(command: PublicCommand) -> Result<Value, Error> {
         PublicCommand::Plan(args) => wire_live_cli::plan(args),
         PublicCommand::Publish(args) | PublicCommand::Resume(args) => wire_live_cli::publish(args),
         PublicCommand::Read { command } => wire_live_cli::read(command),
-        PublicCommand::Encode {
+        PublicCommand::Expert { command } => tools(command),
+    }
+}
+
+fn tools(command: PublicTools) -> Result<Value, Error> {
+    match command {
+        PublicTools::Encode {
             kind,
             input,
             output,
             reply_to,
         } => encode(kind, input, output, reply_to),
-        PublicCommand::Prepare {
+        PublicTools::Prepare {
             record,
             access,
             max_fee,
@@ -149,7 +171,7 @@ pub(crate) fn run(command: PublicCommand) -> Result<Value, Error> {
             storage::write_new(&output, &serde_json::to_vec_pretty(&plan)?)?;
             Ok(json!({"status":"prepared","commit_signed":true,"broadcast":false,"plan":plan}))
         }
-        PublicCommand::Verify { commit, reveal } => {
+        PublicTools::Verify { commit, reveal } => {
             let commit = hex::decode(
                 std::str::from_utf8(&storage::read_bounded(&commit, 8_000_000)?)?.trim(),
             )?;

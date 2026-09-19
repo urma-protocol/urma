@@ -12,7 +12,8 @@ use urma::{
 pub fn verified_record(node: &Node, txid: Txid) -> Result<VerifiedRecord, Error> {
     ensure!(
         matches!(node.presence(txid)?, Presence::Confirmed { .. }),
-        "recovery requires confirmed active-chain record"
+        "record {txid} has no confirmed inclusion on {:?}; check the TXID, wait for confirmation or use --testnet for Litecoin test data",
+        node.chain()
     );
     let reveal = node.transaction(txid)?;
     let parent = reveal

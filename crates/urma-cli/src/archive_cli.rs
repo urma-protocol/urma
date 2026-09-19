@@ -5,7 +5,7 @@
     unused_variables,
     unused_assignments
 )]
-use crate::{files_cli, litecoin_cli, print_json};
+use crate::{config, files_cli, litecoin_cli, print_report};
 use bitcoin::{Network, Txid};
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::json;
@@ -38,21 +38,16 @@ impl From<Chain> for Network {
 
 #[derive(Args)]
 struct Rpc {
-    #[arg(long, default_value = "http://127.0.0.1:18443")]
-    rpc_url: String,
     #[arg(long, value_enum, default_value_t = Chain::Regtest)]
     network: Chain,
-    #[arg(long)]
-    cookie: Option<PathBuf>,
 }
 
 impl Rpc {
     fn node(&self, wallet: Option<&str>) -> Result<Node, Error> {
+        let local = config::expert_node()?;
         Node::connect_for_network(
-            &self.rpc_url,
-            self.cookie
-                .as_deref()
-                .context("--cookie is required for Bitcoin Core RPC")?,
+            &local.rpc_url,
+            &local.cookie_file,
             wallet.into(),
             self.network.into(),
         )
@@ -108,11 +103,11 @@ fn read_plan(path: &std::path::Path) -> Result<Plan, Error> {
 
 pub(crate) fn run(command: Command) -> Result<(), Error> {
     match command {
-        Command::Files { command } => print_json(files_cli::run(command)?)?,
+        Command::Files { command } => print_report(files_cli::run(command)?)?,
         Command::Litecoin { command } => litecoin_cli::run(command)?,
         Command::BroadcastSource(args) => broadcast_source(args)?,
         Command::FetchTransactions(args) => fetch_transactions(args)?,
-        Command::Backends => print_json(json!({
+        Command::Backends => print_report(json!({
             "policy": backend::Policy::default(),
             "adapters": ([Family::Litecoin, Family::Bitcoin, Family::Directory, Family::Ethereum,
                 Family::Storj, Family::GoogleDrive, Family::S3].map(|family| json!({
@@ -137,7 +132,7 @@ pub(crate) fn run(command: Command) -> Result<(), Error> {
 
 fn print_recovery(scan: backend::Recovery, output: &std::path::Path) -> Result<(), Error> {
     let exported = backend::export(scan, output)?;
-    print_json(exported.report)?;
+    print_report(exported.report)?;
     ensure!(
         exported.complete,
         "recovery incomplete or invalid objects; see JSON report"
@@ -259,8 +254,11 @@ pub(crate) struct RecoverLocalArgs {
 
 #[derive(Args)]
 pub(crate) struct KeygenArgs {
-    #[arg(long)]
-    key: PathBuf,
+    #[arg(
+        long,
+        help = "Override the configured private recovery-key destination"
+    )]
+    key: Option<PathBuf>,
 }
 
 #[derive(Args)]
@@ -385,7 +383,7 @@ fn broadcast_source(args: BroadcastSourceArgs) -> Result<(), Error> {
         allow_unconfirmed_commit,
     } = args;
 
-    print_json(urma::relay::broadcast_plan(
+    print_report(urma::relay::broadcast_plan(
         &source,
         network.into(),
         &read_plan(&journal)?,
@@ -410,7 +408,7 @@ fn fetch_transactions(args: FetchTransactionsArgs) -> Result<(), Error> {
         Source::connect(&source, &network.into())?.transaction_bundle(&txid)?;
     storage::write_new(&output, &bundle)?;
     report["output"] = json!(output);
-    print_json(report)?;
+    print_report(report)?;
 
     Ok(())
 }
@@ -422,7 +420,7 @@ fn store_local(args: StoreLocalArgs) -> Result<(), Error> {
         &input,
         urma::config::Limits::CONTAINER_BYTES,
     )?)?;
-    print_json(
+    print_report(
         json!({"status": "stored", "observation": backend::store_directory(&directory, &records)?}),
     )?;
 
@@ -450,10 +448,14 @@ fn recover_local(args: RecoverLocalArgs) -> Result<(), Error> {
 }
 
 pub(crate) fn keygen(args: KeygenArgs) -> Result<(), Error> {
-    let KeygenArgs { key } = args;
-
+    use std::os::unix::fs::DirBuilderExt;
+    let key = config::key_location(config::KeyLocation(args.key))?;
+    std::fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(urma::config::output_parent(&key))?;
     storage::write_new(&key, container::random_secret()?.as_ref())?;
-    print_json(json!({"status": "created", "key_file": key}))?;
+    print_report(json!({"status": "created", "key_file": key}))?;
 
     Ok(())
 }
@@ -481,7 +483,7 @@ fn seal(args: SealArgs) -> Result<(), Error> {
         &mut rand::rngs::OsRng,
     )?;
     storage::write_new(&output, &container::pack(&records)?)?;
-    print_json(json!({"status": "sealed", "chunks": records.len(), "input_bytes": bytes.len()}))?;
+    print_report(json!({"status": "sealed", "chunks": records.len(), "input_bytes": bytes.len()}))?;
 
     Ok(())
 }
@@ -496,7 +498,7 @@ fn open(args: OpenArgs) -> Result<(), Error> {
     )?)?;
     let bytes = container::open(&key, &records)?;
     storage::write_new(&output, &bytes)?;
-    print_json(
+    print_report(
         json!({"status": "complete", "bytes": bytes.len(), "sha256": hex::encode(Sha256::digest(&bytes))}),
     )?;
 
@@ -561,7 +563,7 @@ fn prepare(args: PrepareArgs) -> Result<(), Error> {
         storage::write_new(&PathBuf::from(sidecar), &serde_json::to_vec_pretty(report)?)?;
     }
     storage::write_new(&journal, &serde_json::to_vec_pretty(&plan)?)?;
-    print_json(
+    print_report(
         json!({"status":"prepared", "broadcast":false, "journal":journal,
                 "network":plan.network, "object_id":plan.object_id, "start_height":plan.start_height,
                 "input_bytes":plan.input_bytes, "chunks":plan.reveals.len(), "fee_sats":plan.fee_sats,
@@ -574,7 +576,7 @@ fn prepare(args: PrepareArgs) -> Result<(), Error> {
 fn inspect(args: InspectArgs) -> Result<(), Error> {
     let InspectArgs { journal } = args;
 
-    print_json(transport::validate_plan(&read_plan(&journal)?)?)?;
+    print_report(transport::validate_plan(&read_plan(&journal)?)?)?;
 
     Ok(())
 }
@@ -587,7 +589,7 @@ fn broadcast(args: BroadcastArgs) -> Result<(), Error> {
     } = args;
 
     let node = rpc.node(Some(&wallet))?;
-    print_json(transport::broadcast_plan(
+    print_report(transport::broadcast_plan(
         &node,
         &read_plan(&journal)?,
         urma::config::RevealSelection::All,
@@ -606,14 +608,14 @@ fn status(args: StatusArgs) -> Result<(), Error> {
 
     let plan = read_plan(&journal)?;
     match source {
-        Some(url) => print_json(Source::connect(&url, &rpc.network.into())?.status_plan(&plan)?)?,
+        Some(url) => print_report(Source::connect(&url, &rpc.network.into())?.status_plan(&plan)?)?,
         None => {
             let node = rpc.node(Some(
                 wallet
                     .as_deref()
                     .context("--wallet is required for Core status")?,
             ))?;
-            print_json(transport::status_plan(&node, &plan)?)?;
+            print_report(transport::status_plan(&node, &plan)?)?;
         }
     }
 
@@ -651,7 +653,7 @@ fn publish(args: PublishArgs) -> Result<(), Error> {
     )?;
     let plan = transport::prepare(&node, &records, bytes.len())?;
     storage::write_new(&journal, &serde_json::to_vec_pretty(&plan)?)?;
-    print_json(
+    print_report(
         transport::publish_plan(&node, &plan, publisher.stop_after_chunks.into()).with_context(
             || {
                 format!(
@@ -674,7 +676,7 @@ fn resume(args: ResumeArgs) -> Result<(), Error> {
     );
     let plan = read_plan(&journal)?;
     let node = publisher.rpc.node(Some(&publisher.wallet))?;
-    print_json(transport::publish_plan(
+    print_report(transport::publish_plan(
         &node,
         &plan,
         publisher.stop_after_chunks.into(),

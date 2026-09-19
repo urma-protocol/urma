@@ -392,7 +392,8 @@ fn offline_public_preparation_and_cli_never_imply_broadcast_or_inclusion() -> Re
         )?;
     }
     let response = Command::new(env!("CARGO_BIN_EXE_urma"))
-        .args(["wire", "verify", "--commit"])
+        .env("URMA_OUTPUT", "json")
+        .args(["wire", "expert", "verify", "--commit"])
         .arg(temp.path().join("proof-post.commit"))
         .arg("--reveal")
         .arg(temp.path().join("proof-post.reveal"))

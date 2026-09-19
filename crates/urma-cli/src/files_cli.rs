@@ -1,4 +1,4 @@
-use crate::{key_cli::VaultAccess, node_cli::NodeArgs, print_json};
+use crate::{approve_publication, config, key_cli::VaultAccess, node_cli::NodeArgs, print_report};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -16,42 +16,43 @@ use urma_identity::keys::RecoverySecret;
 
 #[derive(Args)]
 pub(crate) struct IngestArgs {
-    #[arg(long, required = true)]
+    #[arg(required = true)]
     pub(crate) input: Vec<PathBuf>,
-    #[arg(long)]
-    pub(crate) key: PathBuf,
-    #[arg(long)]
+    #[arg(long, default_value = "archive.urma")]
     pub(crate) output: PathBuf,
-    #[arg(long)]
+    #[arg(long, default_value = "My files")]
     pub(crate) collection: String,
 }
 
 #[derive(Args)]
 pub(crate) struct InspectArgs {
-    #[arg(long)]
+    #[arg(default_value = "archive.urma")]
     pub(crate) bundle: PathBuf,
-    #[arg(long)]
-    pub(crate) key: PathBuf,
 }
 
 #[derive(Args)]
 pub(crate) struct RecoverArgs {
-    #[arg(long)]
+    #[arg(default_value = "archive.urma")]
     pub(crate) bundle: PathBuf,
-    #[arg(long)]
-    pub(crate) key: PathBuf,
     #[arg(long)]
     pub(crate) output: PathBuf,
 }
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    #[command(about = "Encrypt files and directories into a local collection")]
     Ingest(IngestArgs),
+    #[command(about = "Authenticate and show a collection catalog")]
     Inspect(InspectArgs),
+    #[command(about = "Restore a local encrypted collection")]
     Recover(RecoverArgs),
+    #[command(about = "Quote and prepare collection publication (no broadcast)")]
     Plan(PlanArgs),
+    #[command(about = "Approve and publish the prepared collection")]
     Publish(PublishArgs),
+    #[command(about = "Continue the same collection publication")]
     Resume(PublishArgs),
+    #[command(about = "Discover and recover your private collections from the chain")]
     RecoverChain(RecoverChainArgs),
 }
 
@@ -67,7 +68,7 @@ pub(crate) fn run(command: Command) -> Result<Value, Error> {
 }
 
 pub(crate) fn ingest_collection(args: IngestArgs, capture: Capture) -> Result<Value, Error> {
-    let secret = RecoverySecret::import(storage::read_key(&args.key)?);
+    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
     let inventory = ingest::ingest(
         &secret,
         IngestRequest {
@@ -83,7 +84,7 @@ pub(crate) fn ingest_collection(args: IngestArgs, capture: Capture) -> Result<Va
 }
 
 pub(crate) fn inspect(args: InspectArgs, schema: &str) -> Result<Value, Error> {
-    let secret = RecoverySecret::import(storage::read_key(&args.key)?);
+    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
     let catalog = recover::inspect_bundle(&args.bundle, &secret)?;
     ensure!(
         catalog.schema == schema,
@@ -93,7 +94,7 @@ pub(crate) fn inspect(args: InspectArgs, schema: &str) -> Result<Value, Error> {
 }
 
 pub(crate) fn recover_collection(args: RecoverArgs, schema: &str) -> Result<Value, Error> {
-    let secret = RecoverySecret::import(storage::read_key(&args.key)?);
+    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
     let catalog = recover::inspect_bundle(&args.bundle, &secret)?;
     ensure!(
         catalog.schema == schema,
@@ -108,7 +109,7 @@ pub(crate) fn recover_collection(args: RecoverArgs, schema: &str) -> Result<Valu
         &inventory.catalog,
         &args.output,
     )?;
-    print_json(json!({"output":args.output, "report":report}))?;
+    print_report(json!({"output":args.output, "report":report}))?;
     ensure!(
         report.complete,
         "collection recovery incomplete; see report"
@@ -122,29 +123,25 @@ pub(crate) struct PlanArgs {
     node: NodeArgs,
     #[command(flatten)]
     identity: VaultAccess,
-    #[arg(long)]
+    #[arg(default_value = "archive.urma")]
     bundle: PathBuf,
-    #[arg(long)]
-    key: PathBuf,
-    #[arg(long)]
+    #[arg(long, default_value = "archive-plan.json")]
     output: PathBuf,
     #[arg(long, default_value_t = 1)]
     fee_rate: u64,
-    #[arg(long)]
+    #[arg(long, default_value_t = 100_000)]
     max_fee: u64,
-    #[arg(long, default_value_t = 1024)]
-    max_records: u32,
 }
 
 #[derive(Args)]
 pub(crate) struct PublishArgs {
     #[command(flatten)]
     node: NodeArgs,
-    #[arg(long)]
+    #[arg(long, default_value = "archive-plan.json")]
     plan: PathBuf,
-    #[arg(long)]
-    approve: String,
-    #[arg(long)]
+    #[arg(short, long, help = "Approve the displayed exact plan and fee")]
+    yes: bool,
+    #[arg(long, default_value = "archive-progress.json")]
     journal: PathBuf,
 }
 
@@ -152,8 +149,6 @@ pub(crate) struct PublishArgs {
 pub(crate) struct RecoverChainArgs {
     #[command(flatten)]
     node: NodeArgs,
-    #[arg(long)]
-    key: PathBuf,
     #[arg(long)]
     catalog: Option<String>,
     #[arg(long)]
@@ -165,7 +160,7 @@ pub(crate) struct RecoverChainArgs {
 }
 
 pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
-    let secret = RecoverySecret::import(storage::read_key(&args.key)?);
+    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
     let catalog = recover::inspect_bundle(&args.bundle, &secret)?;
     ensure!(
         catalog.schema == schema,
@@ -177,7 +172,7 @@ pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
     for object in urma_files::inventory::authenticated_objects(
         &args.bundle,
         &secret,
-        usize::try_from(args.max_records)?,
+        usize::try_from(urma_runtime::plan::PublicationPlan::MAX_RECORDS)?,
     )? {
         records.extend(object.records);
     }
@@ -191,7 +186,7 @@ pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
         urma_runtime::plan::PlanLimits {
             fee_rate: args.fee_rate,
             max_fee: args.max_fee,
-            max_records: args.max_records,
+            max_records: urma_runtime::plan::PublicationPlan::MAX_RECORDS,
         },
     )?;
     plan.save_new(&args.output)?;
@@ -203,9 +198,11 @@ pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
 pub(crate) fn publish(args: PublishArgs) -> Result<Value, Error> {
     urma_runtime::publish::ensure_journal_distinct(&args.plan, &args.journal)?;
     let plan = urma_runtime::plan::PublicationPlan::load(&args.plan)?;
-    let report =
-        urma_runtime::publish::publish(&args.node.connect()?, &plan, &args.approve, &args.journal)?;
-    print_json(serde_json::to_value(&report)?)?;
+    let node = args.node.connect()?;
+    let id = plan.id()?;
+    approve_publication("Publish private collection", &id, plan.total_fee, args.yes)?;
+    let report = urma_runtime::publish::publish(&node, &plan, &id, &args.journal)?;
+    print_report(serde_json::to_value(&report)?)?;
     ensure!(
         report.complete,
         "publication paused; inspect report and resume exact plan"
@@ -218,7 +215,7 @@ pub(crate) fn recover_chain(args: RecoverChainArgs, schema: &str) -> Result<Valu
         !args.output.try_exists()?,
         "export requires a new directory"
     );
-    let secret = RecoverySecret::import(storage::read_key(&args.key)?);
+    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
     let node = args.node.connect()?;
     let scan = urma_files::chain::scan(&node, &secret, args.start_height, args.max_blocks)?;
     let id = select_catalog(&scan, args.catalog, schema)?;
@@ -234,8 +231,8 @@ pub(crate) fn recover_chain(args: RecoverChainArgs, schema: &str) -> Result<Valu
         &id,
         &args.output,
     )?;
-    print_json(
-        json!({"output":args.output, "catalog":id, "report":report, "start_height":scan.start_height, "tip_height":scan.tip_height, "tip_hash":scan.tip_hash, "rejected_records":scan.rejected_records, "evidence":"local_validating_node_and_authenticated_private_objects"}),
+    print_report(
+        json!({"output":args.output, "catalog":id, "report":report, "start_height":scan.start_height, "tip_height":scan.tip_height, "tip_hash":scan.tip_hash, "rejected_records":scan.rejected_records, "chain_evidence":node.inclusion_evidence(),"private_objects":"authenticated"}),
     )?;
     ensure!(
         report.complete,

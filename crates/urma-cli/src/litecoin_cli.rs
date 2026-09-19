@@ -5,7 +5,7 @@
     unused_variables,
     unused_assignments
 )]
-use crate::print_json as print;
+use crate::{config as cli_config, print_report as print};
 use clap::{Args, Subcommand};
 use rand::rngs::OsRng;
 use serde_json::json;
@@ -19,15 +19,13 @@ use urma::{
 };
 
 #[derive(Args)]
-pub(crate) struct RpcArgs {
-    #[arg(long, default_value = "http://127.0.0.1:19332")]
-    rpc_url: String,
-    #[arg(long)]
-    cookie: PathBuf,
-}
+pub(crate) struct RpcArgs {}
 impl RpcArgs {
     fn core(&self, wallet: Option<&str>) -> Result<Core, Error> {
-        Core::connect(&self.rpc_url, &self.cookie, wallet.into())
+        {
+            let local = cli_config::expert_node()?;
+            Core::connect(&local.rpc_url, &local.cookie_file, wallet.into())
+        }
     }
 }
 

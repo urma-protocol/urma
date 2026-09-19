@@ -138,13 +138,21 @@ fn wait_until(mut condition: impl FnMut() -> Result<bool>) -> Result<()> {
     }
 }
 
-fn cli(workdir: &Path, args: &[&str]) -> Result<Output> {
+fn cli(workdir: &Path, args: &[&str], node: Option<(&str, &Path)>) -> Result<Output> {
     let mut command = Command::new(env!("CARGO_BIN_EXE_urma"));
-    command.current_dir(workdir);
+    command
+        .current_dir(workdir)
+        .env("URMA_OUTPUT", "json")
+        .env("URMA_NETWORK", "bitcoin-regtest");
+    if let Some((url, auth)) = node {
+        command
+            .env("URMA_RPC_URL", url)
+            .env("URMA_NODE_AUTH_FILE", auth);
+    }
     if args.first() == Some(&"keygen") {
         command.args(["key", "recovery-generate"]).args(&args[1..]);
     } else {
-        command.arg("archive").args(args);
+        command.arg("expert").args(args);
     }
     Ok(command.output()?)
 }
@@ -177,10 +185,6 @@ fn recover(workdir: &Path, receiver: &Daemon, key: &str, dir: &str) -> Result<Ou
         workdir,
         &[
             "recover",
-            "--rpc-url",
-            &receiver.url(),
-            "--cookie",
-            receiver.cookie().to_str().unwrap(),
             "--key",
             key,
             "--start-height",
@@ -188,6 +192,10 @@ fn recover(workdir: &Path, receiver: &Daemon, key: &str, dir: &str) -> Result<Ou
             "--output-dir",
             dir,
         ],
+        Some((
+            &receiver.url(),
+            Path::new(receiver.cookie().to_str().unwrap()),
+        )),
     )
 }
 
@@ -213,15 +221,11 @@ fn independent_recovery_interruption_restart_and_reorg() -> Result<()> {
         "JPEG fixture must exercise multiple chunks"
     );
     storage::write_new(&workdir.join("photo.jpg"), jpeg)?;
-    successful(cli(workdir, &["keygen", "--key", "photo.key"])?)?;
+    successful(cli(workdir, &["keygen", "--key", "photo.key"], None)?)?;
     let photo = successful(cli(
         workdir,
         &[
             "publish",
-            "--rpc-url",
-            &sender.url(),
-            "--cookie",
-            sender.cookie().to_str().unwrap(),
             "--wallet",
             "publisher",
             "--mine",
@@ -232,21 +236,18 @@ fn independent_recovery_interruption_restart_and_reorg() -> Result<()> {
             "--journal",
             "photo.journal",
         ],
+        Some((&sender.url(), Path::new(sender.cookie().to_str().unwrap()))),
     )?)?;
     ensure!(photo["status"] == "confirmed", "photo was not confirmed");
 
     let binary: Vec<u8> = (0..100_000).map(|i| ((i * 37) % 251) as u8).collect();
     storage::write_new(&workdir.join("interrupted.bin"), &binary)?;
-    successful(cli(workdir, &["keygen", "--key", "partial.key"])?)?;
-    successful(cli(workdir, &["keygen", "--key", "wrong.key"])?)?;
+    successful(cli(workdir, &["keygen", "--key", "partial.key"], None)?)?;
+    successful(cli(workdir, &["keygen", "--key", "wrong.key"], None)?)?;
     let interrupted = successful(cli(
         workdir,
         &[
             "publish",
-            "--rpc-url",
-            &sender.url(),
-            "--cookie",
-            sender.cookie().to_str().unwrap(),
             "--wallet",
             "publisher",
             "--mine",
@@ -259,6 +260,7 @@ fn independent_recovery_interruption_restart_and_reorg() -> Result<()> {
             "--journal",
             "partial.journal",
         ],
+        Some((&sender.url(), Path::new(sender.cookie().to_str().unwrap()))),
     )?)?;
     ensure!(
         interrupted["status"] == "interrupted",
@@ -294,16 +296,13 @@ fn independent_recovery_interruption_restart_and_reorg() -> Result<()> {
         workdir,
         &[
             "resume",
-            "--rpc-url",
-            &sender.url(),
-            "--cookie",
-            sender.cookie().to_str().unwrap(),
             "--wallet",
             "publisher",
             "--mine",
             "--journal",
             "partial.journal",
         ],
+        Some((&sender.url(), Path::new(sender.cookie().to_str().unwrap()))),
     )?)?;
     ensure!(resumed["status"] == "confirmed", "resume failed");
     let tip_before = sender.call("getbestblockhash", &[])?;
@@ -311,16 +310,13 @@ fn independent_recovery_interruption_restart_and_reorg() -> Result<()> {
         workdir,
         &[
             "resume",
-            "--rpc-url",
-            &sender.url(),
-            "--cookie",
-            sender.cookie().to_str().unwrap(),
             "--wallet",
             "publisher",
             "--mine",
             "--journal",
             "partial.journal",
         ],
+        Some((&sender.url(), Path::new(sender.cookie().to_str().unwrap()))),
     )?)?;
     ensure!(
         sender.call("getbestblockhash", &[])? == tip_before,
@@ -439,15 +435,11 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
         &workdir.join("sample.jpg"),
         include_bytes!("../../../tests/fixtures/sample.jpg"),
     )?;
-    successful(cli(workdir, &["keygen", "--key", "media.key"])?)?;
+    successful(cli(workdir, &["keygen", "--key", "media.key"], None)?)?;
     let prepared = successful(cli(
         workdir,
         &[
             "prepare",
-            "--rpc-url",
-            &cold.url(),
-            "--cookie",
-            cold.cookie().to_str().unwrap(),
             "--wallet",
             "cold",
             "--key",
@@ -459,6 +451,7 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
             "--funding",
             "funding.json",
         ],
+        Some((&cold.url(), Path::new(cold.cookie().to_str().unwrap()))),
     )?)?;
     ensure!(
         prepared["status"] == "prepared" && prepared["broadcast"] == false,
@@ -474,7 +467,7 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
     );
     let plan: Plan = serde_json::from_slice(&fs::read(workdir.join("plan.json"))?)?;
     validate_plan(&plan)?;
-    successful(cli(workdir, &["inspect", "--journal", "plan.json"])?)?;
+    successful(cli(workdir, &["inspect", "--journal", "plan.json"], None)?)?;
 
     let mismatch = cli(
         workdir,
@@ -482,10 +475,6 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
             "prepare",
             "--network",
             "testnet4",
-            "--rpc-url",
-            &cold.url(),
-            "--cookie",
-            cold.cookie().to_str().unwrap(),
             "--wallet",
             "cold",
             "--key",
@@ -497,6 +486,7 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
             "--funding",
             "funding.json",
         ],
+        Some((&cold.url(), Path::new(cold.cookie().to_str().unwrap()))),
     )?;
     ensure!(
         !mismatch.status.success() && !workdir.join("wrong-network.json").exists(),
@@ -545,17 +535,8 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
     let before = cold.call("getblockcount", &[])?;
     let first = successful(cli(
         workdir,
-        &[
-            "broadcast",
-            "--rpc-url",
-            &cold.url(),
-            "--cookie",
-            cold.cookie().to_str().unwrap(),
-            "--wallet",
-            "cold",
-            "--journal",
-            "plan.json",
-        ],
+        &["broadcast", "--wallet", "cold", "--journal", "plan.json"],
+        Some((&cold.url(), Path::new(cold.cookie().to_str().unwrap()))),
     )?)?;
     ensure!(
         first["status"] == "commit_pending",
@@ -572,17 +553,8 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
     cold.call("generatetoaddress", &[json!(1), json!(plan.mining_address)])?;
     let second = successful(cli(
         workdir,
-        &[
-            "broadcast",
-            "--rpc-url",
-            &cold.url(),
-            "--cookie",
-            cold.cookie().to_str().unwrap(),
-            "--wallet",
-            "cold",
-            "--journal",
-            "plan.json",
-        ],
+        &["broadcast", "--wallet", "cold", "--journal", "plan.json"],
+        Some((&cold.url(), Path::new(cold.cookie().to_str().unwrap()))),
     )?)?;
     ensure!(
         second["status"] == "reveals_pending",
@@ -595,17 +567,8 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
     cold.call("generatetoaddress", &[json!(1), json!(plan.mining_address)])?;
     let status = successful(cli(
         workdir,
-        &[
-            "status",
-            "--rpc-url",
-            &cold.url(),
-            "--cookie",
-            cold.cookie().to_str().unwrap(),
-            "--wallet",
-            "cold",
-            "--journal",
-            "plan.json",
-        ],
+        &["status", "--wallet", "cold", "--journal", "plan.json"],
+        Some((&cold.url(), Path::new(cold.cookie().to_str().unwrap()))),
     )?)?;
     ensure!(
         status["status"] == "confirmed",

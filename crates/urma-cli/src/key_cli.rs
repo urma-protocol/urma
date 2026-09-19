@@ -1,4 +1,4 @@
-use crate::archive_cli;
+use crate::{archive_cli, config};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -12,43 +12,20 @@ use urma_identity::{
 use urma_workflows::vault::{self, VaultChange};
 
 #[derive(Args)]
-#[group(required = true, multiple = false)]
-pub(crate) struct CredentialFiles {
-    #[arg(long)]
-    password_file: Option<PathBuf>,
-    #[arg(long)]
-    phrase_file: Option<PathBuf>,
-}
-#[derive(Args)]
-pub(crate) struct VaultAccess {
-    #[arg(long)]
-    vault: PathBuf,
-    #[command(flatten)]
-    credential: CredentialFiles,
-}
+pub(crate) struct VaultAccess {}
 impl VaultAccess {
     pub(crate) fn open(&self) -> Result<UnlockedVault, Error> {
-        match (&self.credential.password_file, &self.credential.phrase_file) {
-            (Some(path), None) => {
-                let password = vault::read_secret(path)?;
-                vault::load(&self.vault, UnlockCredential::Password(&password))
-            }
-            (None, Some(path)) => {
-                let words = vault::read_secret(path)?;
-                let phrase = IdentityPhrase::parse(&words)?;
-                vault::load(&self.vault, UnlockCredential::RecoveryPhrase(&phrase))
-            }
-            (Some(_password), Some(_phrase)) => {
-                Err(Error::Invalid("supply exactly one credential file".into()))
-            }
-            (None, None) => Err(Error::Invalid("supply exactly one credential file".into())),
-        }
+        let (path, unlock) = config::credentials()?;
+        let password = vault::read_secret(&unlock)?;
+        vault::load(&path, UnlockCredential::Password(&password))
     }
 }
 
 #[derive(Subcommand)]
 pub(crate) enum KeyCommand {
+    #[command(about = "Create a separate private Archive recovery key")]
     RecoveryGenerate(archive_cli::KeygenArgs),
+    #[command(about = "Create a public identity vault and recovery backup")]
     Create {
         #[arg(long)]
         vault: PathBuf,
@@ -59,6 +36,7 @@ pub(crate) enum KeyCommand {
         #[arg(long)]
         name: String,
     },
+    #[command(about = "Regenerate public identities from the recovery phrase")]
     Recover {
         #[arg(long)]
         phrase_file: PathBuf,
@@ -67,10 +45,12 @@ pub(crate) enum KeyCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(about = "List named identities and the active selection")]
     List {
         #[command(flatten)]
         access: VaultAccess,
     },
+    #[command(about = "Add a named identity to a new vault file")]
     Add {
         #[command(flatten)]
         access: VaultAccess,
@@ -79,6 +59,7 @@ pub(crate) enum KeyCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(about = "Select the active identity in a new vault file")]
     Select {
         #[command(flatten)]
         access: VaultAccess,
@@ -87,6 +68,7 @@ pub(crate) enum KeyCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(about = "Rename an identity in a new vault file")]
     Rename {
         #[command(flatten)]
         access: VaultAccess,
@@ -97,6 +79,7 @@ pub(crate) enum KeyCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    #[command(about = "Write a new encrypted vault with a new password")]
     ResetPassword {
         #[command(flatten)]
         access: VaultAccess,

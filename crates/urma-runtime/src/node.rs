@@ -1,3 +1,7 @@
+use crate::{
+    endpoints::{self, PublicEndpoint},
+    remote::Source,
+};
 use bitcoin::{Transaction, Txid, consensus::deserialize};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde::{Deserialize, Serialize};
@@ -16,8 +20,13 @@ pub struct NodeConfig {
 }
 
 pub struct Node {
-    config: NodeConfig,
-    client: Client,
+    chain: Chain,
+    backend: Backend,
+}
+
+enum Backend {
+    Local(Client),
+    Public(Vec<Source>),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -57,13 +66,47 @@ impl Node {
             "RPC must use a loopback IP"
         );
         let client = Client::new(url.as_str(), Auth::CookieFile(config.cookie_file.clone()))?;
-        let node = Self { config, client };
+        let node = Self {
+            chain: config.chain,
+            backend: Backend::Local(client),
+        };
         node.verify_network()?;
         Ok(node)
     }
 
+    pub fn public(chain: Chain) -> Result<Self, Error> {
+        Self::with_public_sources(chain, endpoints::defaults(chain))
+    }
+
+    pub fn with_public_sources(
+        chain: Chain,
+        endpoints: Vec<PublicEndpoint>,
+    ) -> Result<Self, Error> {
+        let sources = endpoints
+            .into_iter()
+            .map(Source::new)
+            .collect::<Result<Vec<_>, _>>()?;
+        ensure!(
+            !sources.is_empty(),
+            "this network needs a local node configured in URMA config"
+        );
+        let node = Self {
+            chain,
+            backend: Backend::Public(sources),
+        };
+        node.verify_network()?;
+        Ok(node)
+    }
+
+    pub fn inclusion_evidence(&self) -> &'static str {
+        match &self.backend {
+            Backend::Local(_) => "local_validating_node",
+            Backend::Public(_) => "public_provider_observation",
+        }
+    }
+
     pub fn chain(&self) -> Chain {
-        self.config.chain
+        self.chain
     }
 
     pub fn tip_height(&self) -> Result<u64, Error> {
@@ -100,10 +143,39 @@ impl Node {
     }
 
     pub fn call(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
-        Ok(self.client.call(method, args)?)
+        match &self.backend {
+            Backend::Local(client) => Ok(client.call(method, args)?),
+            Backend::Public(sources) => {
+                let mut failures = Vec::new();
+                let mut missing = false;
+                for source in sources {
+                    match source.call(self.chain, method, args) {
+                        Ok(value) => return Ok(value),
+                        Err(error) => {
+                            missing |= matches!(error, Error::Missing(_));
+                            tracing::warn!(method, "public source unavailable; trying next source");
+                            failures.push(error.to_string());
+                        }
+                    }
+                }
+                let message = format!(
+                    "{} on {:?}. {}. Check your connection and selected network (--testnet for test data); retry or configure a local node.",
+                    method,
+                    self.chain,
+                    failures.join("; ")
+                );
+                if missing {
+                    return Err(Error::Missing(message));
+                }
+                Err(Error::Unsupported(message))
+            }
+        }
     }
 
     pub fn require_txindex(&self) -> Result<(), Error> {
+        if matches!(self.backend, Backend::Public(_)) {
+            return self.verify_network();
+        }
         let indexes = self.call("getindexinfo", &[json!("txindex")])?;
         ensure!(
             indexes["txindex"]["synced"] == true,
@@ -145,18 +217,20 @@ impl Node {
     }
 
     pub fn presence(&self, txid: Txid) -> Result<Presence, Error> {
-        let result = self
-            .client
-            .call::<Value>("getrawtransaction", &[json!(txid), json!(true)]);
+        let result = self.call("getrawtransaction", &[json!(txid), json!(true)]);
         let value = match result {
             Ok(value) => value,
-            Err(bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(error)))
-                if error.code == -5 =>
-            {
+            Err(Error::Rpc(bitcoincore_rpc::Error::JsonRpc(
+                bitcoincore_rpc::jsonrpc::Error::Rpc(error),
+            ))) if error.code == -5 => {
                 tracing::warn!(code = error.code, "transaction absent from node");
                 return Ok(Presence::Missing);
             }
-            Err(error) => return Err(error.into()),
+            Err(Error::Missing(message)) => {
+                tracing::warn!(%message, "transaction absent from public sources");
+                return Ok(Presence::Missing);
+            }
+            Err(error) => return Err(error),
         };
         if urma::config::confirmations(&value)? <= 0 {
             let mempool = self.call("getrawmempool", &[])?;
@@ -191,6 +265,9 @@ impl Node {
 
     pub fn utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
         self.verify_network()?;
+        if matches!(self.backend, Backend::Public(_)) {
+            return self.public_utxos(signer);
+        }
         let script = urma_wallet::signing::script(signer)?;
         let scan = self.call(
             "scantxoutset",
@@ -213,6 +290,29 @@ impl Node {
                 vout: u32::try_from(row["vout"].as_u64().context("missing UTXO vout")?)?,
                 value: amount.to_sat(),
                 height: row["height"].as_u64().context("missing UTXO height")?,
+            });
+        }
+        outputs.sort_by_key(|output| (output.value, output.txid, output.vout));
+        Ok(outputs)
+    }
+
+    fn public_utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
+        let address = urma_wallet::address::receive_address(signer, self.chain)?;
+        let rows = self.call("addressutxos", &[json!(address)])?;
+        let rows = rows.as_array().context("missing public UTXOs")?;
+        ensure!(rows.len() <= 1000, "UTXO client capacity exceeded");
+        let mut outputs = Vec::new();
+        for row in rows {
+            if row["status"]["confirmed"] != true {
+                continue;
+            }
+            outputs.push(Utxo {
+                txid: row["txid"].as_str().context("missing UTXO txid")?.parse()?,
+                vout: u32::try_from(row["vout"].as_u64().context("missing UTXO index")?)?,
+                value: row["value"].as_u64().context("missing UTXO value")?,
+                height: row["status"]["block_height"]
+                    .as_u64()
+                    .context("missing UTXO height")?,
             });
         }
         outputs.sort_by_key(|output| (output.value, output.txid, output.vout));

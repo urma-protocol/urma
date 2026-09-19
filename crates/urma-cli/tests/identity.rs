@@ -112,6 +112,17 @@ fn publication_verifies_same_author_and_funder_and_fee_bound() {
 
 fn cli(args: &[&str]) -> std::process::Output {
     Command::new(env!("CARGO_BIN_EXE_urma"))
+        .env("URMA_OUTPUT", "json")
+        .args(args)
+        .output()
+        .unwrap()
+}
+fn unlocked(vault: &Path, password: &Path, args: &[&str]) -> std::process::Output {
+    Command::new(env!("CARGO_BIN_EXE_urma"))
+        .env("URMA_OUTPUT", "json")
+        .env("URMA_VAULT", vault)
+        .env("URMA_UNLOCK_FILE", password)
+        .env("URMA_CONFIG", vault.with_extension("no-config"))
         .args(args)
         .output()
         .unwrap()
@@ -166,48 +177,20 @@ fn cli_recovers_without_vault_and_never_prints_secrets() {
         std::fs::metadata(&vault).unwrap().permissions().mode() & 0o777,
         0o600
     );
-    let original = success(cli(&[
-        "key",
-        "list",
-        "--vault",
-        path(&vault),
-        "--phrase-file",
-        path(&phrase),
-    ]));
+    let original = success(unlocked(&vault, &pass, &["key", "list"]));
     let more = root.join("more.vault");
-    success(cli(&[
-        "key",
-        "add",
-        "--vault",
-        path(&vault),
-        "--phrase-file",
-        path(&phrase),
-        "--name",
-        "editor",
-        "--output",
-        path(&more),
-    ]));
+    success(unlocked(
+        &vault,
+        &pass,
+        &["key", "add", "--name", "editor", "--output", path(&more)],
+    ));
     let selected = root.join("selected.vault");
-    success(cli(&[
-        "key",
-        "select",
-        "--vault",
-        path(&more),
-        "--phrase-file",
-        path(&phrase),
-        "--slot",
-        "1",
-        "--output",
-        path(&selected),
-    ]));
-    let selected_public = success(cli(&[
-        "key",
-        "list",
-        "--vault",
-        path(&selected),
-        "--phrase-file",
-        path(&phrase),
-    ]));
+    success(unlocked(
+        &more,
+        &pass,
+        &["key", "select", "--slot", "1", "--output", path(&selected)],
+    ));
+    let selected_public = success(unlocked(&selected, &pass, &["key", "list"]));
     assert_eq!(selected_public["identities"][1]["active"], true);
     for p in [&vault, &more, &selected] {
         std::fs::remove_file(p).unwrap();
@@ -224,14 +207,7 @@ fn cli_recovers_without_vault_and_never_prints_secrets() {
         path(&recovered),
     ]));
     assert_eq!(report["metadata_recovered"], false);
-    let public = success(cli(&[
-        "key",
-        "list",
-        "--vault",
-        path(&recovered),
-        "--phrase-file",
-        path(&phrase),
-    ]));
+    let public = success(unlocked(&recovered, &pass, &["key", "list"]));
     assert_eq!(public["identities"].as_array().unwrap().len(), 64);
     assert_eq!(
         public["identities"][0]["author"],
@@ -241,26 +217,14 @@ fn cli_recovers_without_vault_and_never_prints_secrets() {
         public["identities"][1]["author"],
         selected_public["identities"][1]["author"]
     );
-    let address = success(cli(&[
-        "wallet",
-        "address",
-        "--vault",
-        path(&recovered),
-        "--phrase-file",
-        path(&phrase),
-        "--chain",
-        "bitcoin-testnet4",
-    ]));
+    let address = success(unlocked(
+        &recovered,
+        &pass,
+        &["wallet", "address", "--testnet"],
+    ));
     assert_eq!(address["balance_checked"], false);
     std::fs::write(&pass, "another private wrong password").unwrap();
-    let denied = cli(&[
-        "key",
-        "list",
-        "--vault",
-        path(&recovered),
-        "--password-file",
-        path(&pass),
-    ]);
+    let denied = unlocked(&recovered, &pass, &["key", "list"]);
     assert!(!denied.status.success());
     assert!(denied.stdout.is_empty());
     assert!(!String::from_utf8_lossy(&denied.stderr).contains("another private wrong password"));
