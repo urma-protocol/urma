@@ -6,8 +6,11 @@
     unused_assignments
 )]
 mod archive_cli;
+mod capture_cli;
+mod files_cli;
 mod key_cli;
 mod litecoin_cli;
+mod node_cli;
 mod public_cli;
 mod scaffold;
 use clap::{Parser, Subcommand};
@@ -40,7 +43,7 @@ enum Command {
     },
     Capture {
         #[command(subcommand)]
-        command: scaffold::CaptureCommand,
+        command: capture_cli::Command,
     },
     Key {
         #[command(subcommand)]
@@ -62,7 +65,7 @@ fn run() -> Result<(), Error> {
         Command::Archive { command } => archive_cli::run(command),
         Command::Wire { command } => print_json(public_cli::run(command)?),
         Command::Git { command } => scaffold::git(command),
-        Command::Capture { command } => scaffold::capture(command),
+        Command::Capture { command } => print_json(capture_cli::run(command)?),
         Command::Wallet { command } => print_json(scaffold::wallet(command)?),
         Command::Key { command } => {
             let report = key_cli::run(command)?;

@@ -1185,8 +1185,10 @@ dependencies = [
  "urma",
  "urma-chain",
  "urma-core",
+ "urma-files",
  "urma-identity",
  "urma-profiles",
+ "urma-runtime",
  "urma-wallet",
  "urma-workflows",
  "zeroize",
@@ -1204,6 +1206,25 @@ dependencies = [
  "hmac",
  "rand",
  "sha2",
+ "zeroize",
+]
+
+[[package]]
+name = "urma-files"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "hex",
+ "libc",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tracing",
+ "unicode-normalization",
+ "urma",
+ "urma-identity",
+ "urma-runtime",
  "zeroize",
 ]
 
@@ -1235,6 +1256,26 @@ dependencies = [
  "urma-chain",
  "urma-core",
  "urma-identity",
+]
+
+[[package]]
+name = "urma-runtime"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "bitcoincore-rpc",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tracing",
+ "url",
+ "urma",
+ "urma-chain",
+ "urma-core",
+ "urma-identity",
+ "urma-wallet",
 ]
 
 [[package]]

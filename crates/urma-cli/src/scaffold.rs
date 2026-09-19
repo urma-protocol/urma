@@ -17,12 +17,6 @@ pub(crate) enum GitCommand {
 }
 
 #[derive(Subcommand)]
-pub(crate) enum CaptureCommand {
-    Ingest { input: PathBuf },
-    Recover { destination: PathBuf },
-}
-
-#[derive(Subcommand)]
 pub(crate) enum WalletCommand {
     Status,
     Address {
@@ -56,13 +50,6 @@ pub(crate) fn git(command: GitCommand) -> Result<(), Error> {
         GitCommand::Prepare { .. } => "git prepare",
         GitCommand::Publish { .. } => "git publish",
         GitCommand::Resume { .. } => "git resume",
-    };
-    unsupported(operation)
-}
-pub(crate) fn capture(command: CaptureCommand) -> Result<(), Error> {
-    let operation = match command {
-        CaptureCommand::Ingest { .. } => "capture ingest",
-        CaptureCommand::Recover { .. } => "capture recover",
     };
     unsupported(operation)
 }
