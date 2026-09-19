@@ -1,0 +1,16 @@
+[package]
+name = "urma-wire"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+urma = { path = "../urma" }
+urma-core = { path = "../urma-core" }
+bitcoin = "0.32"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+tempfile = "3"
+tracing = "0.1"

@@ -1251,6 +1251,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "urma-wire"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "hex",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "tracing",
+ "urma",
+ "urma-core",
+]
+
+[[package]]
 name = "urma-workflows"
 version = "0.1.0"
 dependencies = [
