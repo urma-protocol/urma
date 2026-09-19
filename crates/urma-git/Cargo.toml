@@ -15,5 +15,12 @@ regex = "1"
 rustix = { version = "1", features = ["fs"] }
 tracing = "0.1"
 
+bitcoin = { version = "0.32", features = ["serde"] }
+urma = { path = "../urma" }
+urma-core = { path = "../urma-core" }
+urma-chain = { path = "../urma-chain" }
+urma-runtime = { path = "../urma-runtime" }
+urma-identity = { path = "../urma-identity" }
+
 [dev-dependencies]
 anyhow = "1"

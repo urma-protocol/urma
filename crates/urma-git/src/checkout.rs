@@ -3,7 +3,7 @@ use crate::{
     error::Error,
     git,
     inventory::{Entry, Limits},
-    review,
+    proofs, review,
     snapshot::{self, ValidatedSnapshot},
 };
 use std::{
@@ -16,6 +16,29 @@ pub fn install(
     payload: &Path,
     destination: &Path,
     limits: &Limits,
+) -> Result<snapshot::SnapshotReport, Error> {
+    install_staged(payload, destination, limits, Evidence::Local)
+}
+
+pub fn install_with_evidence(
+    payload: &Path,
+    destination: &Path,
+    limits: &Limits,
+    directory: &Path,
+) -> Result<snapshot::SnapshotReport, Error> {
+    install_staged(payload, destination, limits, Evidence::Chain(directory))
+}
+
+enum Evidence<'a> {
+    Local,
+    Chain(&'a Path),
+}
+
+fn install_staged(
+    payload: &Path,
+    destination: &Path,
+    limits: &Limits,
+    evidence: Evidence<'_>,
 ) -> Result<snapshot::SnapshotReport, Error> {
     use std::os::unix::fs::PermissionsExt;
     if destination.try_exists()? {
@@ -64,6 +87,7 @@ pub fn install(
         &validated.repository,
         std::fs::Permissions::from_mode(0o700),
     )?;
+    retain_evidence(&retained, evidence)?;
     sync_directory(&validated.repository)?;
     if destination.try_exists()? {
         return Err(Error::Invalid(
@@ -190,4 +214,27 @@ pub fn retain_locator(repository: &Path, locator: &impl serde::Serialize) -> Res
     file.write_all(&serde_json::to_vec_pretty(locator)?)?;
     file.sync_all()?;
     Ok(())
+}
+
+fn retain_evidence(destination: &Path, evidence: Evidence<'_>) -> Result<(), Error> {
+    match evidence {
+        Evidence::Local => Ok(()),
+        Evidence::Chain(directory) => {
+            proofs::regular_file(&directory.join("locator.json"))?;
+            std::fs::copy(
+                directory.join("locator.json"),
+                destination.join("locator.json"),
+            )?;
+            if !std::fs::symlink_metadata(directory.join("tx"))?.is_dir() {
+                return Err(Error::Invalid("proof transaction directory type".into()));
+            }
+            snapshot::create_private_directory(&destination.join("tx"))?;
+            for entry in std::fs::read_dir(directory.join("tx"))? {
+                let entry = entry?;
+                proofs::regular_file(&entry.path())?;
+                std::fs::copy(entry.path(), destination.join("tx").join(entry.file_name()))?;
+            }
+            Ok(())
+        }
+    }
 }
