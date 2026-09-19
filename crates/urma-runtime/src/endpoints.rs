@@ -36,6 +36,7 @@ pub fn defaults(chain: Chain) -> Vec<PublicEndpoint> {
         ],
         Chain::LitecoinTestnet => vec![
             PublicEndpoint::Esplora("https://litecoinspace.org/testnet/api".into()),
+            PublicEndpoint::Esplora("https://testnetscan.com/ltc-testnet/api".into()),
             PublicEndpoint::Rpc("https://litecoin-testnet.gateway.tatum.io".into()),
         ],
         Chain::BitcoinTestnet4 => vec![PublicEndpoint::Esplora(

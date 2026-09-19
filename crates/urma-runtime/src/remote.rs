@@ -14,6 +14,8 @@ pub(crate) struct Source {
     network: Cell<NetworkState>,
     last_request: Cell<Instant>,
     retry_at: Cell<Instant>,
+    window_start: Cell<Instant>,
+    window_requests: Cell<u8>,
 }
 
 #[derive(Clone, Copy)]
@@ -31,6 +33,8 @@ impl Source {
             network: Cell::new(NetworkState::Unchecked),
             last_request: Cell::new(Instant::now()),
             retry_at: Cell::new(Instant::now()),
+            window_start: Cell::new(Instant::now()),
+            window_requests: Cell::new(0),
         })
     }
 
@@ -56,12 +60,16 @@ impl Source {
             );
             self.network.set(NetworkState::Verified);
         }
+        if method == "getblockhash" && args.first().context("missing block height")? == &json!(0) {
+            return Ok(json!(chain.genesis()?.0.to_string()));
+        }
         let value = self.request(method, args)?;
         validate_result(method, args, &value)?;
         Ok(value)
     }
 
     fn request(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
+        self.reserve_request()?;
         pace(self.last_request.get());
         self.last_request.set(Instant::now());
         let result = self.request_unchecked(method, args);
@@ -73,6 +81,21 @@ impl Source {
             Ok(value) => Ok(value),
             Err(cause) => Err(cause),
         }
+    }
+
+    fn reserve_request(&self) -> Result<(), Error> {
+        if self.endpoint.url().contains(".gateway.tatum.io") {
+            if self.window_start.get().elapsed() >= Duration::from_secs(60) {
+                self.window_start.set(Instant::now());
+                self.window_requests.set(0);
+            }
+            ensure!(
+                self.window_requests.get() < 5,
+                "public RPC minute budget exhausted"
+            );
+            self.window_requests.set(self.window_requests.get() + 1);
+        }
+        Ok(())
     }
 
     fn request_unchecked(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
@@ -147,6 +170,16 @@ fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Er
         ensure!(
             json!(transaction.compute_txid()) == *args.first().context("missing transaction ID")?,
             "public source transaction hash mismatch"
+        );
+    }
+    if method == "sendrawtransaction" {
+        let raw = args.first().context("missing broadcast transaction")?;
+        let transaction: Transaction = deserialize(&hex::decode(
+            raw.as_str().context("invalid broadcast transaction")?,
+        )?)?;
+        ensure!(
+            value == &json!(transaction.compute_txid()),
+            "broadcast transaction ID mismatch"
         );
     }
     if method == "getblock" {
