@@ -7,6 +7,7 @@
 )]
 pub mod capture;
 pub mod catalog;
+pub mod chain;
 pub mod config;
 pub mod ingest;
 pub mod inventory;
