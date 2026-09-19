@@ -1,0 +1,57 @@
+{
+  "format": "URMA Identity/Vault v1",
+  "warning": "PUBLIC TEST KEYS: NEVER FUND",
+  "phrase": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+  "password": "URMA public test password 2026",
+  "entropy_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+  "data_key_hex": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+  "plaintext_hex": "0200010000000000000000000000000000000000000000000000000000000000000000000000046d61696e0100087265706f72746572",
+  "password_key_hex": "f34790ad5316bd95d79692a4d469e52357e947b165934991969887a0a2fce982",
+  "recovery_key_hex": "93167661bea55e766f81a95152f8998453a3aa97f92d5bfdaea2146a18d4ac65",
+  "slots": [
+    {
+      "slot": 0,
+      "counter": 0,
+      "scalar_hex": "06e6329c03866e4a46669a0050d045570d300fb8c266742a71dbe9ae064b8bbe",
+      "public_key": "03445765e605779fd09360788b268b3dc5299d140d8e1c8bb2cd235d3cba6b4b31",
+      "author": "445765e605779fd09360788b268b3dc5299d140d8e1c8bb2cd235d3cba6b4b31"
+    },
+    {
+      "slot": 1,
+      "counter": 0,
+      "scalar_hex": "daea65236a0609e17bfc8370ae41e97cdbcd992a5366aa6c3d37a67be818073b",
+      "public_key": "026ef2792327275809d50e19785acab3bef2d5b0a22dcbcb6c054e6674d4c27a99",
+      "author": "6ef2792327275809d50e19785acab3bef2d5b0a22dcbcb6c054e6674d4c27a99"
+    },
+    {
+      "slot": 63,
+      "counter": 0,
+      "scalar_hex": "e538a420434603e44fd8365f09c311b5f10df1d4060a2c9672eb2b6991e6c59f",
+      "public_key": "037dd8e1c17847986a06d35bf8ae302d6a9208773057e57ff787575ce2371c630a",
+      "author": "7dd8e1c17847986a06d35bf8ae302d6a9208773057e57ff787575ce2371c630a"
+    }
+  ],
+  "active_slot": 1,
+  "names": [
+    "main",
+    "reporter"
+  ],
+  "positive": "valid.vault",
+  "negative": [
+    "bad-tag",
+    "trailing",
+    "unbounded-kdf",
+    "seed-wrap-mismatch",
+    "duplicate-slot",
+    "duplicate-name"
+  ],
+  "sha256": {
+    "bad-tag.vault": "114cf15f510897d3905bc42d3616a52c014ec208457a426c8e985eceda5e8ea2",
+    "duplicate-name.vault": "8274ea870f6454a648c8852b528009ff6972aba48dfc02ddb763c707888e6c48",
+    "duplicate-slot.vault": "497d0ca6fa481f87dc068f99de361a9ac018508b89f20faf99aae6df4124570c",
+    "seed-wrap-mismatch.vault": "ff7afd5208f5388d40e0de23187edb8f56f274c0d83e38fc17bf4a22c700571a",
+    "trailing.vault": "9ba845e26989e72d824890117acd543194e797e1b1bc02ff0e131dd9a415b610",
+    "unbounded-kdf.vault": "fa3d420f024975828eefde75ea95c8d0e0c6e5575e57eee96d47d5392dc0b795",
+    "valid.vault": "3772bb3dcdb5d6cd9b79e43f2ff0379774ed4de99f79bcc7a99d91bdece53807"
+  }
+}

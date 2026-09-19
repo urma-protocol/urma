@@ -1,0 +1,26 @@
+[package]
+name = "urma"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "0BSD"
+description = "URMA V0 private objects and signed public records"
+
+[dependencies]
+bitcoin = { version = "0.32", features = ["rand-std"] }
+bitcoincore-rpc = "0.19"
+hex = "0.4"
+minreq = { version = "2.14", features = ["https-rustls"] }
+rand = "0.8"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tempfile = "3"
+url = "2"
+zeroize = "1"
+tracing = "0.1"
+
+urma-core = { path = "../urma-core" }
+urma-chain = { path = "../urma-chain" }
+urma-wallet = { path = "../urma-wallet" }
+urma-identity = { path = "../urma-identity" }

@@ -1,0 +1,17 @@
+[package]
+name = "urma-workflows"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+bitcoin = "0.32"
+urma = { path = "../urma" }
+urma-core = { path = "../urma-core" }
+urma-chain = { path = "../urma-chain" }
+urma-identity = { path = "../urma-identity" }
+rand = "0.8"
+zeroize = "1"
+urma-wallet = { path = "../urma-wallet" }
+hex = "0.4"

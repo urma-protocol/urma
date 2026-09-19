@@ -1,0 +1,18 @@
+[package]
+name = "urma-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+license = "0BSD"
+description = "Canonical URMA V0 codecs, crypto and proof validation without I/O"
+
+[dependencies]
+bitcoin = { version = "0.32", default-features = false, features = ["std"] }
+aes = "0.8"
+ctr = "0.9"
+hmac = "0.12"
+hex = "0.4"
+hkdf = "0.12"
+rand = { version = "0.8", default-features = false }
+sha2 = "0.10"
+zeroize = "1"

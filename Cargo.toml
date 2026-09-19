@@ -1,0 +1,19 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/urma",
+    "crates/urma-core",
+    "crates/urma-chain",
+    "crates/urma-identity",
+    "crates/urma-wallet",
+    "crates/urma-workflows",
+    "crates/urma-profiles",
+    "crates/urma-cli",
+]
+exclude = ["android/jni", "wire", "faucet", "alibi-crate"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "0BSD"
+publish = false
