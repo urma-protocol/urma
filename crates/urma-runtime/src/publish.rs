@@ -36,24 +36,44 @@ pub(crate) fn store(path: &Path, report: &PublishReport) -> Result<(), Error> {
     Ok(())
 }
 
-fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
+fn preflight(node: &Node, raw: &str) -> Result<String, Error> {
+    if node.is_public() {
+        return Ok(String::new());
+    }
     let acceptance = node.call("testmempoolaccept", &[json!([raw])])?;
     let result = acceptance
         .as_array()
         .and_then(|entries| entries.first())
         .context("missing mempool acceptance")?;
-    if result["allowed"] != true {
-        return Ok(result["reject-reason"]
-            .as_str()
-            .context("mempool policy rejected transaction without reason")?
-            .to_owned());
+    if result["allowed"] == true {
+        return Ok(String::new());
     }
-    let result = node.call("sendrawtransaction", &[json!(raw)])?;
+    Ok(result["reject-reason"]
+        .as_str()
+        .context("mempool policy rejected transaction without reason")?
+        .to_owned())
+}
+
+fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
+    let reason = preflight(node, raw)?;
+    if !reason.is_empty() {
+        return Ok(reason);
+    }
     let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
-    ensure!(
-        result == json!(transaction.compute_txid()),
-        "broadcast RPC returned unexpected TXID"
-    );
+    let txid = transaction.compute_txid();
+    match node.call("sendrawtransaction", &[json!(raw)]) {
+        Ok(result) => ensure!(
+            result == json!(txid),
+            "broadcast RPC returned unexpected TXID"
+        ),
+        Err(error) => {
+            tracing::warn!(txid = %txid, "broadcast reply unavailable; reconciling exact signed transaction");
+            match node.presence(txid)? {
+                Presence::Missing => return Err(error),
+                Presence::Mempool | Presence::Confirmed { .. } => {}
+            }
+        }
+    }
     Ok(String::new())
 }
 
