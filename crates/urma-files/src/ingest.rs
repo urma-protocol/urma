@@ -39,6 +39,14 @@ pub fn ingest(secret: &RecoverySecret, request: IngestRequest<'_>) -> Result<Inv
     ensure!(!request.inputs.is_empty(), "at least one input required");
     let sources = scan(request.inputs)?;
     ensure!(
+        sources
+            .iter()
+            .filter(|source| !source.directory && source.bytes != 0)
+            .count()
+            < urma::config::Limits::OBJECTS,
+        "collection exceeds shared recovery object capacity including catalog"
+    );
+    ensure!(
         !request.output.try_exists()?,
         "output must be a new directory"
     );
