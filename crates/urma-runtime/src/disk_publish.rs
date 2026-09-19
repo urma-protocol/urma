@@ -17,6 +17,7 @@ pub fn publish(
     approved_id: &str,
     journal: &Path,
 ) -> Result<PublishReport, Error> {
+    plan.validate()?;
     let id = plan.id()?;
     ensure!(
         approved_id == id,

@@ -90,7 +90,6 @@ impl DiskPlan {
     }
 
     pub fn id(&self) -> Result<String, Error> {
-        self.validate()?;
         Ok(hex::encode(Sha256::digest(serde_json::to_vec(self)?)))
     }
 
