@@ -70,6 +70,7 @@ pub fn publish(
     );
     node.verify_network()?;
     node.require_txindex()?;
+    let anchor = node.tip()?;
     ensure!(
         node.chain().genesis()? == plan.chain.genesis()?,
         "publication network mismatch"
@@ -113,6 +114,10 @@ pub fn publish(
         }
         store(journal, &report)?;
     }
+    ensure!(
+        node.block_hash(anchor.0)?.to_string() == anchor.1,
+        "chain changed during publication reconciliation; resume against the new chain"
+    );
     report.complete = true;
     report.confirmed = true;
     store(journal, &report)?;
