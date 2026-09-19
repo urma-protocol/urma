@@ -58,7 +58,11 @@ pub fn ingest(secret: &RecoverySecret, request: IngestRequest<'_>) -> Result<Inv
         .into(),
         version: 1,
         collection: request.collection.into(),
-        entries: sources.iter().map(preflight_entry).collect(),
+        entries: sources
+            .iter()
+            .enumerate()
+            .map(|(index, source)| preflight_entry(index, source))
+            .collect(),
         capture: request.capture,
     };
     catalog.validate()?;
@@ -96,7 +100,7 @@ pub fn ingest(secret: &RecoverySecret, request: IngestRequest<'_>) -> Result<Inv
     Ok(inventory)
 }
 
-fn preflight_entry(source: &SourceEntry) -> Entry {
+fn preflight_entry(index: usize, source: &SourceEntry) -> Entry {
     let content = if source.directory {
         Content::Directory
     } else if source.bytes == 0 {
@@ -106,7 +110,7 @@ fn preflight_entry(source: &SourceEntry) -> Entry {
     } else {
         Content::File {
             object: ObjectRef {
-                id: "0".repeat(64),
+                id: format!("{index:064x}"),
                 bytes: source.bytes,
                 sha256: "0".repeat(64),
             },
