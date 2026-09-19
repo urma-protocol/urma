@@ -1,6 +1,6 @@
 use crate::{
     endpoints::{self, PublicEndpoint},
-    remote::Source,
+    transport::Pool,
 };
 use bitcoin::{Transaction, Txid, consensus::deserialize};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
@@ -26,7 +26,7 @@ pub struct Node {
 
 enum Backend {
     Local(Client),
-    Public(Vec<Source>),
+    Public(Pool),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -82,20 +82,17 @@ impl Node {
         chain: Chain,
         endpoints: Vec<PublicEndpoint>,
     ) -> Result<Self, Error> {
-        let sources = endpoints
-            .into_iter()
-            .map(Source::new)
-            .collect::<Result<Vec<_>, _>>()?;
-        ensure!(
-            !sources.is_empty(),
-            "this network needs a local node configured in URMA config"
-        );
+        let sources = Pool::new(endpoints)?;
         let node = Self {
             chain,
             backend: Backend::Public(sources),
         };
         node.verify_network()?;
         Ok(node)
+    }
+
+    pub fn is_public(&self) -> bool {
+        matches!(self.backend, Backend::Public(_))
     }
 
     pub fn inclusion_evidence(&self) -> &'static str {
@@ -145,30 +142,7 @@ impl Node {
     pub fn call(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
         match &self.backend {
             Backend::Local(client) => Ok(client.call(method, args)?),
-            Backend::Public(sources) => {
-                let mut failures = Vec::new();
-                let mut missing = false;
-                for source in sources {
-                    match source.call(self.chain, method, args) {
-                        Ok(value) => return Ok(value),
-                        Err(error) => {
-                            missing |= matches!(error, Error::Missing(_));
-                            tracing::warn!(method, "public source unavailable; trying next source");
-                            failures.push(error.to_string());
-                        }
-                    }
-                }
-                let message = format!(
-                    "{} on {:?}. {}. Check your connection and selected network (--testnet for test data); retry or configure a local node.",
-                    method,
-                    self.chain,
-                    failures.join("; ")
-                );
-                if missing {
-                    return Err(Error::Missing(message));
-                }
-                Err(Error::Unsupported(message))
-            }
+            Backend::Public(sources) => sources.call(self.chain, method, args),
         }
     }
 
