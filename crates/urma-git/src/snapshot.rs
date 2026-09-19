@@ -48,13 +48,7 @@ fn freeze(repo: &Path, destination: &Path, limits: &Limits) -> Result<Descriptor
     if !branch.starts_with(b"refs/heads/") {
         return Err(Error::Invalid("HEAD must name a branch".into()));
     }
-    let head = String::from_utf8(git::output(
-        &repo,
-        &["rev-parse", "--verify", "HEAD^{commit}"],
-        128,
-    )?)?
-    .trim()
-    .to_owned();
+    let head = git::branch_head(&repo, &branch)?;
     let format = String::from_utf8(git::output(
         &repo,
         &["rev-parse", "--show-object-format"],

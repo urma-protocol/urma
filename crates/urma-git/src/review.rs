@@ -42,7 +42,7 @@ fn rules() -> Result<Vec<(&'static str, Regex)>, Error> {
         (
             "credential-assignment",
             Regex::new(
-                r#"(?i)(?:password|secret|api_key|access_token)[\x20\t]*[:=][\x20\t]*[\"']?[A-Za-z0-9/+=_-]{16,255}"#,
+                r#"(?i)(?:password|secret|api_key|access_token)[\x20\t]{0,32}[:=][\x20\t]{0,32}[\"']?[A-Za-z0-9/+=_-]{16,255}"#,
             )?,
         ),
     ])
