@@ -141,3 +141,31 @@ fn advance(node: &Node, raw: &str, report: &mut PublishReport) -> Result<bool, E
     });
     Ok(true)
 }
+
+pub fn ensure_journal_distinct(plan_path: &Path, journal_path: &Path) -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt;
+    let plan = std::fs::canonicalize(plan_path)?;
+    if journal_path.try_exists()? {
+        let journal = std::fs::canonicalize(journal_path)?;
+        ensure!(
+            plan != journal,
+            "journal must differ from immutable plan input"
+        );
+        let input = std::fs::metadata(&plan)?;
+        let output = std::fs::metadata(&journal)?;
+        ensure!(
+            input.dev() != output.dev() || input.ino() != output.ino(),
+            "journal must not be a hard link to immutable plan input"
+        );
+    } else {
+        let parent = std::fs::canonicalize(urma::config::output_parent(journal_path))?;
+        let name = journal_path
+            .file_name()
+            .context("journal filename missing")?;
+        ensure!(
+            plan != parent.join(name),
+            "journal must differ from immutable plan input"
+        );
+    }
+    Ok(())
+}
