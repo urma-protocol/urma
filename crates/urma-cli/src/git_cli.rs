@@ -1,6 +1,6 @@
 use crate::{
     approve_publication, config, detail, git_publish_cli, key_cli::VaultAccess, node_cli::NodeArgs,
-    print_report, progress,
+    print_report, progress, stage,
 };
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -129,24 +129,58 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
         urma_git::config::PublicationName(args.name),
     )
     .map_err(boundary)?;
-    let node = args.node.connect()?;
-    let vault = args.access.open()?;
+    progress(format!(
+        "Preparing {name} on {}. No broadcast.",
+        args.node.chain()?.label()
+    ));
+    detail(
+        1,
+        format!(
+            "Plan directory: {}; fee ceiling: {} base units; rate: {} base units/vB.",
+            args.output.display(),
+            args.max_fee,
+            args.fee_rate
+        ),
+    );
+    let node = stage("Connecting to the selected network...", || {
+        args.node.connect()
+    })?;
+    let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;
-    let report = workflows::prepare_named(
-        &node,
-        &signer,
-        &args.repo,
-        &args.output,
-        &args.resources.load()?,
-        PlanLimits {
-            fee_rate: args.fee_rate,
-            max_fee: args.max_fee,
-            max_records: urma_runtime::disk_plan::DiskPlan::MAX_RECORDS,
-        },
-        &name,
-    )
+    let report = stage("Preparing and validating the Git publication...", || {
+        workflows::prepare_named(
+            &node,
+            &signer,
+            &args.repo,
+            &args.output,
+            &args.resources.load()?,
+            PlanLimits {
+                fee_rate: args.fee_rate,
+                max_fee: args.max_fee,
+                max_records: urma_runtime::disk_plan::DiskPlan::MAX_RECORDS,
+            },
+            &name,
+        )
+    })
     .map_err(boundary)?;
-    Ok(serde_json::to_value(report)?)
+    match config::output()? {
+        config::Output::Json => Ok(serde_json::to_value(report)?),
+        config::Output::Human => {
+            progress(format!(
+                "Plan ready: {} transactions; fee {} base units; no broadcast.",
+                report.transactions, report.total_fee
+            ));
+            progress(format!(
+                "Saved in {}. Review the content before publishing.",
+                args.output.display()
+            ));
+            detail(
+                1,
+                format!("Plan: {}; root: {}", report.plan_id, report.root_txid),
+            );
+            Ok(Value::Null)
+        }
+    }
 }
 
 fn resume(args: ResumeArgs) -> Result<Value, Error> {

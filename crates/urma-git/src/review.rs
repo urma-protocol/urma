@@ -129,6 +129,9 @@ pub fn scan(
         }
         scan_reader(&mut file, &object.oid, &mut report)?;
         report.objects += 1;
+        if report.objects.is_multiple_of(128) {
+            tracing::debug!(target: "urma_progress", objects = report.objects, bytes = report.bytes, "Scanning snapshot objects");
+        }
         std::fs::remove_file(path)?;
     }
     report.complete = true;

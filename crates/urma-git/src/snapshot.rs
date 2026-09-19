@@ -66,6 +66,7 @@ fn freeze(
         "sha256" => 2,
         other => return Err(Error::Invalid(format!("Git object format {other}"))),
     };
+    tracing::info!(target: "urma_progress", "Inspecting HEAD object inventory...");
     let inventory = inventory::inspect(&repo, &head, limits)?;
     create_private_directory(destination)?;
     let scratch = tempfile::tempdir_in(destination)?;
@@ -75,6 +76,7 @@ fn freeze(
         writeln!(list, "{}", object.oid)?;
     }
     list.sync_all()?;
+    tracing::info!(target: "urma_progress", objects = inventory.objects.len(), "Creating native Git PACK...");
     let pack_path = destination.join("snapshot.pack");
     git::run(
         &repo,
@@ -91,6 +93,7 @@ fn freeze(
     )?;
     let mut pack = File::open(&pack_path)?;
     let pack_length = pack.metadata()?.len();
+    tracing::info!(target: "urma_progress", bytes = pack_length, "Git PACK created");
     if pack_length > limits.max_pack_bytes {
         return Err(Error::Capacity("native PACK bytes".into()));
     }
@@ -127,7 +130,9 @@ pub fn prepare_named(
     let descriptor = freeze(repo, destination, limits, name)?;
     let scratch = tempfile::tempdir_in(destination)?;
     let payload_path = destination.join("object.bin");
+    tracing::info!(target: "urma_progress", "Validating PACK and committed object closure...");
     let verified = validate(&payload_path, scratch.path(), limits)?;
+    tracing::info!(target: "urma_progress", "Scanning public snapshot for possible secrets...");
     let scan = review::scan(
         &verified.repository,
         &verified.inventory,

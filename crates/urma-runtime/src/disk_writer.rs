@@ -84,6 +84,7 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
         let mut hash = Sha256::new();
         let mut references = tempfile::tempfile_in(self.directory)?;
         for index in 0..geometry.parts() {
+            signing_progress(index, geometry.parts());
             let mut payload = vec![0; geometry.part_length(index)?];
             reader.read_exact(&mut payload)?;
             hash.update(&payload);
@@ -152,5 +153,11 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
         File::open(self.directory)?.sync_all()?;
         plan.validate()?;
         Ok(plan)
+    }
+}
+
+fn signing_progress(index: u32, total: u32) {
+    if index.is_multiple_of(128) {
+        tracing::debug!(target: "urma_progress", signed_parts = index, total_parts = total, "Signing multipart plan");
     }
 }

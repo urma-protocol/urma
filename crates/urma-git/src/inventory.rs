@@ -195,6 +195,9 @@ fn inspect_objects(
     let mut objects = Vec::new();
     let mut total = 0_u64;
     for oid in ids {
+        if objects.len().is_multiple_of(128) {
+            tracing::debug!(target: "urma_progress", inspected = objects.len(), total = ids.len(), "Inspecting Git objects");
+        }
         let kind = String::from_utf8(git::output(repo, &["cat-file", "-t", oid], 32)?)?
             .trim()
             .to_owned();

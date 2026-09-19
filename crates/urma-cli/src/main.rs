@@ -92,6 +92,7 @@ pub(crate) fn print_report(value: Value) -> Result<(), Error> {
 fn run() -> Result<(), Error> {
     let cli = Cli::parse();
     config::set_verbosity(cli.verbosity);
+    install_progress_logging(cli.verbosity)?;
     match cli.command {
         Command::Archive { command } => print_report(files_cli::run(command)?),
         Command::Expert { command } => archive_cli::run(command),
@@ -186,4 +187,56 @@ pub(crate) fn detail(level: u8, message: String) {
     if config::verbosity() >= level {
         eprintln!("{message}");
     }
+}
+
+fn install_progress_logging(verbosity: u8) -> Result<(), Error> {
+    use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
+    let level = match verbosity {
+        0 | 1 => LevelFilter::INFO,
+        2 => LevelFilter::DEBUG,
+        _ => LevelFilter::TRACE,
+    };
+    let filter = tracing_subscriber::filter::Targets::new().with_target("urma_progress", level);
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .without_time()
+                .with_target(false)
+                .with_level(false)
+                .with_ansi(false)
+                .with_writer(std::io::stderr),
+        )
+        .try_init()
+        .map_err(|cause| Error::Io(std::io::Error::other(cause)))
+}
+
+pub(crate) fn stage<T>(label: &str, operation: impl FnOnce() -> T) -> T {
+    use std::{
+        sync::mpsc,
+        time::{Duration, Instant},
+    };
+    progress(label.to_owned());
+    let started = Instant::now();
+    let (sender, receiver) = mpsc::channel::<()>();
+    std::thread::scope(|scope| {
+        scope.spawn(move || {
+            loop {
+                match receiver.recv_timeout(Duration::from_secs(10)) {
+                    Ok(()) => break,
+                    Err(cause @ mpsc::RecvTimeoutError::Disconnected) => {
+                        tracing::warn!(reason = %cause, "Progress stage finished");
+                        break;
+                    }
+                    Err(cause @ mpsc::RecvTimeoutError::Timeout) => {
+                        tracing::warn!(reason = %cause, "Progress timer tick");
+                        eprintln!("{label} ({}s elapsed)", started.elapsed().as_secs());
+                    }
+                }
+            }
+        });
+        let result = operation();
+        drop(sender);
+        result
+    })
 }

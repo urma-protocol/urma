@@ -76,6 +76,7 @@ pub fn prepare_snapshot(
         serde_json::from_reader(File::open(directory.join("snapshot.json"))?)?;
     let mut payload = File::open(directory.join("object.bin"))?;
     let length = payload.metadata()?.len();
+    tracing::info!(target: "urma_progress", "Selecting funding and signing the immutable publication plan...");
     let publication = DiskPlan::prepare_multipart(
         node,
         signer,
@@ -85,6 +86,7 @@ pub fn prepare_snapshot(
         budget,
         &directory.join("publication"),
     )?;
+    tracing::info!(target: "urma_progress", "Verifying and freezing signed plan artifacts...");
     let hash = GitPlan::freeze(directory, &publication, limits)?;
     Ok(PreparedReport {
         plan_id: hash,

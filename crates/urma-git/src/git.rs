@@ -54,6 +54,7 @@ pub fn run(repo: &Path, args: &[&OsStr], input: &Path, output: &Path) -> Result<
             .parent()
             .ok_or_else(|| Error::Invalid("worker output parent".into()))?,
     )?;
+    tracing::trace!(target: "urma_progress", operation = ?args.first(), "Running Git worker");
     let status = command(repo)
         .args(args)
         .stdin(File::open(input)?)
@@ -77,6 +78,7 @@ pub fn output(repo: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, Error> 
 fn output_os(repo: &Path, args: &[&OsStr], limit: u64) -> Result<Vec<u8>, Error> {
     let mut stdout = tempfile::tempfile_in(repo)?;
     let mut stderr = tempfile::tempfile_in(repo)?;
+    tracing::trace!(target: "urma_progress", operation = ?args.first(), "Running Git worker");
     let status = command(repo)
         .args(args)
         .stdin(Stdio::null())

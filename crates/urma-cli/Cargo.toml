@@ -27,6 +27,7 @@ tempfile = "3"
 url = "2"
 zeroize = "1"
 tracing = "0.1"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
 
 urma = { path = "../urma" }
 urma-core = { path = "../urma-core" }
