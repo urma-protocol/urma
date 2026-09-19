@@ -67,6 +67,11 @@ pub fn run(repo: &Path, args: &[&OsStr], input: &Path, output: &Path) -> Result<
 }
 
 pub fn output(repo: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, Error> {
+    let args = args.iter().map(OsStr::new).collect::<Vec<_>>();
+    output_os(repo, &args, limit)
+}
+
+fn output_os(repo: &Path, args: &[&OsStr], limit: u64) -> Result<Vec<u8>, Error> {
     let mut stdout = tempfile::tempfile_in(repo)?;
     let mut stderr = tempfile::tempfile_in(repo)?;
     let status = command(repo)
@@ -122,4 +127,21 @@ pub fn initialize(path: &Path, format: &str) -> Result<(), Error> {
     let mut attributes = File::create(path.join(".git/info/attributes"))?;
     attributes.write_all(b"* -text -eol -ident -filter -working-tree-encoding\n")?;
     Ok(())
+}
+
+pub fn branch_head(repo: &Path, branch: &[u8]) -> Result<String, Error> {
+    use std::os::unix::ffi::OsStringExt;
+    let mut revision = branch.to_vec();
+    revision.extend_from_slice(b"^{commit}");
+    let revision = OsString::from_vec(revision);
+    let bytes = output_os(
+        repo,
+        &[
+            "rev-parse".as_ref(),
+            "--verify".as_ref(),
+            revision.as_os_str(),
+        ],
+        128,
+    )?;
+    Ok(String::from_utf8(bytes)?.trim().to_owned())
 }
