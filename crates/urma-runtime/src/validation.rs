@@ -161,6 +161,10 @@ impl Validation {
         Ok(parsed.record)
     }
 
+    pub(crate) fn last_txid(&self) -> Result<bitcoin::Txid, Error> {
+        Ok(self.last.parse()?)
+    }
+
     pub(crate) fn finish(&self, total_fee: u64, root_txid: &str) -> Result<(), Error> {
         ensure!(
             self.total == total_fee && self.last == root_txid,

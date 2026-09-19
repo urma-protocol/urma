@@ -116,6 +116,11 @@ impl DiskPlan {
         let mut index = File::open(self.directory.join("index.bin"))?;
         let mut records = File::open(self.directory.join("records.bin"))?;
         ensure!(
+            records.metadata()?.len()
+                <= u64::from(self.record_count) * u64::try_from(Self::MAX_PAIR_BYTES)?,
+            "disk plan exceeds bounded record capacity"
+        );
+        ensure!(
             index.metadata()?.len() == u64::from(self.record_count) * 12,
             "invalid disk plan index length"
         );
@@ -131,7 +136,7 @@ impl DiskPlan {
             ensure!(actual == offset, "noncanonical disk plan offset");
             let bytes =
                 state.append(&read_pair(&mut records, length)?, self.chain, &self.author)?;
-            order.append(&bytes)?;
+            order.append(&bytes, state.last_txid()?)?;
             offset = offset
                 .checked_add(u64::from(length))
                 .context("disk plan offset overflow")?;
