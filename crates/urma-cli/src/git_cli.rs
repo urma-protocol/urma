@@ -124,7 +124,9 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
 fn publish(args: ResumeArgs) -> Result<Value, Error> {
     let node = args.node.connect()?;
     let report = workflows::publish(&node, &args.plan, &args.approve).map_err(boundary)?;
-    let value = serde_json::to_value(&report)?;
+    let mut value = serde_json::to_value(&report)?;
+    value["publication_plan_id"] = json!(report.plan_id);
+    value["plan_id"] = json!(args.approve);
     if !report.complete {
         print_json(value)?;
         return Err(Error::Missing(format!(
