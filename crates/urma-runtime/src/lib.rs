@@ -13,3 +13,4 @@ mod validation;
 pub mod endpoints;
 mod esplora;
 mod remote;
+mod transport;
