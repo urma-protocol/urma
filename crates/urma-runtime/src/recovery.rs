@@ -1,6 +1,6 @@
 use crate::node::{Node, Presence};
 use bitcoin::{Transaction, Txid, consensus::serialize};
-use std::{collections::BTreeMap, os::unix::fs::DirBuilderExt, path::Path};
+use std::{collections::BTreeMap, fs::File, io::Write, os::unix::fs::DirBuilderExt, path::Path};
 use urma::{
     error::{Context, Error, ensure},
     multipart::{
@@ -24,21 +24,35 @@ impl Retention<'_> {
                     .join("tx")
                     .join(format!("{}.bin", transaction.compute_txid()));
                 let bytes = serialize(transaction);
-                if path.try_exists()? {
-                    ensure!(
-                        std::fs::symlink_metadata(&path)?.is_file(),
-                        "proof transaction must be a regular file"
-                    );
-                    ensure!(
-                        urma::storage::read_bounded(&path, 4 * 1024 * 1024)? == bytes,
-                        "retained transaction bytes disagree"
-                    );
-                    return Ok(());
-                }
-                urma::storage::write_new(&path, &bytes)
+                retain_transaction(directory, &path, &bytes)
             }
         }
     }
+}
+
+fn retain_transaction(directory: &Path, path: &Path, bytes: &[u8]) -> Result<(), Error> {
+    let tx_directory = directory.join("tx");
+    let mut temporary = tempfile::NamedTempFile::new_in(&tx_directory)?;
+    temporary.write_all(bytes)?;
+    temporary.flush()?;
+    temporary.as_file().sync_all()?;
+    match temporary.persist_noclobber(path) {
+        Ok(file) => file.sync_all()?,
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            tracing::warn!(error = %error.error, "concurrent proof retention; checking existing transaction");
+            ensure!(
+                std::fs::symlink_metadata(path)?.is_file(),
+                "proof transaction must be a regular file"
+            );
+            ensure!(
+                urma::storage::read_bounded(path, 4 * 1024 * 1024)? == bytes,
+                "retained transaction bytes disagree"
+            );
+        }
+        Err(error) => return Err(Error::Io(error.error)),
+    }
+    File::open(tx_directory)?.sync_all()?;
+    Ok(())
 }
 
 pub fn verified_record(node: &Node, txid: Txid) -> Result<VerifiedRecord, Error> {
@@ -114,7 +128,10 @@ impl MultipartSource for Source<'_> {
                 let result = match worker.join() {
                     Ok(result) => result,
                     Err(payload) => {
-                        panic!("multipart fetch worker panicked ({:?})", payload.type_id())
+                        tracing::warn!(payload_type = ?payload.type_id(), "multipart fetch worker panicked");
+                        Err(Error::Io(std::io::Error::other(
+                            "multipart fetch worker panicked",
+                        )))
                     }
                 };
                 self.pending.insert(txid, result);
