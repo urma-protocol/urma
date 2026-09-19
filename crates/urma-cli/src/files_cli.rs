@@ -201,7 +201,7 @@ pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
 }
 
 pub(crate) fn publish(args: PublishArgs) -> Result<Value, Error> {
-    ensure!(args.plan != args.journal, "journal must not overwrite plan");
+    urma_runtime::publish::ensure_journal_distinct(&args.plan, &args.journal)?;
     let plan = urma_runtime::plan::PublicationPlan::load(&args.plan)?;
     let report =
         urma_runtime::publish::publish(&args.node.connect()?, &plan, &args.approve, &args.journal)?;
