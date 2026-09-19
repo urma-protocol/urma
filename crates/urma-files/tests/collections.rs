@@ -97,7 +97,10 @@ fn archive_roundtrip_independent_objects_and_partial_recovery() {
     let partial =
         recover::recover(source, &inventory.catalog, &lab.path().join("partial")).unwrap();
     assert!(!partial.complete);
-    assert_eq!(partial.missing_objects, [member.id.clone()]);
+    assert_eq!(
+        partial.missing_objects.as_slice(),
+        std::slice::from_ref(&member.id)
+    );
     assert!(recover::recover(source, &inventory.catalog, &output).is_err());
     assert!(safety::validate_path("../escape").is_err());
     assert!(safety::validate_path("A/CON.txt").is_err());
@@ -129,7 +132,7 @@ fn capture_relationships_preserve_original_and_reject_symlinks() {
     let inventory = ingest(
         &secret,
         IngestRequest {
-            inputs: &[input.clone()],
+            inputs: std::slice::from_ref(&input),
             output: &bundle,
             collection: "Capture session",
             capture: session.clone(),

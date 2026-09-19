@@ -137,16 +137,12 @@ fn validate_mime(mime: &str) -> Result<(), Error> {
 
 fn validate_parents(entries: &BTreeMap<&str, &Content>) -> Result<(), Error> {
     for path in entries.keys() {
-        let mut current = *path;
-        loop {
-            let Some((parent, _name)) = current.rsplit_once('/') else {
-                break;
-            };
+        for (position, _separator) in path.match_indices('/') {
+            let parent = &path[..position];
             ensure!(
                 matches!(entries.get(parent), Some(Content::Directory)),
                 "missing or non-directory parent"
             );
-            current = parent;
         }
     }
     Ok(())
