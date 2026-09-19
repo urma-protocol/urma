@@ -82,7 +82,7 @@ fn signed_publication_restart_reorg_and_recovery() {
         .unwrap();
     let available_before = node.available_utxos(&signer).unwrap().len();
     assert_eq!(available_before, 3);
-    let payload = vec![77; 70_000];
+    let payload = vec![77; urma_core::multipart::Geometry::DATA_BYTES * 2 + 1];
     let plan = prepare_multipart(
         &node,
         &signer,
@@ -141,7 +141,7 @@ fn signed_publication_restart_reorg_and_recovery() {
         &fresh,
         root_txid,
         urma::multipart::RecoveryLimits {
-            max_payload_bytes: 100_000,
+            max_payload_bytes: payload.len() as u64,
             max_nodes: 10,
         },
         directory.path(),
@@ -159,7 +159,7 @@ fn signed_publication_restart_reorg_and_recovery() {
             &fresh,
             root_txid,
             urma::multipart::RecoveryLimits {
-                max_payload_bytes: 100_000,
+                max_payload_bytes: payload.len() as u64,
                 max_nodes: 10
             },
             directory.path()

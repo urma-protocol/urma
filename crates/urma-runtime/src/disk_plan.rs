@@ -38,7 +38,7 @@ pub struct DiskPlan {
 
 impl DiskPlan {
     pub const MAX_RECORDS: u32 = Geometry::MAX_NODES;
-    pub(crate) const MAX_PAIR_BYTES: usize = 512 * 1024;
+    pub(crate) const MAX_PAIR_BYTES: usize = 2 * 1024 * 1024;
 
     pub fn prepare_multipart(
         node: &Node,

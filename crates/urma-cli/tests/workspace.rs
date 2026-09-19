@@ -101,7 +101,7 @@ fn nested_cli_help_and_missing_arguments_are_honest() {
     }
     for args in [
         vec!["git", "clone", "not-a-txid"],
-        vec!["git", "publish", "missing-plan"],
+        vec!["git", "publish", "--plan"],
         vec!["git", "resume", "missing-plan"],
         vec!["capture", "ingest", "missing-image"],
         vec!["capture", "recover", "missing-directory"],

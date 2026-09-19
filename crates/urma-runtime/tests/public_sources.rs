@@ -8,9 +8,9 @@ const ROOT: &str = "a84ed0fe81ac9addead54fe04b3909165cdecd3b7f177251eeb416d4bcb4
 
 #[test]
 fn public_sources_are_https_and_never_accept_credentials() {
-    for chain in [Chain::LitecoinMainnet, Chain::LitecoinTestnet] {
+    for (chain, count) in [(Chain::LitecoinMainnet, 2), (Chain::LitecoinTestnet, 3)] {
         let sources = endpoints::defaults(chain);
-        assert_eq!(sources.len(), 2);
+        assert_eq!(sources.len(), count);
         for source in sources {
             source.validate().unwrap();
         }

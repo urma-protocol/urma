@@ -1,6 +1,6 @@
 use crate::{
     error::{Error, ensure},
-    format::{RecordKind, Urma},
+    format::RecordKind,
 };
 use bitcoin::{Txid, hashes::Hash};
 use sha2::{Digest, Sha256};
@@ -17,11 +17,12 @@ pub struct Geometry {
 }
 
 impl Geometry {
-    pub const DATA_BYTES: usize = 32_756;
+    pub const RECORD_BYTES: usize = 256 * 1024;
+    pub const DATA_BYTES: usize = Self::RECORD_BYTES - 12;
     pub const FANOUT: u16 = 511;
-    pub const MAX_PARTS: u32 = 261_121;
+    pub const MAX_PARTS: u32 = 32_630;
     pub const MAX_OBJECT_BYTES: u64 = 8_553_279_476;
-    pub const MAX_NODES: u32 = 261_633;
+    pub const MAX_NODES: u32 = 32_695;
 
     pub fn new(length: u64) -> Result<Self, Error> {
         ensure!(
@@ -184,7 +185,7 @@ impl MultipartRecord {
     pub fn decode(bytes: &[u8]) -> Result<Self, Error> {
         let kind = RecordKind::parse(bytes)?;
         ensure!(
-            bytes.len() <= Urma::MAX_PUBLIC_BYTES,
+            bytes.len() <= Geometry::RECORD_BYTES,
             "multipart record exceeds cap"
         );
         match kind {

@@ -126,6 +126,7 @@ impl Validation {
             "commit does not spend declared funding"
         );
         let parsed = urma_core::envelope::verify_reveal(&reveal, &commit)?;
+        verify_policy(&commit, &reveal, chain)?;
         ensure!(
             parsed.author.to_string() == author,
             "record author mismatch"
@@ -172,4 +173,20 @@ impl Validation {
         );
         Ok(())
     }
+}
+
+fn verify_policy(commit: &Transaction, reveal: &Transaction, chain: Chain) -> Result<(), Error> {
+    ensure!(
+        commit.weight().to_wu() <= urma::config::STANDARD_TX_WEIGHT
+            && reveal.weight().to_wu() <= urma::config::STANDARD_TX_WEIGHT,
+        "publication exceeds standard transaction weight"
+    );
+    let retained = urma::config::publication_return(chain);
+    ensure!(
+        commit.output[0].value.to_sat() >= retained
+            && commit.output[1].value.to_sat() >= retained
+            && reveal.output[0].value.to_sat() >= retained,
+        "publication output below configured dust-safe retained value"
+    );
+    Ok(())
 }

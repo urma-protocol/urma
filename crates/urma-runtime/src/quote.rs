@@ -7,11 +7,20 @@ use urma_identity::identity::IdentitySigner;
 
 pub struct Quote {
     pub records: u32,
+    pub payload_bytes: u64,
+    pub parts: u32,
+    pub leaves: u16,
+    pub retained_value: u64,
     pub maximum_fee: u64,
     pub funding: u64,
 }
 
-pub fn multipart(length: u64, signer: &impl IdentitySigner, rate: u64) -> Result<Quote, Error> {
+pub fn multipart(
+    length: u64,
+    signer: &impl IdentitySigner,
+    rate: u64,
+    chain: urma_chain::observation::Chain,
+) -> Result<Quote, Error> {
     let geometry = Geometry::new(length)?;
     let public = signer.public_key().inner.x_only_public_key().0;
     let script = urma_wallet::signing::script(signer)?;
@@ -30,10 +39,14 @@ pub fn multipart(length: u64, signer: &impl IdentitySigner, rate: u64) -> Result
         total = total.checked_add(fee).context("quote overflow")?;
     }
     let funding = total
-        .checked_add(u64::from(geometry.nodes()) * 1000 + 1000)
+        .checked_add((u64::from(geometry.nodes()) + 1) * urma::config::publication_return(chain))
         .context("quote funding overflow")?;
     Ok(Quote {
         records: geometry.nodes(),
+        payload_bytes: length,
+        parts: geometry.parts(),
+        leaves: geometry.leaves(),
+        retained_value: urma::config::publication_return(chain),
         maximum_fee: total,
         funding,
     })

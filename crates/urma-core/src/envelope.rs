@@ -2,7 +2,7 @@ use crate::error::{Context, Error, bail, ensure};
 use crate::{
     container,
     format::{PublicRecord, RecordKind, Urma},
-    multipart::MultipartRecord,
+    multipart::{Geometry, MultipartRecord},
 };
 use bitcoin::{
     ScriptBuf, Transaction, TxOut, Witness, XOnlyPublicKey,
@@ -117,7 +117,9 @@ fn extract_envelope(witness: &Witness) -> Result<ParsedEnvelope, Error> {
         "invalid signature or control length"
     );
     ensure!(
-        items[1].len() >= 42 && items[1].len() <= Urma::PRIVATE_RECORD_BYTES + 1024,
+        items[1].len() >= 42
+            && items[1].len()
+                <= Geometry::RECORD_BYTES + 3 * Geometry::RECORD_BYTES.div_ceil(520) + 42,
         "script size out of bounds"
     );
     let script = ScriptBuf::from_bytes(items[1].to_vec());
@@ -149,10 +151,7 @@ fn extract_envelope(witness: &Witness) -> Result<ParsedEnvelope, Error> {
             Instruction::Op(opcode) if opcode.to_u8() == 0x4f => record.push(0x81),
             instruction => bail!("invalid envelope instruction {instruction:?}"),
         }
-        ensure!(
-            record.len() <= Urma::PRIVATE_RECORD_BYTES,
-            "record too large"
-        );
+        ensure!(record.len() <= Geometry::RECORD_BYTES, "record too large");
     }
     ensure!(
         record_script(&record, author)? == script,

@@ -155,7 +155,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
     })
     .map_err(boundary)?;
     let length = args.output.join("object.bin").metadata()?.len();
-    let quote = urma_runtime::quote::multipart(length, &signer, args.fee_rate)?;
+    let quote = urma_runtime::quote::multipart(length, &signer, args.fee_rate, args.node.chain()?)?;
     funding_cli::preview(node.chain(), &quote, args.max_fee);
     funding_cli::check(&node, &signer, &quote, args.max_fee)?;
     let report = stage("Signing and verifying the publication plan...", || {
@@ -172,6 +172,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
         )
     })
     .map_err(boundary)?;
+    funding_cli::preflight(&node, &args.output)?;
     drop(guard);
     match config::output()? {
         config::Output::Json => Ok(serde_json::to_value(report)?),

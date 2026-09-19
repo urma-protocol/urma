@@ -17,6 +17,18 @@ pub(crate) fn amount(value: u64) -> String {
 
 pub(crate) fn preview(chain: Chain, quote: &Quote, ceiling: u64) {
     let unit = currency(chain);
+    detail(
+        2,
+        format!(
+            "Payload: {} bytes; data: {}; leaves: {}; root: 1. Retained value: {} base units per record, plus final change.",
+            quote.payload_bytes, quote.parts, quote.leaves, quote.retained_value
+        ),
+    );
+    progress(format!(
+        "Multipart: 256 KiB maximum per record; {} records, {} transactions (commit + reveal).",
+        quote.records,
+        u64::from(quote.records) * 2
+    ));
     progress(format!(
         "Estimated network fee: {} {unit}.",
         amount(quote.maximum_fee)
@@ -91,5 +103,26 @@ pub(crate) fn check(
         return Err(Error::Missing("funding is not ready; the amounts and receiving address are shown above. Nothing was broadcast".into()));
     }
     progress("Funding is sufficient for this quote. No broadcast yet.".into());
+    Ok(())
+}
+
+pub(crate) fn preflight(node: &Node, directory: &std::path::Path) -> Result<(), Error> {
+    use urma_runtime::{
+        disk_plan::DiskPlan,
+        publish::{MempoolCheck, test_accept},
+    };
+    let plan = DiskPlan::load(&directory.join("publication"))?;
+    let first = plan.record(0)?;
+    progress(
+        "Checking the first funding transaction with testmempoolaccept (no broadcast)...".into(),
+    );
+    match test_accept(node, &first.commit)? {
+        MempoolCheck::Allowed => progress("First commit accepted by node policy. Future dependent transactions are not yet mempool-verified.".into()),
+        MempoolCheck::Rejected(reason) => return Err(Error::Invalid(format!("node mempool policy rejected first commit: {reason}; nothing was broadcast"))),
+        MempoolCheck::Unavailable(reason) => {
+            tracing::warn!(%reason, "prepare preflight unavailable");
+            progress("Mempool preflight unavailable from this endpoint; this plan has no live node acceptance proof. Nothing was broadcast.".into());
+        }
+    }
     Ok(())
 }

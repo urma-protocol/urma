@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: 0BSD
-"""Independent URMA revision 0.3 multipart known answers. No Rust/network calls."""
+"""Independent URMA revision 0.4 multipart known answers. No Rust/network calls."""
 import importlib.util
 import json
 from pathlib import Path
@@ -9,9 +9,10 @@ spec = importlib.util.spec_from_file_location('primitives', Path(__file__).with_
 v = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(v)
 v.OUT = Path(__file__).resolve().parents[1] / 'tests/vectors/multipart'
-C, F = 32756, 511
-LIMIT = C*F*F
-manifest = {'protocol': 'URMA', 'wire_version': 0, 'document_revision': '0.3',
+C, F = 262132, 511
+LIMIT = 8553279476
+MAX_PARTS = (LIMIT+C-1)//C
+manifest = {'protocol': 'URMA', 'wire_version': 0, 'document_revision': '0.4',
             'license': 'CC0-1.0', 'records': [], 'proofs': [], 'graphs': [], 'geometry': []}
 v.manifest = manifest
 
@@ -76,22 +77,23 @@ def main():
     v.OUT.mkdir(parents=True, exist_ok=True)
     refs = [v.uint(i+1,32) + v.sha(v.uint(i,4)) for i in range(F)]
     records = {
-        'data-min': data(0,b''), 'data-max': data(F*F-1,b'\xa5'*C),
+        'data-min': data(0,b''), 'data-max': data(MAX_PARTS-1,b'\xa5'*C),
         'leaf-min': leaf(0,refs[:1]), 'leaf-max': leaf(F-1,refs),
-        'root-min': root(0,v.sha(b''),refs[:1]), 'root-max': root(LIMIT,bytes(32),refs),
+        'root-min': root(0,v.sha(b''),refs[:1]), 'root-max': root(LIMIT,bytes(32),refs[:((LIMIT+C-1)//C+F-1)//F]),
     }
     for name, value in records.items():
         record(name, value)
         proof('proof-'+name, value)
     bad = {
         'data-short': records['data-min'][:-1], 'data-over': data(0, bytes(C+1)),
-        'data-index': data(F*F,b''), 'data-index-overflow': data(2**32-1,b''),
+        'data-index': data(MAX_PARTS,b''), 'data-index-overflow': data(2**32-1,b''),
         'leaf-short': records['leaf-min'][:-1], 'leaf-trailing': records['leaf-min']+b'\x00',
         'leaf-padding': records['leaf-max']+bytes(48), 'leaf-count-zero': leaf(0,[]),
         'leaf-count-over': leaf(0,refs+[refs[0]]), 'leaf-index-over': leaf(F,refs[:1]),
         'leaf-first': mutate(records['leaf-min'],12,v.uint(1,4)),
         'root-short': records['root-min'][:-1], 'root-trailing': records['root-min']+b'\x00',
         'root-header-short': records['root-min'][:63], 'root-length-over': mutate(records['root-max'],8,v.uint(LIMIT+1,8)),
+        'old-geometry-root': mutate(root(65536,bytes(32),refs[:1]),48,v.uint(3,4)),
         'root-overflow': mutate(records['root-max'],8,v.uint(2**64-1,8)),
         'root-count-zero': mutate(records['root-min'],48,bytes(4)),
         'root-count-over': mutate(records['root-max'],48,v.uint(F*F+1,4)),

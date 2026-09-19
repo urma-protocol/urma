@@ -1,6 +1,6 @@
 use crate::error::{Context, Error, ensure};
 use crate::{
-    envelope,
+    config, envelope,
     format::{PublicRecord, Urma},
     multipart::MultipartRecord,
     transport::Funding,
@@ -78,17 +78,22 @@ pub fn prepare_bytes(
     let (outpoint, previous) = funding.prevout()?;
     let (script, info) =
         envelope::build_for_author(record, author.public_key().inner.x_only_public_key().0)?;
+    let retained = config::publication_return(chain);
     let return_output = TxOut {
-        value: Amount::from_sat(1_000),
+        value: Amount::from_sat(retained),
         script_pubkey: previous.script_pubkey.clone(),
     };
     let mut reveal = transaction(OutPoint::null(), return_output.clone());
     reveal.input[0].witness = envelope::witness(&[0; 64], &script, &info)?;
+    ensure!(
+        reveal.weight().to_wu() <= config::STANDARD_TX_WEIGHT,
+        "reveal exceeds standard transaction weight"
+    );
     let reveal_fee = u64::try_from(reveal.vsize())?
         .checked_mul(fee_rate)
         .context("fee overflow")?;
     let publication_output = TxOut {
-        value: Amount::from_sat(1_000 + reveal_fee),
+        value: Amount::from_sat(retained + reveal_fee),
         script_pubkey: ScriptBuf::new_p2tr_tweaked(info.output_key()),
     };
     let mut commit = transaction(outpoint, publication_output.clone());
@@ -106,9 +111,9 @@ pub fn prepare_bytes(
     let change = previous
         .value
         .to_sat()
-        .checked_sub(total_fee + 1_000)
+        .checked_sub(total_fee + retained)
         .context("insufficient funding")?;
-    ensure!(change >= 1_000, "funding must leave native change");
+    ensure!(change >= retained, "funding must leave native change");
     commit.output[1].value = Amount::from_sat(change);
     reveal.input[0].previous_output = OutPoint {
         txid: commit.compute_txid(),

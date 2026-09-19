@@ -141,7 +141,7 @@ impl MultipartSource for Source {
 }
 fn limits() -> RecoveryLimits {
     RecoveryLimits {
-        max_payload_bytes: 64 * 1024 * 1024,
+        max_payload_bytes: 256 * 1024 * 1024,
         max_nodes: 4096,
     }
 }
@@ -357,6 +357,8 @@ fn multiple_leaves_stream_exact_bytes_and_reject_order_duplicates_and_missing() 
         .arg(graph.root.txid().to_string())
         .arg("--output")
         .arg(export.path().join("object.bin"))
+        .arg("--max-bytes")
+        .arg(limits().max_payload_bytes.to_string())
         .output()?;
     assert!(
         output.status.success(),
@@ -441,7 +443,7 @@ fn source_failures_capacity_and_invalid_candidates_do_not_poison_retries() -> Re
     );
     assert_eq!(graph.source.calls, 0);
     let limited = RecoveryLimits {
-        max_payload_bytes: 64 * 1024 * 1024,
+        max_payload_bytes: 256 * 1024 * 1024,
         max_nodes: 3,
     };
     assert_eq!(
@@ -697,5 +699,39 @@ fn detached_plan_inventory_rejects_cycles_before_io_and_does_not_claim_proofs() 
     }
     manifest.entries[0] = reference(root_id);
     assert!(ManifestInventory::new(root_id, &manifest).is_err());
+    Ok(())
+}
+
+#[test]
+fn multipart_256k_boundary_keeps_atomic_public_cap() -> Result<()> {
+    use urma::format::Urma;
+    assert_eq!(Geometry::RECORD_BYTES, 262144);
+    assert_eq!(Geometry::DATA_BYTES, 262132);
+    assert_eq!(Urma::MAX_PUBLIC_BYTES, 32768);
+    let maximum = Geometry::new(8_553_279_476)?;
+    assert_eq!(
+        (maximum.parts(), maximum.leaves(), maximum.nodes()),
+        (32630, 64, 32695)
+    );
+    assert_eq!(maximum.part_length(32629)?, 174448);
+    assert!(Geometry::new(8_553_279_477).is_err());
+    assert!(Geometry::new(Geometry::DATA_BYTES as u64 * 511 * 511).is_err());
+    let full = MultipartRecord::Data(DataPart {
+        index: 0,
+        payload: vec![0xa5; Geometry::DATA_BYTES],
+    });
+    let (record, reveal, commit) = signed(full, 3)?;
+    assert_eq!(record.record_bytes().len(), Geometry::RECORD_BYTES);
+    assert_eq!(reveal.weight().to_wu(), 264134);
+    assert_eq!(reveal.vsize(), 66034);
+    assert!(envelope::verify_reveal(&reveal, &commit).is_ok());
+    let mut oversized = record.record_bytes().to_vec();
+    oversized.push(0);
+    assert!(MultipartRecord::decode(&oversized).is_err());
+    let mut atomic = urma::format::RecordKind::Post.prefix().to_vec();
+    atomic.resize(32768, b'x');
+    assert!(PublicRecord::decode(&atomic).is_ok());
+    atomic.push(b'x');
+    assert!(PublicRecord::decode(&atomic).is_err());
     Ok(())
 }

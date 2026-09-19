@@ -106,3 +106,14 @@ pub const SOURCE_MAX_SCAN_BYTES: usize = 256 * 1024 * 1024;
 pub const BITCOIN_RETURN_SATS: u64 = 1_000;
 pub const BITCOIN_MAX_FEE_SATS: u64 = 500_000;
 pub const BITCOIN_MAX_FEE_RATE: u64 = 100;
+
+pub const STANDARD_TX_WEIGHT: u64 = 400_000;
+pub const LITECOIN_DUST_RELAY_FEE: u64 = 30_000;
+
+pub fn publication_return(chain: urma_chain::observation::Chain) -> u64 {
+    use urma_chain::observation::Chain;
+    match chain {
+        Chain::LitecoinTestnet | Chain::LitecoinMainnet => 110 * LITECOIN_DUST_RELAY_FEE / 1000,
+        Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => 1000,
+    }
+}

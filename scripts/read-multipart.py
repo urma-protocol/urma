@@ -16,7 +16,7 @@ P = 2**256-2**32-977
 N = 0xFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFEBAAEDCE6AF48A03BBFD25E8CD0364141
 G = (0x79BE667EF9DCBBAC55A06295CE870B07029BFCDB2DCE28D959F2815B16F81798,
      0x483ADA7726A3C4655DA4FBFC0E1108A8FD17B448A68554199C47D08FFB10D4B8)
-C, F, MAX = 32756, 511, 8553279476
+C, F, MAX = 262132, 511, 8553279476
 
 
 class Invalid(Exception): pass
@@ -113,7 +113,7 @@ def push(b):
 
 
 def envelope(script):
-    require(42<=len(script)<=33952,'script length')
+    require(42<=len(script)<=262144+3*((262144+519)//520)+42,'script length')
     author=script[1:33]
     require(script[:1]==b'\x20' and script[33:41]==b'\xac\x00\x63\x04URMA','script prefix')
     r=Reader(script[41:]);parts=[]
@@ -127,7 +127,7 @@ def envelope(script):
         else:raise Invalid('record push opcode')
         require(1<=len(b)<=520,'segment bounds');parts.append(b)
     r.end();record=b''.join(parts)
-    require(len(record)<=32768,'public record cap')
+    require(len(record)<=262144,'public record cap')
     canonical=push(author)+b'\xac\x00\x63'+push(b'URMA')+b''.join(push(record[i:i+520]) for i in range(0,len(record),520))+b'\x68'
     require(script==canonical,'noncanonical segmentation')
     return author,record
@@ -165,10 +165,10 @@ def geometry(length):
 
 
 def decode(b):
-    require(8<=len(b)<=32768 and b[:5]==b'URMA\x00' and b[6:8]==bytes(2),'prefix/cap')
+    require(8<=len(b)<=262144 and b[:5]==b'URMA\x00' and b[6:8]==bytes(2),'prefix/cap')
     r=Reader(b);r.take(8);kind=b[5]
     if kind==7:
-        i=r.number(4);require(i<F*F,'data index');return kind,(i,r.take(len(b)-12))
+        i=r.number(4);require(i<(MAX+C-1)//C,'data index');return kind,(i,r.take(len(b)-12))
     if kind==8:
         j=r.number(2);k=r.number(2);first=r.number(4)
         require(j<F and 1<=k<=F and first==j*F,'leaf geometry')
@@ -228,7 +228,7 @@ def read_bounded(path,limit):
 def corpus(directory):
     m=json.loads((directory/'manifest.json').read_text());proofs={p['name']:p for p in m['proofs']}
     for case in m['records']:
-        try:decode(read_bounded(directory/case['record']['file'],65536));outcome='valid'
+        try:decode(read_bounded(directory/case['record']['file'],262145));outcome='valid'
         except Invalid:outcome='invalid'
         require(outcome==case['outcome'],case['name'])
     for case in m['proofs']:

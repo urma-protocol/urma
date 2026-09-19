@@ -56,7 +56,7 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
         );
         let minimum = limits
             .max_fee
-            .checked_add(u64::from(records) * 1000 + 1000)
+            .checked_add((u64::from(records) + 1) * urma::config::publication_return(node.chain()))
             .context("funding budget overflow")?;
         let funding = node.select_funding(signer, minimum)?;
         Ok(Self {

@@ -36,28 +36,58 @@ pub(crate) fn store(path: &Path, report: &PublishReport) -> Result<(), Error> {
     Ok(())
 }
 
-fn preflight(node: &Node, raw: &str) -> Result<String, Error> {
-    if node.is_public() {
-        return Ok(String::new());
-    }
-    let acceptance = node.call("testmempoolaccept", &[json!([raw])])?;
-    let result = acceptance
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub enum MempoolCheck {
+    Allowed,
+    Rejected(String),
+    Unavailable(String),
+}
+
+pub fn test_accept(node: &Node, raw: &str) -> Result<MempoolCheck, Error> {
+    let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
+    ensure!(
+        transaction.weight().to_wu() <= urma::config::STANDARD_TX_WEIGHT,
+        "transaction exceeds standard weight"
+    );
+    let acceptance = match node.call("testmempoolaccept", &[json!([raw])]) {
+        Ok(value) => value,
+        Err(cause) if node.is_public() => {
+            tracing::warn!(%cause, "public mempool preflight unavailable");
+            return Ok(MempoolCheck::Unavailable(cause.to_string()));
+        }
+        Err(cause) => return Err(cause),
+    };
+    let rows = acceptance
         .as_array()
-        .and_then(|entries| entries.first())
         .context("missing mempool acceptance")?;
-    if result["allowed"] == true {
-        return Ok(String::new());
+    ensure!(rows.len() == 1, "incorrect mempool acceptance count");
+    let result = &rows[0];
+    ensure!(
+        result["txid"] == json!(transaction.compute_txid()),
+        "mempool preflight TXID mismatch"
+    );
+    match result["allowed"]
+        .as_bool()
+        .context("missing mempool decision")?
+    {
+        true => Ok(MempoolCheck::Allowed),
+        false => Ok(MempoolCheck::Rejected(
+            result["reject-reason"]
+                .as_str()
+                .context("mempool policy rejected transaction without reason")?
+                .to_owned(),
+        )),
     }
-    Ok(result["reject-reason"]
-        .as_str()
-        .context("mempool policy rejected transaction without reason")?
-        .to_owned())
 }
 
 fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
-    let reason = preflight(node, raw)?;
-    if !reason.is_empty() {
-        return Ok(reason);
+    match test_accept(node, raw)? {
+        MempoolCheck::Allowed => (),
+        MempoolCheck::Rejected(reason) => return Ok(reason),
+        MempoolCheck::Unavailable(reason) => {
+            tracing::warn!(%reason, "broadcast has no node mempool preflight evidence");
+            tracing::debug!(target: "urma_progress", "Endpoint does not provide testmempoolaccept; acceptance is unverified until submission.");
+        }
     }
     let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
     let txid = transaction.compute_txid();

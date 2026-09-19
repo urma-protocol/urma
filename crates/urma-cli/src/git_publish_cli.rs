@@ -61,7 +61,7 @@ fn prepare(
     let vault = args.access.open()?;
     let signer = vault.keyring().active()?;
     let length = directory.join("object.bin").metadata()?.len();
-    let quote = quote::multipart(length, &signer, args.fee_rate)?;
+    let quote = quote::multipart(length, &signer, args.fee_rate, args.node.chain()?)?;
 
     progress(format!("Local snapshot: {}", directory.display()));
     progress(format!(
@@ -100,6 +100,7 @@ fn prepare(
         },
     )
     .map_err(boundary)?;
+    funding_cli::preflight(&node, directory)?;
     drop(guard);
     Ok(report)
 }
