@@ -1,5 +1,5 @@
 use crate::{endpoints::PublicEndpoint, esplora};
-use bitcoin::{Block, Transaction, consensus::deserialize};
+use bitcoin::{Amount, Block, BlockHash, Denomination, Transaction, Txid, consensus::deserialize};
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
@@ -54,6 +54,7 @@ impl Source {
                 return Err(Error::Invalid("public source network mismatch".into()));
             }
             let tip = self.request("getblockchaininfo", &[])?;
+            validate_shape("getblockchaininfo", &tip)?;
             ensure!(
                 tip["initialblockdownload"] == false,
                 "public source is still synchronizing"
@@ -162,6 +163,12 @@ pub(crate) fn request(request: minreq::Request) -> Result<Vec<u8>, Error> {
 }
 
 fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Error> {
+    validate_shape(method, value)?;
+    if method == "getrawtransaction"
+        && args.get(1).context("missing transaction verbosity")? == &json!(true)
+    {
+        validate_confirmations(value)?;
+    }
     if method == "getrawtransaction"
         && args.get(1).context("missing transaction verbosity")? == &json!(false)
     {
@@ -194,6 +201,114 @@ fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Er
             "public source block merkle root mismatch"
         );
     }
+    Ok(())
+}
+
+fn block_hash(value: &Value) -> Result<(), Error> {
+    value
+        .as_str()
+        .context("missing public block hash")?
+        .parse::<BlockHash>()?;
+    Ok(())
+}
+
+fn validate_confirmations(value: &Value) -> Result<(), Error> {
+    let count = value["confirmations"]
+        .as_i64()
+        .context("invalid public confirmation count")?;
+    if count > 0 {
+        block_hash(&value["blockhash"])?;
+    }
+    Ok(())
+}
+
+fn validate_shape(method: &str, value: &Value) -> Result<(), Error> {
+    match method {
+        "getblockhash" => block_hash(value)?,
+        "getblockchaininfo" => {
+            value["blocks"]
+                .as_u64()
+                .context("invalid public chain height")?;
+            block_hash(&value["bestblockhash"])?;
+            ensure!(
+                value["initialblockdownload"] == false,
+                "public source is synchronizing or omitted synchronization state"
+            );
+        }
+        "getblockheader" => {
+            value["height"]
+                .as_u64()
+                .context("invalid public block height")?;
+        }
+        "getrawmempool" => {
+            let rows = value.as_array().context("invalid public mempool list")?;
+            ensure!(
+                rows.len() <= 1_000_000,
+                "public mempool response exceeds capacity"
+            );
+            for row in rows {
+                row.as_str()
+                    .context("invalid public mempool txid")?
+                    .parse::<Txid>()?;
+            }
+        }
+        "addressutxos" => validate_utxos(value)?,
+        "gettxout" => validate_output(value)?,
+        "testmempoolaccept" => {
+            let rows = value
+                .as_array()
+                .context("invalid public preflight result")?;
+            ensure!(rows.len() == 1, "invalid public preflight count");
+            rows[0]["allowed"]
+                .as_bool()
+                .context("missing public preflight decision")?;
+        }
+        _ => (),
+    }
+    Ok(())
+}
+
+fn validate_utxos(value: &Value) -> Result<(), Error> {
+    let rows = value.as_array().context("invalid public UTXO list")?;
+    ensure!(rows.len() <= 1000, "UTXO client capacity exceeded");
+    for row in rows {
+        row["txid"]
+            .as_str()
+            .context("missing public UTXO txid")?
+            .parse::<Txid>()?;
+        u32::try_from(row["vout"].as_u64().context("invalid public UTXO index")?)?;
+        row["value"].as_u64().context("invalid public UTXO value")?;
+        let confirmed = row["status"]["confirmed"]
+            .as_bool()
+            .context("invalid public UTXO status")?;
+        if confirmed {
+            row["status"]["block_height"]
+                .as_u64()
+                .context("invalid public UTXO height")?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_output(value: &Value) -> Result<(), Error> {
+    if value.is_null() {
+        return Ok(());
+    }
+    value["confirmations"]
+        .as_u64()
+        .context("invalid public output confirmations")?;
+    value["coinbase"]
+        .as_bool()
+        .context("invalid public coinbase status")?;
+    Amount::from_str_in(&value["value"].to_string(), Denomination::Bitcoin)?;
+    let script = value["scriptPubKey"]["hex"]
+        .as_str()
+        .context("invalid public output script")?;
+    ensure!(
+        script.len() <= 20_000,
+        "public output script exceeds capacity"
+    );
+    hex::decode(script)?;
     Ok(())
 }
 
