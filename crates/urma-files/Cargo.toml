@@ -17,5 +17,8 @@ tracing = "0.1"
 libc = "0.2"
 unicode-normalization = "0.1"
 
+bitcoin = "0.32"
+urma-runtime = { path = "../urma-runtime" }
+
 [dev-dependencies]
 tempfile = "3"

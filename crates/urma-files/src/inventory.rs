@@ -1,4 +1,4 @@
-use crate::{config::MAX_ENTRIES, safety};
+use crate::{config::MAX_ENTRIES, recover, safety};
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeSet, path::Path};
 use urma::{
@@ -77,6 +77,18 @@ pub fn prepared_objects(directory: &Path) -> Result<Vec<PreparedObject>, Error> 
             records: load_object(directory, id)?,
             is_catalog: *id == inventory.catalog,
         });
+    }
+    Ok(objects)
+}
+
+pub fn authenticated_objects(
+    directory: &Path,
+    secret: &urma_identity::keys::RecoverySecret,
+) -> Result<Vec<PreparedObject>, Error> {
+    recover::inspect_bundle(directory, secret)?;
+    let objects = prepared_objects(directory)?;
+    for object in &objects {
+        secret.with_bytes(|root| container::open(root, &object.records))?;
     }
     Ok(objects)
 }
