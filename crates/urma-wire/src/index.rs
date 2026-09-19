@@ -125,7 +125,8 @@ pub fn sync(
             break;
         }
         let block = reader.block(height)?;
-        for previous in index.blocks.last().iter() {
+        let previous_checkpoint = index.blocks.last();
+        for previous in previous_checkpoint.iter() {
             ensure!(
                 block.header.prev_blockhash.to_string() == previous.hash,
                 "source reorg during index; retry"
@@ -161,10 +162,11 @@ pub fn sync(
 
 fn rollback(reader: &impl Reader, index: &mut Index, tip: u64) -> Result<u64, Error> {
     let mut removed = 0;
-    loop {
-        let Some(last) = index.blocks.last() else {
-            break;
-        };
+    while !index.blocks.is_empty() {
+        let last = index
+            .blocks
+            .last()
+            .ok_or_else(|| Error::Invalid("index checkpoint invariant".into()))?;
         if last.height <= tip && reader.block_hash(last.height)?.to_string() == last.hash {
             break;
         }

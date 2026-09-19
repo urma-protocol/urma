@@ -6,10 +6,15 @@
     unused_assignments
 )]
 mod archive_cli;
+mod capture_cli;
+mod files_cli;
+mod git_cli;
 mod key_cli;
 mod litecoin_cli;
+mod node_cli;
 mod public_cli;
-mod scaffold;
+mod wallet_cli;
+mod wire_live_cli;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
 use urma::error::Error;
@@ -17,7 +22,7 @@ use urma::error::Error;
 #[derive(Parser)]
 #[command(
     version,
-    about = "URMA reusable libraries and application tools; unfinished commands report unsupported"
+    about = "URMA native application tools: local/regtest candidate"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -28,7 +33,7 @@ struct Cli {
 enum Command {
     Git {
         #[command(subcommand)]
-        command: scaffold::GitCommand,
+        command: git_cli::GitCommand,
     },
     Wire {
         #[command(subcommand)]
@@ -40,7 +45,7 @@ enum Command {
     },
     Capture {
         #[command(subcommand)]
-        command: scaffold::CaptureCommand,
+        command: capture_cli::Command,
     },
     Key {
         #[command(subcommand)]
@@ -48,11 +53,14 @@ enum Command {
     },
     Wallet {
         #[command(subcommand)]
-        command: scaffold::WalletCommand,
+        command: wallet_cli::WalletCommand,
     },
 }
 
 pub(crate) fn print_json(value: Value) -> Result<(), Error> {
+    if value.is_null() {
+        return Ok(());
+    }
     println!("{}", serde_json::to_string_pretty(&value)?);
     Ok(())
 }
@@ -61,9 +69,9 @@ fn run() -> Result<(), Error> {
     match Cli::parse().command {
         Command::Archive { command } => archive_cli::run(command),
         Command::Wire { command } => print_json(public_cli::run(command)?),
-        Command::Git { command } => scaffold::git(command),
-        Command::Capture { command } => scaffold::capture(command),
-        Command::Wallet { command } => print_json(scaffold::wallet(command)?),
+        Command::Git { command } => print_json(git_cli::run(command)?),
+        Command::Capture { command } => print_json(capture_cli::run(command)?),
+        Command::Wallet { command } => print_json(wallet_cli::run(command)?),
         Command::Key { command } => {
             let report = key_cli::run(command)?;
             if report != Value::Null {

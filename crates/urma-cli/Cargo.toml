@@ -37,5 +37,11 @@ urma-workflows = { path = "../urma-workflows" }
 
 urma-chain = { path = "../urma-chain" }
 
+urma-wire = { path = "../urma-wire" }
+urma-runtime = { path = "../urma-runtime" }
+
+urma-files = { path = "../urma-files" }
+urma-git = { path = "../urma-git" }
+
 [dev-dependencies]
 anyhow = "1"

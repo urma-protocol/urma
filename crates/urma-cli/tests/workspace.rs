@@ -84,7 +84,7 @@ fn budgets_and_reorg_observations_cannot_imply_success() {
 }
 
 #[test]
-fn nested_cli_help_errors_and_stubs_are_honest() {
+fn nested_cli_help_and_missing_arguments_are_honest() {
     let binary = env!("CARGO_BIN_EXE_urma");
     let help = Command::new(binary).arg("--help").output().unwrap();
     assert!(help.status.success());
@@ -109,9 +109,9 @@ fn nested_cli_help_errors_and_stubs_are_honest() {
         vec!["wallet", "status"],
     ] {
         let output = Command::new(binary).args(args).output().unwrap();
-        assert_eq!(output.status.code(), Some(1));
+        assert_eq!(output.status.code(), Some(2));
         assert!(output.stdout.is_empty());
-        assert!(String::from_utf8(output.stderr).unwrap().contains("stub"));
+        assert!(!output.stderr.is_empty());
     }
     let malformed = Command::new(binary)
         .args(["git", "inspect", "not-a-txid"])

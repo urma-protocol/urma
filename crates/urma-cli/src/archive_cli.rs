@@ -5,7 +5,7 @@
     unused_variables,
     unused_assignments
 )]
-use crate::{litecoin_cli, print_json};
+use crate::{files_cli, litecoin_cli, print_json};
 use bitcoin::{Network, Txid};
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::json;
@@ -73,6 +73,10 @@ struct Publisher {
 
 #[derive(Subcommand)]
 pub(crate) enum Command {
+    Files {
+        #[command(subcommand)]
+        command: files_cli::Command,
+    },
     Litecoin {
         #[command(subcommand)]
         command: litecoin_cli::Command,
@@ -104,6 +108,7 @@ fn read_plan(path: &std::path::Path) -> Result<Plan, Error> {
 
 pub(crate) fn run(command: Command) -> Result<(), Error> {
     match command {
+        Command::Files { command } => print_json(files_cli::run(command)?)?,
         Command::Litecoin { command } => litecoin_cli::run(command)?,
         Command::BroadcastSource(args) => broadcast_source(args)?,
         Command::FetchTransactions(args) => fetch_transactions(args)?,

@@ -1,4 +1,5 @@
 use crate::key_cli::VaultAccess;
+use crate::wire_live_cli;
 use bitcoin::{Txid, consensus::deserialize};
 use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
@@ -39,7 +40,14 @@ impl From<PublicChain> for Chain {
 
 #[derive(Subcommand)]
 pub(crate) enum PublicCommand {
-    Index,
+    Index(wire_live_cli::IndexArgs),
+    Plan(wire_live_cli::PlanArgs),
+    Publish(wire_live_cli::PublishArgs),
+    Resume(wire_live_cli::PublishArgs),
+    Read {
+        #[command(subcommand)]
+        command: wire_live_cli::ReadCommand,
+    },
     Encode {
         #[arg(long, value_enum)]
         kind: PublicKind,
@@ -105,9 +113,10 @@ fn encode(
 
 pub(crate) fn run(command: PublicCommand) -> Result<Value, Error> {
     match command {
-        PublicCommand::Index => Err(Error::Unsupported(
-            "urma wire index: stub; indexer not wired".into(),
-        )),
+        PublicCommand::Index(args) => wire_live_cli::index(args),
+        PublicCommand::Plan(args) => wire_live_cli::plan(args),
+        PublicCommand::Publish(args) | PublicCommand::Resume(args) => wire_live_cli::publish(args),
+        PublicCommand::Read { command } => wire_live_cli::read(command),
         PublicCommand::Encode {
             kind,
             input,
