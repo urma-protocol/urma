@@ -10,6 +10,7 @@ pub mod publish;
 pub mod recovery;
 mod validation;
 
+mod disk_order;
 pub mod disk_plan;
 pub mod disk_publish;
 mod disk_writer;
