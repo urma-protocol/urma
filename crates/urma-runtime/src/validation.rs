@@ -101,7 +101,7 @@ impl Validation {
         pair: &PublicPlan,
         chain: Chain,
         author: &str,
-    ) -> Result<(), Error> {
+    ) -> Result<Vec<u8>, Error> {
         ensure!(
             pair.chain.genesis()? == chain.genesis()?
                 && pair.version == urma_core::format::Urma::VERSION,
@@ -158,7 +158,7 @@ impl Validation {
         self.previous_commit = pair.commit.clone();
         self.last = reveal.compute_txid().to_string();
         self.count = self.count.checked_add(1).context("record count overflow")?;
-        Ok(())
+        Ok(parsed.record)
     }
 
     pub(crate) fn finish(&self, total_fee: u64, root_txid: &str) -> Result<(), Error> {

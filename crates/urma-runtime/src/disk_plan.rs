@@ -1,4 +1,4 @@
-use crate::disk_writer::DiskWriter;
+use crate::{disk_order::Order, disk_writer::DiskWriter};
 use crate::{
     node::Node,
     plan::{PlanLimits, PublicationPlan},
@@ -17,6 +17,7 @@ use urma::{
     publication::PublicPlan,
 };
 use urma_chain::observation::Chain;
+use urma_core::multipart::Geometry;
 use urma_identity::identity::IdentitySigner;
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -36,7 +37,7 @@ pub struct DiskPlan {
 }
 
 impl DiskPlan {
-    pub const MAX_RECORDS: u32 = 261633;
+    pub const MAX_RECORDS: u32 = Geometry::MAX_NODES;
     pub(crate) const MAX_PAIR_BYTES: usize = 512 * 1024;
 
     pub fn prepare_multipart(
@@ -124,10 +125,13 @@ impl DiskPlan {
         );
         let mut offset = 0u64;
         let mut state = Validation::new();
+        let mut order = Order::new();
         for _ in 0..self.record_count {
             let (actual, length) = read_index(&mut index)?;
             ensure!(actual == offset, "noncanonical disk plan offset");
-            state.append(&read_pair(&mut records, length)?, self.chain, &self.author)?;
+            let bytes =
+                state.append(&read_pair(&mut records, length)?, self.chain, &self.author)?;
+            order.append(&bytes)?;
             offset = offset
                 .checked_add(u64::from(length))
                 .context("disk plan offset overflow")?;
@@ -136,6 +140,7 @@ impl DiskPlan {
             offset == records.metadata()?.len(),
             "trailing disk plan bytes"
         );
+        order.finish(self.record_count)?;
         state.finish(self.total_fee, &self.root_txid)
     }
 }
