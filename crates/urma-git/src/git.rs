@@ -9,7 +9,13 @@ use std::{
 
 pub fn command(repo: &Path) -> Command {
     let mut command = Command::new("/usr/bin/prlimit");
-    command.args(["--as=536870912", "--cpu=1800", "--", "/usr/bin/git"]);
+    command.args([
+        "--as=536870912",
+        "--cpu=1800",
+        "--fsize=67108864",
+        "--",
+        "/usr/bin/git",
+    ]);
     command
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -75,7 +81,7 @@ pub fn output(repo: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, Error> 
         stderr.take(4096).read_to_string(&mut message)?;
         return Err(Error::Git(format!("{status}: {}", message.escape_debug())));
     }
-    if stdout.metadata()?.len() > limit {
+    if stdout.metadata()?.len() > limit.min(64 * 1024 * 1024) {
         return Err(Error::Capacity("Git worker output".into()));
     }
     stdout.seek(SeekFrom::Start(0))?;

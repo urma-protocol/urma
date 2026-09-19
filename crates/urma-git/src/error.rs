@@ -2,6 +2,8 @@ use std::{fmt, io, num::ParseIntError, string::FromUtf8Error};
 
 #[derive(Debug)]
 pub enum Error {
+    Native(urma::error::Error),
+    Protocol(urma_core::error::Error),
     Io(io::Error),
     Json(serde_json::Error),
     Hex(hex::FromHexError),
@@ -18,6 +20,8 @@ pub enum Error {
 impl fmt::Display for Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Native(error) => write!(f, "{error}"),
+            Self::Protocol(error) => write!(f, "{error}"),
             Self::Io(error) => write!(f, "Git artifact I/O: {error}"),
             Self::Json(error) => write!(f, "Git artifact JSON: {error}"),
             Self::Hex(error) => write!(f, "Git artifact hex: {error}"),
@@ -68,5 +72,16 @@ impl From<regex::Error> for Error {
 impl From<std::num::TryFromIntError> for Error {
     fn from(error: std::num::TryFromIntError) -> Self {
         Self::Conversion(error)
+    }
+}
+
+impl From<urma::error::Error> for Error {
+    fn from(error: urma::error::Error) -> Self {
+        Self::Native(error)
+    }
+}
+impl From<urma_core::error::Error> for Error {
+    fn from(error: urma_core::error::Error) -> Self {
+        Self::Protocol(error)
     }
 }

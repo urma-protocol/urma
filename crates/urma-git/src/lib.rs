@@ -5,10 +5,14 @@
     unused_variables,
     unused_assignments
 )]
+mod binding;
 pub mod checkout;
 pub mod descriptor;
 pub mod error;
 pub mod git;
 pub mod inventory;
+pub mod plans;
+pub mod proofs;
 pub mod review;
 pub mod snapshot;
+pub mod workflows;
