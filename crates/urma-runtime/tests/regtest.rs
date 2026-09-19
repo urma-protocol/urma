@@ -80,6 +80,8 @@ fn signed_publication_restart_reorg_and_recovery() {
     let address = urma_wallet::address::receive_address(&signer, Chain::BitcoinRegtest).unwrap();
     node.call("generatetoaddress", &[json!(102), json!(address)])
         .unwrap();
+    let available_before = node.available_utxos(&signer).unwrap().len();
+    assert_eq!(available_before, 3);
     let payload = vec![77; 70_000];
     let plan = prepare_multipart(
         &node,
@@ -97,11 +99,21 @@ fn signed_publication_restart_reorg_and_recovery() {
     let plan_path = directory.path().join("plan.json");
     let journal = directory.path().join("journal.json");
     plan.save_new(&plan_path).unwrap();
+    use urma_runtime::publish::ensure_journal_distinct;
+    assert!(ensure_journal_distinct(&plan_path, &plan_path).is_err());
+    let alias = directory.path().join("plan-hardlink.json");
+    std::fs::hard_link(&plan_path, &alias).unwrap();
+    assert!(ensure_journal_distinct(&plan_path, &alias).is_err());
+    ensure_journal_distinct(&plan_path, &journal).unwrap();
     assert!(publish(&node, &plan, "not-approved", &journal).is_err());
     let report = publish(&node, &plan, &plan.id().unwrap(), &journal).unwrap();
     assert!(!report.complete);
     assert!(!report.confirmed);
     assert_eq!(report.transactions.len(), 1);
+    assert_eq!(
+        node.available_utxos(&signer).unwrap().len(),
+        available_before - 1
+    );
     let reloaded = PublicationPlan::load(&plan_path).unwrap();
     let fresh = Node::connect(config).unwrap();
     for step in 0..12 {

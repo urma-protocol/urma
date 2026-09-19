@@ -219,15 +219,10 @@ impl Node {
         Ok(outputs)
     }
 
-    pub fn select_funding(
-        &self,
-        signer: &impl IdentitySigner,
-        minimum: u64,
-    ) -> Result<Funding, Error> {
+    pub fn available_utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
+        let expected = hex::encode(urma_wallet::signing::script(signer)?.as_bytes());
+        let mut available = Vec::new();
         for output in self.utxos(signer)? {
-            if output.value < minimum {
-                continue;
-            }
             let unspent = self.call(
                 "gettxout",
                 &[json!(output.txid), json!(output.vout), json!(true)],
@@ -235,7 +230,34 @@ impl Node {
             if unspent.is_null() {
                 continue;
             }
-            if unspent["coinbase"] == true && urma::config::confirmations(&unspent)? < 101 {
+            let confirmations = urma::config::confirmations(&unspent)?;
+            if confirmations < 1 || (unspent["coinbase"] == true && confirmations < 100) {
+                continue;
+            }
+            ensure!(
+                unspent["scriptPubKey"]["hex"] == expected,
+                "live funding script disagrees with identity"
+            );
+            let amount = bitcoin::Amount::from_str_in(
+                &unspent["value"].to_string(),
+                bitcoin::Denomination::Bitcoin,
+            )?;
+            ensure!(
+                amount.to_sat() == output.value,
+                "live funding value disagrees with UTXO scan"
+            );
+            available.push(output);
+        }
+        Ok(available)
+    }
+
+    pub fn select_funding(
+        &self,
+        signer: &impl IdentitySigner,
+        minimum: u64,
+    ) -> Result<Funding, Error> {
+        for output in self.available_utxos(signer)? {
+            if output.value < minimum {
                 continue;
             }
             let block = self.call("getblockhash", &[json!(output.height)])?;
