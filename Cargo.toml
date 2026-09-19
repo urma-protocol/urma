@@ -9,6 +9,8 @@ members = [
     "crates/urma-workflows",
     "crates/urma-profiles",
     "crates/urma-cli",
+    "crates/urma-git",
+    "crates/urma-runtime",
 ]
 exclude = ["android/jni", "wire", "faucet", "alibi-crate"]
 

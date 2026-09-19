@@ -6,8 +6,10 @@
     unused_assignments
 )]
 mod archive_cli;
+mod git_cli;
 mod key_cli;
 mod litecoin_cli;
+mod node_cli;
 mod public_cli;
 mod scaffold;
 use clap::{Parser, Subcommand};
@@ -28,7 +30,7 @@ struct Cli {
 enum Command {
     Git {
         #[command(subcommand)]
-        command: scaffold::GitCommand,
+        command: git_cli::GitCommand,
     },
     Wire {
         #[command(subcommand)]
@@ -61,7 +63,7 @@ fn run() -> Result<(), Error> {
     match Cli::parse().command {
         Command::Archive { command } => archive_cli::run(command),
         Command::Wire { command } => print_json(public_cli::run(command)?),
-        Command::Git { command } => scaffold::git(command),
+        Command::Git { command } => print_json(git_cli::run(command)?),
         Command::Capture { command } => scaffold::capture(command),
         Command::Wallet { command } => print_json(scaffold::wallet(command)?),
         Command::Key { command } => {

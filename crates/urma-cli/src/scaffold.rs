@@ -1,20 +1,11 @@
 use crate::{key_cli::VaultAccess, public_cli::PublicChain};
-use bitcoin::{BlockHash, Txid};
+use bitcoin::BlockHash;
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::{num::NonZeroU64, path::PathBuf};
 use urma::error::Error;
 use urma_chain::observation::ChainId;
 use urma_wallet::wallet::{FeeBudget, FeeRate};
-
-#[derive(Subcommand)]
-pub(crate) enum GitCommand {
-    Inspect { root: Txid },
-    Clone { root: Txid, directory: PathBuf },
-    Prepare { repository: PathBuf },
-    Publish { plan: PathBuf },
-    Resume { plan: PathBuf },
-}
 
 #[derive(Subcommand)]
 pub(crate) enum CaptureCommand {
@@ -49,16 +40,6 @@ pub(crate) fn unsupported(operation: &str) -> Result<(), Error> {
     )))
 }
 
-pub(crate) fn git(command: GitCommand) -> Result<(), Error> {
-    let operation = match command {
-        GitCommand::Inspect { .. } => "git inspect",
-        GitCommand::Clone { .. } => "git clone",
-        GitCommand::Prepare { .. } => "git prepare",
-        GitCommand::Publish { .. } => "git publish",
-        GitCommand::Resume { .. } => "git resume",
-    };
-    unsupported(operation)
-}
 pub(crate) fn capture(command: CaptureCommand) -> Result<(), Error> {
     let operation = match command {
         CaptureCommand::Ingest { .. } => "capture ingest",
