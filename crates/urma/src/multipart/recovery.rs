@@ -22,6 +22,8 @@ pub enum FetchError {
 
 pub trait MultipartSource {
     fn fetch(&mut self, request: &RecordRequest) -> Result<VerifiedRecord, FetchError>;
+
+    fn prefetch(&mut self, _requests: &[RecordRequest]) {}
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -131,19 +133,45 @@ fn inventory<S: MultipartSource>(
     file: &mut File,
 ) -> Result<(), RecoveryError> {
     let mut inventory = ManifestInventory::new(root.txid(), manifest).map_err(inventory_error)?;
-    for entry in &manifest.entries {
-        let verified = fetch(source, *entry, root.author())?;
-        let MultipartRecord::Leaf(leaf) = verified.decode()? else {
-            return Err(Error::Invalid("root must reference leaf manifests".into()).into());
-        };
-        inventory.accept_leaf(&leaf).map_err(inventory_error)?;
-        for reference in leaf.entries {
-            file.write_all(reference.txid.as_byte_array())?;
-            file.write_all(&reference.record_hash)?;
+    for batch in manifest.entries.chunks(8) {
+        let requests: Vec<_> = batch
+            .iter()
+            .map(|reference| RecordRequest {
+                reference: *reference,
+            })
+            .collect();
+        source.prefetch(&requests);
+        for entry in batch {
+            let verified = fetch(source, *entry, root.author())?;
+            let MultipartRecord::Leaf(leaf) = verified.decode()? else {
+                return Err(Error::Invalid("root must reference leaf manifests".into()).into());
+            };
+            inventory.accept_leaf(&leaf).map_err(inventory_error)?;
+            for reference in leaf.entries {
+                file.write_all(reference.txid.as_byte_array())?;
+                file.write_all(&reference.record_hash)?;
+            }
         }
     }
     file.rewind()?;
     Ok(())
+}
+
+fn read_requests(file: &mut File, count: u32) -> Result<Vec<RecordRequest>, RecoveryError> {
+    let mut requests = Vec::new();
+    for _ in 0..count {
+        let mut txid = [0; 32];
+        let mut record_hash = [0; 32];
+        file.read_exact(&mut txid)?;
+        file.read_exact(&mut record_hash)?;
+        requests.push(RecordRequest {
+            reference: ChildReference {
+                txid: Txid::from_byte_array(txid),
+                record_hash,
+            },
+        });
+    }
+    Ok(requests)
 }
 
 fn reconstruct_parts<S: MultipartSource>(
@@ -156,32 +184,27 @@ fn reconstruct_parts<S: MultipartSource>(
 ) -> Result<(), RecoveryError> {
     let mut digest = Sha256::new();
     let mut length = 0u64;
-    for index in 0..geometry.parts() {
-        let mut txid = [0u8; 32];
-        let mut record_hash = [0u8; 32];
-        inventory.read_exact(&mut txid)?;
-        inventory.read_exact(&mut record_hash)?;
-        let verified = fetch(
-            source,
-            ChildReference {
-                txid: Txid::from_byte_array(txid),
-                record_hash,
-            },
-            author,
-        )?;
-        let MultipartRecord::Data(part) = verified.decode()? else {
-            return Err(Error::Invalid("leaf must reference data parts".into()).into());
-        };
-        if part.index != index || part.payload.len() != geometry.part_length(index)? {
-            return Err(
-                Error::Invalid("data position or length disagrees with root".into()).into(),
-            );
+    for start in (0..geometry.parts()).step_by(8) {
+        let count = (geometry.parts() - start).min(8);
+        let requests = read_requests(inventory, count)?;
+        source.prefetch(&requests);
+        for (offset, request) in requests.into_iter().enumerate() {
+            let index = start + u32::try_from(offset).map_err(Error::from)?;
+            let verified = fetch(source, request.reference, author)?;
+            let MultipartRecord::Data(part) = verified.decode()? else {
+                return Err(Error::Invalid("leaf must reference data parts".into()).into());
+            };
+            if part.index != index || part.payload.len() != geometry.part_length(index)? {
+                return Err(
+                    Error::Invalid("data position or length disagrees with root".into()).into(),
+                );
+            }
+            length = length
+                .checked_add(u64::try_from(part.payload.len()).map_err(Error::from)?)
+                .ok_or_else(|| Error::Invalid("reconstruction length overflow".into()))?;
+            digest.update(&part.payload);
+            payload.write_all(&part.payload)?;
         }
-        length = length
-            .checked_add(u64::try_from(part.payload.len()).map_err(Error::from)?)
-            .ok_or_else(|| Error::Invalid("reconstruction length overflow".into()))?;
-        digest.update(&part.payload);
-        payload.write_all(&part.payload)?;
     }
     let actual_hash: [u8; 32] = digest.finalize().into();
     if length != manifest.length || actual_hash != manifest.payload_hash {

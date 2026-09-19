@@ -4,7 +4,7 @@ use bitcoin::{
     consensus::{deserialize, serialize},
 };
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeSet, path::Path};
+use std::path::Path;
 use urma::{
     error::Context,
     multipart::{
@@ -13,7 +13,7 @@ use urma::{
     },
 };
 use urma_chain::observation::Chain;
-use urma_runtime::{node::Node, recovery};
+use urma_runtime::node::Node;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -29,36 +29,23 @@ pub fn export(
     recovered: &RecoveredObject,
     directory: &Path,
 ) -> Result<Locator, Error> {
-    let mut records = BTreeSet::from([recovered.root()]);
+    let tx_dir = directory.join("tx");
+    if !tx_dir.try_exists()? {
+        snapshot::create_private_directory(&tx_dir)?;
+    }
+    if !std::fs::symlink_metadata(&tx_dir)?.is_dir() {
+        return Err(Error::Invalid("proof transaction directory type".into()));
+    }
+    export_record(node, directory, recovered.root())?;
     for entry in &recovered.manifest().entries {
-        records.insert(entry.txid);
-        let record = recovery::verified_record(node, entry.txid)?;
+        let record = export_record(node, directory, entry.txid)?;
+        entry_request(*entry).check(&record)?;
         let MultipartRecord::Leaf(leaf) = record.decode()? else {
             return Err(Error::Invalid("proof export leaf kind".into()));
         };
         for part in leaf.entries {
-            records.insert(part.txid);
-        }
-    }
-    let tx_dir = directory.join("tx");
-    snapshot::create_private_directory(&tx_dir)?;
-    let mut exported = BTreeSet::new();
-    for txid in records {
-        let reveal = node.transaction(txid)?;
-        let parent = reveal
-            .input
-            .first()
-            .context("reveal input")?
-            .previous_output
-            .txid;
-        for transaction in [reveal, node.transaction(parent)?] {
-            let id = transaction.compute_txid();
-            if exported.insert(id) {
-                urma::storage::write_new(
-                    &tx_dir.join(format!("{id}.bin")),
-                    &serialize(&transaction),
-                )?;
-            }
+            let record = export_record(node, directory, part.txid)?;
+            entry_request(part).check(&record)?;
         }
     }
     let locator = Locator {
@@ -74,6 +61,32 @@ pub fn export(
     };
     snapshot::write_json(&directory.join("locator.json"), &locator)?;
     Ok(locator)
+}
+
+fn entry_request(reference: urma::multipart::ChildReference) -> RecordRequest {
+    RecordRequest { reference }
+}
+
+fn export_record(node: &Node, directory: &Path, txid: Txid) -> Result<VerifiedRecord, Error> {
+    let reveal = export_transaction(node, directory, txid)?;
+    let parent = reveal
+        .input
+        .first()
+        .context("reveal input")?
+        .previous_output
+        .txid;
+    let commit = export_transaction(node, directory, parent)?;
+    Ok(VerifiedRecord::verify(txid, &reveal, &commit)?)
+}
+
+fn export_transaction(node: &Node, directory: &Path, txid: Txid) -> Result<Transaction, Error> {
+    let path = directory.join("tx").join(format!("{txid}.bin"));
+    if path.try_exists()? {
+        return Ok(DirectorySource { directory }.transaction(txid)?);
+    }
+    let transaction = node.transaction(txid)?;
+    urma::storage::write_new(&path, &serialize(&transaction))?;
+    Ok(transaction)
 }
 
 struct DirectorySource<'a> {
