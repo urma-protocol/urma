@@ -157,6 +157,7 @@ fn clone_accepts_the_human_interface_and_refuses_node_flags() {
         .unwrap();
     let text = String::from_utf8(help.stdout).unwrap();
     assert!(text.contains("Litecoin mainnet is the default"));
+    assert!(text.contains("published repository name"));
     for plumbing in ["--cookie", "--rpc-url", "--vault", "--limits", "--chain"] {
         assert!(!text.contains(plumbing));
         let rejected = Command::new(binary)
@@ -170,7 +171,7 @@ fn clone_accepts_the_human_interface_and_refuses_node_flags() {
     for network in [vec![], vec!["--testnet"]] {
         let output = Command::new(binary)
             .current_dir(directory.path())
-            .args(["git", "clone", &"0".repeat(64)])
+            .args(["git", "clone", &"0".repeat(64), "urma-000000000000"])
             .args(network)
             .output()
             .unwrap();
@@ -182,4 +183,28 @@ fn clone_accepts_the_human_interface_and_refuses_node_flags() {
                 .contains("already exists; choose another directory")
         );
     }
+}
+
+#[test]
+fn publication_name_is_overridable_and_validated_before_network_access() {
+    let binary = env!("CARGO_BIN_EXE_urma");
+    let help = Command::new(binary)
+        .args(["git", "prepare", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    let text = String::from_utf8(help.stdout).unwrap();
+    assert!(text.contains("--name"));
+    assert!(text.contains("source directory name"));
+    let invalid = Command::new(binary)
+        .args(["git", "prepare", "--name", "../unsafe"])
+        .output()
+        .unwrap();
+    assert_eq!(invalid.status.code(), Some(1));
+    assert!(
+        String::from_utf8(invalid.stderr)
+            .unwrap()
+            .contains("unsafe repository name")
+    );
+    assert!(invalid.stdout.is_empty());
 }

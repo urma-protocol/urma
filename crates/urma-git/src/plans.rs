@@ -120,6 +120,7 @@ impl GitPlan {
             return Err(Error::Invalid("Git publication root kind".into()));
         };
         let path = directory.join("object.bin");
+        snapshot::inspect(&path)?.require_profile(manifest.profile)?;
         if manifest.profile != Descriptor::PROFILE
             || manifest.length != path.metadata()?.len()
             || manifest.payload_hash != descriptor::digest(&mut File::open(path)?)?

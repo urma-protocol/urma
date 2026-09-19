@@ -101,16 +101,6 @@ pub(crate) fn credentials() -> Result<(PathBuf, PathBuf), Error> {
     Ok((vault, unlock))
 }
 
-pub(crate) struct CloneDestination(pub(crate) Option<PathBuf>);
-
-pub(crate) fn clone_directory(destination: CloneDestination, txid: &str) -> Result<PathBuf, Error> {
-    let directory = match destination.0 {
-        Some(path) => path,
-        None => PathBuf::from(format!("urma-{}", &txid[..12])),
-    };
-    Ok(std::path::absolute(directory)?)
-}
-
 pub(crate) enum Connection {
     Local(NodeConfig),
     Public,

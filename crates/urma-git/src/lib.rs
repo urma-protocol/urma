@@ -7,6 +7,7 @@
 )]
 mod binding;
 pub mod checkout;
+pub mod config;
 pub mod descriptor;
 pub mod error;
 pub mod git;

@@ -71,12 +71,38 @@ fn head_only_both_formats_editable_safe_checkout_and_review() -> Result<()> {
                 == 1
         );
         ensure!(report.scan.complete && report.scan.findings.is_empty());
+        ensure!(report.descriptor.repository_name == format);
+        ensure!(report.scan.repository_name == format);
+        let named = snapshot::prepare_named(
+            &source,
+            &lab.path().join(format!("{format}-named")),
+            &Limits::default(),
+            "public-project",
+        )?;
+        ensure!(named.descriptor.repository_name == "public-project");
+        ensure!(named.payload_sha256 != report.payload_sha256);
+        let flagged = snapshot::prepare_named(
+            &source,
+            &lab.path().join(format!("{format}-scan-name")),
+            &Limits::default(),
+            "ghp_ABCDEFGHIJKLMNOPQRST",
+        )?;
+        ensure!(
+            flagged
+                .scan
+                .findings
+                .iter()
+                .any(|finding| finding.object == "repository-name")
+        );
         review::record(&artifact, "frozen-plan-hash", &[])?;
         review::require(&artifact, "frozen-plan-hash")?;
         ensure!(review::require(&artifact, "changed-plan").is_err());
         let clone = lab.path().join(format!("{format}-clone"));
         checkout::install(&artifact.join("object.bin"), &clone, &Limits::default())?;
         ensure!(git(&clone, &["rev-parse", "HEAD"])? == head);
+        ensure!(
+            checkout::install(&artifact.join("object.bin"), &clone, &Limits::default()).is_err()
+        );
         ensure!(git(&clone, &["rev-list", "--count", "HEAD"])?.trim() == "1");
         ensure!(git(&clone, &["status", "--porcelain"])?.is_empty());
         ensure!(fs::read_link(clone.join("link"))? == Path::new("directory/file.bin"));
