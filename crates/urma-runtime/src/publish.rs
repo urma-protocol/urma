@@ -48,7 +48,12 @@ fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
             .context("mempool policy rejected transaction without reason")?
             .to_owned());
     }
-    node.call("sendrawtransaction", &[json!(raw)])?;
+    let result = node.call("sendrawtransaction", &[json!(raw)])?;
+    let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
+    ensure!(
+        result == json!(transaction.compute_txid()),
+        "broadcast RPC returned unexpected TXID"
+    );
     Ok(String::new())
 }
 
@@ -77,40 +82,62 @@ pub fn publish(
     let mut report = PublishReport {
         plan_id: id,
         root_txid: plan.root_txid.clone(),
-        complete: true,
-        confirmed: true,
+        complete: false,
+        confirmed: false,
         blocked_reason: String::new(),
         transactions: Vec::new(),
     };
     store(journal, &report)?;
+    let mut raw_transactions = Vec::new();
     for pair in &plan.records {
-        for raw in [&pair.commit, &pair.reveal] {
-            let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
-            let txid = transaction.compute_txid();
-            let mut presence = node.presence(txid)?;
-            if matches!(presence, Presence::Missing) {
-                let reason = broadcast(node, raw)?;
-                if !reason.is_empty() {
-                    report.complete = false;
-                    report.confirmed = false;
-                    report.blocked_reason = reason;
-                    report.transactions.push(TransactionStatus {
-                        txid: txid.to_string(),
-                        presence,
-                    });
-                    store(journal, &report)?;
-                    return Ok(report);
-                }
-                presence = node.presence(txid)?;
-            }
-            report.confirmed &= matches!(presence, Presence::Confirmed { .. });
-            report.complete &= !matches!(presence, Presence::Missing);
+        raw_transactions.push(&pair.commit);
+        raw_transactions.push(&pair.reveal);
+    }
+    for (index, raw) in raw_transactions.iter().enumerate() {
+        if !advance(node, raw, &mut report)? {
+            store(journal, &report)?;
+            return Ok(report);
+        }
+        let last = index + 1 == raw_transactions.len();
+        let presence = &report
+            .transactions
+            .last()
+            .context("transaction observation missing")?
+            .presence;
+        if !matches!(presence, Presence::Confirmed { .. }) {
+            report.complete = last && !matches!(presence, Presence::Missing);
+            report.blocked_reason =
+                "awaiting one confirmation before dependent publication or recovery".into();
+            store(journal, &report)?;
+            return Ok(report);
+        }
+        store(journal, &report)?;
+    }
+    report.complete = true;
+    report.confirmed = true;
+    store(journal, &report)?;
+    Ok(report)
+}
+
+fn advance(node: &Node, raw: &str, report: &mut PublishReport) -> Result<bool, Error> {
+    let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
+    let txid = transaction.compute_txid();
+    let mut presence = node.presence(txid)?;
+    if matches!(presence, Presence::Missing) {
+        let reason = broadcast(node, raw)?;
+        if !reason.is_empty() {
+            report.blocked_reason = reason;
             report.transactions.push(TransactionStatus {
                 txid: txid.to_string(),
                 presence,
             });
-            store(journal, &report)?;
+            return Ok(false);
         }
+        presence = node.presence(txid)?;
     }
-    Ok(report)
+    report.transactions.push(TransactionStatus {
+        txid: txid.to_string(),
+        presence,
+    });
+    Ok(true)
 }
