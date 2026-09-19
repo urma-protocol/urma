@@ -1,3 +1,4 @@
+use crate::disk_journal;
 use crate::{
     disk_plan::DiskPlan,
     node::{Node, Presence},
@@ -18,6 +19,7 @@ pub fn publish(
     journal: &Path,
 ) -> Result<PublishReport, Error> {
     plan.validate()?;
+    disk_journal::guard(plan, journal)?;
     let id = plan.id()?;
     ensure!(
         approved_id == id,
@@ -49,6 +51,7 @@ pub fn publish(
         node.block_hash(anchor.0)?.to_string() == anchor.1,
         "chain changed during publication reconciliation; resume against the new chain"
     );
+    disk_journal::observe(journal, &report)?;
     store(journal, &report)?;
     Ok(report)
 }
@@ -97,6 +100,7 @@ fn reconcile(
             MultipartRecord::Leaf(_) => leaves_confirmed &= reveal_confirmed,
             MultipartRecord::Root(_) => root_confirmed = reveal_confirmed,
         }
+        disk_journal::observe(journal, report)?;
         store(journal, report)?;
         if pending_commits >= 8 {
             report.blocked_reason = "eight funding commits are pending; resume after confirmation to advance the bounded pipeline".into();
