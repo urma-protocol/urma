@@ -60,6 +60,7 @@ impl Catalog {
         let mut names = BTreeSet::new();
         let mut entries = BTreeMap::new();
         let mut total = 0u64;
+        let mut objects: BTreeMap<&str, &ObjectRef> = BTreeMap::new();
         let mut previous = "";
         for entry in &self.entries {
             safety::validate_path(&entry.path)?;
@@ -75,6 +76,14 @@ impl Catalog {
             ensure!(entry.source_mode <= 0o777, "invalid source mode");
             validate_content(&entry.content)?;
             if let Content::File { object, .. } = &entry.content {
+                match objects.entry(object.id.as_str()) {
+                    std::collections::btree_map::Entry::Occupied(previous) => {
+                        ensure!(*previous.get() == object, "conflicting object references")
+                    }
+                    std::collections::btree_map::Entry::Vacant(entry) => {
+                        entry.insert(object);
+                    }
+                }
                 total = total
                     .checked_add(object.bytes)
                     .ok_or_else(|| Error::Capacity("collection length overflow".into()))?;
@@ -84,6 +93,10 @@ impl Catalog {
         ensure!(
             total <= MAX_COLLECTION_BYTES,
             "collection exceeds client capacity"
+        );
+        ensure!(
+            objects.len() < urma::config::Limits::OBJECTS,
+            "collection exceeds shared recovery object capacity including catalog"
         );
         validate_parents(&entries)?;
         self.capture.validate(&self.schema, &entries)
