@@ -1,5 +1,6 @@
 use crate::{
     disk_plan::DiskPlan,
+    node::Node,
     publish::{PublishReport, ensure_journal_distinct},
 };
 use std::{
@@ -35,7 +36,7 @@ pub(crate) fn guard(plan: &DiskPlan, journal: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-pub(crate) fn observe(journal: &Path, report: &PublishReport) -> Result<(), Error> {
+pub(crate) fn observe(node: &Node, journal: &Path, report: &PublishReport) -> Result<(), Error> {
     use std::os::unix::fs::OpenOptionsExt;
     let path = journal.with_extension("observations.jsonl");
     let mut file = OpenOptions::new()
@@ -43,7 +44,9 @@ pub(crate) fn observe(journal: &Path, report: &PublishReport) -> Result<(), Erro
         .append(true)
         .mode(0o600)
         .open(&path)?;
-    let mut bytes = serde_json::to_vec(report)?;
+    let mut bytes = serde_json::to_vec(
+        &serde_json::json!({"source": node.inclusion_evidence(), "chain": node.chain(), "report": report}),
+    )?;
     bytes.push(b'\n');
     file.write_all(&bytes)?;
     file.sync_all()?;
