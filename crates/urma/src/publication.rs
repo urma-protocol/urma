@@ -142,3 +142,32 @@ pub fn verify(
     let verified = envelope::verify_reveal(&reveal, &commit)?;
     Ok((PublicRecord::decode(&verified.record)?, verified))
 }
+
+pub fn quote_record(
+    record: &[u8],
+    author: bitcoin::XOnlyPublicKey,
+    return_script: &ScriptBuf,
+    fee_rate: u64,
+) -> Result<u64, Error> {
+    ensure!((1..=100).contains(&fee_rate), "invalid fee rate");
+    ensure!(return_script.is_p2wpkh(), "funding requires native P2WPKH");
+    let (script, info) = envelope::build_for_author(record, author)?;
+    let output = TxOut {
+        value: Amount::from_sat(1000),
+        script_pubkey: return_script.clone(),
+    };
+    let mut reveal = transaction(OutPoint::null(), output.clone());
+    reveal.input[0].witness = envelope::witness(&[0; 64], &script, &info)?;
+    let mut commit = transaction(
+        OutPoint::null(),
+        TxOut {
+            value: Amount::from_sat(1000),
+            script_pubkey: ScriptBuf::new_p2tr_tweaked(info.output_key()),
+        },
+    );
+    commit.output.push(output);
+    commit.input[0].witness = Witness::from_slice(&[vec![0; 73], vec![0; 33]]);
+    u64::try_from(commit.vsize() + reveal.vsize())?
+        .checked_mul(fee_rate)
+        .context("quote fee overflow")
+}

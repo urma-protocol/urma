@@ -180,3 +180,43 @@ pub(crate) fn require_archive_key() -> Result<PathBuf, Error> {
     );
     Ok(path)
 }
+
+static VERBOSITY: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+pub(crate) fn set_verbosity(level: u8) {
+    VERBOSITY.store(level, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub(crate) fn verbosity() -> u8 {
+    VERBOSITY.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub(crate) struct PublicationOutput(pub Option<PathBuf>);
+
+pub(crate) fn publication_directory(
+    repo: &std::path::Path,
+    requested: PublicationOutput,
+) -> Result<PathBuf, Error> {
+    use std::os::unix::fs::DirBuilderExt;
+    match requested.0 {
+        Some(path) => Ok(path),
+        None => {
+            let bytes = urma_git::git::output(repo, &["rev-parse", "--absolute-git-dir"], 65536)
+                .map_err(|cause| Error::Io(std::io::Error::other(cause)))?;
+            let parent = PathBuf::from(String::from_utf8(bytes)?.trim()).join("urma/publications");
+            std::fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&parent)?;
+            let time = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|cause| Error::Io(std::io::Error::other(cause)))?
+                .as_nanos();
+            Ok(parent.join(format!("{time}")))
+        }
+    }
+}
+
+pub(crate) fn publication_poll_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(30)
+}

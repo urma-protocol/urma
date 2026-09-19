@@ -1,5 +1,6 @@
 use crate::{
-    approve_publication, config, key_cli::VaultAccess, node_cli::NodeArgs, print_report, progress,
+    approve_publication, config, detail, git_publish_cli, key_cli::VaultAccess, node_cli::NodeArgs,
+    print_report, progress,
 };
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -82,8 +83,8 @@ pub(crate) enum GitCommand {
         #[arg(long)]
         classify_public_test_material: Vec<String>,
     },
-    #[command(about = "Approve and publish the reviewed plan")]
-    Publish(ResumeArgs),
+    #[command(about = "Prepare the current repository, show its price and ask before publishing")]
+    Publish(git_publish_cli::PublishArgs),
     #[command(about = "Continue the same publication after confirmation")]
     Resume(ResumeArgs),
     #[command(about = "Recover content and transaction proofs without checkout")]
@@ -148,7 +149,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
     Ok(serde_json::to_value(report)?)
 }
 
-fn publish(args: ResumeArgs) -> Result<Value, Error> {
+fn resume(args: ResumeArgs) -> Result<Value, Error> {
     let node = args.node.connect()?;
     let reviewed = workflows::inspect_plan(&args.plan).map_err(boundary)?;
     approve_publication(
@@ -195,7 +196,8 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
             plan,
             classify_public_test_material,
         } => review(&plan, &classify_public_test_material),
-        GitCommand::Publish(args) | GitCommand::Resume(args) => publish(args),
+        GitCommand::Publish(args) => git_publish_cli::run(args),
+        GitCommand::Resume(args) => resume(args),
         GitCommand::Recover(args) => recover(args),
         GitCommand::Clone {
             root,
@@ -207,6 +209,14 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
             urma_git::config::staging_parent(&requested).map_err(boundary)?;
             progress(format!("Connecting to {}...", node.chain()?.label()));
             let node = node.connect()?;
+            detail(1, format!("Requested root: {root}"));
+            detail(
+                3,
+                format!(
+                    "Observation source: {}; recovery uses bounded parallel batches.",
+                    node.inclusion_evidence()
+                ),
+            );
             progress("Receiving and verifying URMA objects...".into());
             let (report, directory) =
                 workflows::clone_root_named(&node, root, requested, &resources.load()?)
@@ -216,6 +226,16 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
                 "Receiving objects: {} bytes, done.",
                 report.snapshot.descriptor.pack_length
             ));
+            detail(
+                2,
+                format!(
+                    "Author: {}; Git objects: {}; tree entries: {}; payload SHA256: {}",
+                    report.author,
+                    report.snapshot.inventory.objects.len(),
+                    report.snapshot.inventory.entries.len(),
+                    report.snapshot.payload_sha256
+                ),
+            );
             progress("Verifying signatures, hashes and Git PACK: done.".into());
             progress(format!(
                 "Checking out {}: done.",

@@ -10,6 +10,7 @@ mod capture_cli;
 mod config;
 mod files_cli;
 mod git_cli;
+mod git_publish_cli;
 mod key_cli;
 mod litecoin_cli;
 mod node_cli;
@@ -28,6 +29,8 @@ use urma::error::Error;
     after_help = "Litecoin mainnet by default. Add --testnet for Litecoin testnet.\n\nStart here:\n  urma git clone <TXID>\n  urma git clone <TXID> --testnet\n  urma wallet address\n\nNo node options needed. Advanced configuration: see CLI.md."
 )]
 struct Cli {
+    #[arg(short = 'v', global = true, default_value_t = 0, value_parser = clap::value_parser!(u8).range(0..=3), help = "Verbosity: 1 summary details, 2 plan details, 3 transaction diagnostics")]
+    verbosity: u8,
     #[command(subcommand)]
     command: Command,
 }
@@ -87,7 +90,9 @@ pub(crate) fn print_report(value: Value) -> Result<(), Error> {
 }
 
 fn run() -> Result<(), Error> {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    config::set_verbosity(cli.verbosity);
+    match cli.command {
         Command::Archive { command } => print_report(files_cli::run(command)?),
         Command::Expert { command } => archive_cli::run(command),
         Command::Wire { command } => print_report(public_cli::run(command)?),
@@ -175,4 +180,10 @@ pub(crate) fn approve_publication(label: &str, id: &str, fee: u64, yes: bool) ->
         "publication cancelled; nothing submitted"
     );
     Ok(())
+}
+
+pub(crate) fn detail(level: u8, message: String) {
+    if config::verbosity() >= level {
+        eprintln!("{message}");
+    }
 }

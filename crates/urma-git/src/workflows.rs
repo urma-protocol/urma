@@ -61,7 +61,19 @@ pub fn prepare_named(
     budget: PlanLimits,
     name: &str,
 ) -> Result<PreparedReport, Error> {
-    let snapshot = snapshot::prepare_named(repo, directory, limits, name)?;
+    snapshot::prepare_named(repo, directory, limits, name)?;
+    prepare_snapshot(node, signer, directory, limits, budget)
+}
+
+pub fn prepare_snapshot(
+    node: &Node,
+    signer: &impl IdentitySigner,
+    directory: &Path,
+    limits: &Limits,
+    budget: PlanLimits,
+) -> Result<PreparedReport, Error> {
+    let snapshot: SnapshotReport =
+        serde_json::from_reader(File::open(directory.join("snapshot.json"))?)?;
     let mut payload = File::open(directory.join("object.bin"))?;
     let length = payload.metadata()?.len();
     let publication = DiskPlan::prepare_multipart(

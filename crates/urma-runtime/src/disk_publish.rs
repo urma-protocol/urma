@@ -74,8 +74,7 @@ fn reconcile(
         }
         let commit_confirmed = confirmed(report)?;
         if !known(report)? {
-            report.blocked_reason =
-                "commit submission is not yet observable; resume before spending its change".into();
+            report.blocked_reason = ConfirmationWait::Visibility.reason().into();
             return Ok(());
         }
         if !commit_confirmed {
@@ -103,16 +102,14 @@ fn reconcile(
         disk_journal::observe(node, journal, report)?;
         store(journal, report)?;
         if pending_commits >= 8 {
-            report.blocked_reason = "eight funding commits are pending; resume after confirmation to advance the bounded pipeline".into();
+            report.blocked_reason = ConfirmationWait::Commits.reason().into();
             return Ok(());
         }
     }
     report.complete = data_confirmed && leaves_confirmed && root_confirmed;
     report.confirmed = report.complete;
     if !report.complete {
-        report.blocked_reason =
-            "awaiting confirmations; resume to publish eligible reveals and dependent manifests"
-                .into();
+        report.blocked_reason = ConfirmationWait::Reveals.reason().into();
     }
     Ok(())
 }
@@ -144,4 +141,37 @@ fn record(pair: &PublicPlan) -> Result<MultipartRecord, Error> {
     let reveal: Transaction = deserialize(&hex::decode(&pair.reveal)?)?;
     let record = VerifiedRecord::verify(reveal.compute_txid(), &reveal, &commit)?;
     Ok(record.decode()?)
+}
+
+enum ConfirmationWait {
+    Visibility,
+    Commits,
+    Reveals,
+}
+
+impl ConfirmationWait {
+    fn reason(&self) -> &'static str {
+        match self {
+            Self::Visibility => {
+                "commit submission is not yet observable; resume before spending its change"
+            }
+            Self::Commits => {
+                "eight funding commits are pending; resume after confirmation to advance the bounded pipeline"
+            }
+            Self::Reveals => {
+                "awaiting confirmations; resume to publish eligible reveals and dependent manifests"
+            }
+        }
+    }
+}
+
+pub fn may_resume_automatically(report: &PublishReport) -> bool {
+    !report.complete
+        && [
+            ConfirmationWait::Visibility,
+            ConfirmationWait::Commits,
+            ConfirmationWait::Reveals,
+        ]
+        .iter()
+        .any(|state| state.reason() == report.blocked_reason)
 }
