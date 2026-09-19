@@ -6,6 +6,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Descriptor {
+    pub repository_name: String,
     pub object_format: u8,
     pub head: Vec<u8>,
     pub branch: Vec<u8>,
@@ -16,7 +17,26 @@ pub struct Descriptor {
 }
 
 impl Descriptor {
-    pub const PROFILE: [u8; 8] = *b"URMAGIT0";
+    pub const PROFILE: [u8; 8] = *b"URMAGIT1";
+    pub const UNNAMED_PROFILE: [u8; 8] = *b"URMAGIT0";
+    pub const MAX_PREFIX_BYTES: u64 = 65_777;
+
+    pub fn profile(&self) -> [u8; 8] {
+        if self.repository_name.is_empty() {
+            Self::UNNAMED_PROFILE
+        } else {
+            Self::PROFILE
+        }
+    }
+
+    pub fn require_profile(&self, profile: [u8; 8]) -> Result<(), Error> {
+        if self.profile() != profile {
+            return Err(Error::Invalid(
+                "Git profile and descriptor revision disagree".into(),
+            ));
+        }
+        Ok(())
+    }
     pub fn object_format_name(&self) -> Result<&'static str, Error> {
         match self.object_format {
             1 => Ok("sha1"),
@@ -27,7 +47,10 @@ impl Descriptor {
 
     pub fn encode(&self, output: &mut impl Write) -> Result<(), Error> {
         self.validate()?;
-        output.write_all(&[self.object_format, 0])?;
+        output.write_all(&[
+            self.object_format,
+            u8::from(!self.repository_name.is_empty()),
+        ])?;
         output.write_all(&u16::try_from(self.branch.len())?.to_le_bytes())?;
         output.write_all(&self.pack_length.to_le_bytes())?;
         output.write_all(&self.pack_sha256)?;
@@ -35,6 +58,10 @@ impl Descriptor {
         output.write_all(&self.previous_root)?;
         output.write_all(&self.head)?;
         output.write_all(&self.branch)?;
+        if !self.repository_name.is_empty() {
+            output.write_all(&u16::try_from(self.repository_name.len())?.to_le_bytes())?;
+            output.write_all(self.repository_name.as_bytes())?;
+        }
         Ok(())
     }
 
@@ -46,8 +73,8 @@ impl Descriptor {
             2 => 32,
             other => return Err(Error::Invalid(format!("object format {other}"))),
         };
-        if prefix[1] != 0 {
-            return Err(Error::Invalid("descriptor flags".into()));
+        if prefix[1] > 1 {
+            return Err(Error::Invalid("descriptor revision".into()));
         }
         let branch_length = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
         let mut head = vec![0; head_length];
@@ -62,7 +89,9 @@ impl Descriptor {
         pack_sha256.copy_from_slice(&prefix[12..44]);
         first_root.copy_from_slice(&prefix[44..76]);
         previous_root.copy_from_slice(&prefix[76..108]);
+        let repository_name = read_name(input, prefix[1])?;
         let descriptor = Self {
+            repository_name,
             object_format: prefix[0],
             head,
             branch,
@@ -87,6 +116,9 @@ impl Descriptor {
     }
 
     pub fn validate(&self) -> Result<(), Error> {
+        if !self.repository_name.is_empty() {
+            validate_name(&self.repository_name)?;
+        }
         let expected = match self.object_format {
             1 => 20,
             2 => 32,
@@ -116,4 +148,62 @@ pub fn digest(input: &mut impl Read) -> Result<[u8; 32], Error> {
         hash.update(&buffer[..length]);
     }
     Ok(hash.finalize().into())
+}
+
+fn read_name(input: &mut impl Read, revision: u8) -> Result<String, Error> {
+    if revision == 0 {
+        return Ok(String::new());
+    }
+    let mut length = [0; 2];
+    input.read_exact(&mut length)?;
+    let length = usize::from(u16::from_le_bytes(length));
+    if length == 0 || length > 100 {
+        return Err(Error::Invalid(
+            "repository name length must be 1..100 bytes".into(),
+        ));
+    }
+    let mut name = vec![0; length];
+    input.read_exact(&mut name)?;
+    let name = String::from_utf8(name)?;
+    validate_name(&name)?;
+    Ok(name)
+}
+
+pub fn validate_name(name: &str) -> Result<(), Error> {
+    let first = name
+        .bytes()
+        .next()
+        .ok_or_else(|| Error::Invalid("repository name must not be empty".into()))?;
+    let valid_start = first.is_ascii_alphanumeric();
+    let stem = name
+        .split('.')
+        .next()
+        .ok_or_else(|| Error::Invalid("repository name".into()))?;
+    let reserved = [
+        "CON", "PRN", "AUX", "NUL", "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8",
+        "COM9", "LPT1", "LPT2", "LPT3", "LPT4", "LPT5", "LPT6", "LPT7", "LPT8", "LPT9",
+    ];
+    if name.len() > 100
+        || !valid_start
+        || name.ends_with('.')
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"-_.".contains(&byte))
+        || reserved
+            .iter()
+            .any(|value| stem.eq_ignore_ascii_case(value))
+    {
+        return Err(Error::Invalid("unsafe repository name; use --name with 1..100 ASCII letters, digits, '-', '_' or '.', starting with a letter/digit; no trailing dot or reserved device names".into()));
+    }
+    Ok(())
+}
+
+pub fn source_name(repo: &std::path::Path) -> Result<String, Error> {
+    let path = repo.canonicalize()?;
+    let name = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| Error::Invalid("source has no portable basename; provide --name".into()))?;
+    validate_name(name)?;
+    Ok(name.to_owned())
 }

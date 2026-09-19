@@ -21,6 +21,8 @@ impl GitLimits {
 pub(crate) struct PrepareArgs {
     #[arg(default_value = ".")]
     repo: PathBuf,
+    #[arg(long, help = "Public repository name [default: source directory name]")]
+    name: Option<String>,
     #[arg(long, default_value = ".urma-plan")]
     output: PathBuf,
     #[command(flatten)]
@@ -98,7 +100,9 @@ Litecoin mainnet is the default. No wallet or account is needed to clone."
     Clone {
         #[arg(value_name = "TXID", help = "URMA Git root transaction ID")]
         root: bitcoin::Txid,
-        #[arg(help = "Destination directory [default: urma-<first 12 TXID characters>]")]
+        #[arg(
+            help = "Destination directory [default: published repository name; TXID for unnamed roots]"
+        )]
         directory: Option<PathBuf>,
         #[command(flatten)]
         node: NodeArgs,
@@ -119,10 +123,15 @@ fn boundary(error: urma_git::error::Error) -> Error {
 }
 
 fn prepare(args: PrepareArgs) -> Result<Value, Error> {
+    let name = urma_git::config::publication_name(
+        &args.repo,
+        urma_git::config::PublicationName(args.name),
+    )
+    .map_err(boundary)?;
     let node = args.node.connect()?;
     let vault = args.access.open()?;
     let signer = vault.keyring().active()?;
-    let report = workflows::prepare(
+    let report = workflows::prepare_named(
         &node,
         &signer,
         &args.repo,
@@ -133,6 +142,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
             max_fee: args.max_fee,
             max_records: urma_runtime::plan::PublicationPlan::MAX_RECORDS,
         },
+        &name,
     )
     .map_err(boundary)?;
     Ok(serde_json::to_value(report)?)
@@ -193,19 +203,15 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
             node,
             resources,
         } => {
-            let directory =
-                config::clone_directory(config::CloneDestination(directory), &root.to_string())?;
-            urma::error::ensure!(
-                !directory.try_exists()?,
-                "destination '{}' already exists; choose another directory",
-                directory.display()
-            );
-            progress(format!("Cloning into '{}'...", directory.display()));
+            let requested = urma_git::config::CloneDestination(directory);
+            urma_git::config::staging_parent(&requested).map_err(boundary)?;
             progress(format!("Connecting to {}...", node.chain()?.label()));
             let node = node.connect()?;
             progress("Receiving and verifying URMA objects...".into());
-            let report = workflows::clone_root(&node, root, &directory, &resources.load()?)
-                .map_err(boundary)?;
+            let (report, directory) =
+                workflows::clone_root_named(&node, root, requested, &resources.load()?)
+                    .map_err(boundary)?;
+            progress(format!("Cloning into '{}'...", directory.display()));
             progress(format!(
                 "Receiving objects: {} bytes, done.",
                 report.snapshot.descriptor.pack_length

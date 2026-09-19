@@ -68,7 +68,7 @@ fn install_staged(
     let scan = review::scan(
         &validated.repository,
         &validated.inventory,
-        &validated.descriptor.branch,
+        &validated.descriptor,
         stage.path(),
     )?;
     let report = snapshot::SnapshotReport {

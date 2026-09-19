@@ -1,5 +1,5 @@
 use crate::{
-    checkout,
+    checkout, config,
     descriptor::{self, Descriptor},
     error::Error,
     inventory::Limits,
@@ -9,7 +9,11 @@ use crate::{
 };
 use bitcoin::Txid;
 use serde::{Deserialize, Serialize};
-use std::{fs::File, io::Seek, path::Path};
+use std::{
+    fs::File,
+    io::Seek,
+    path::{Path, PathBuf},
+};
 use urma::{multipart::RecoveryLimits, storage};
 use urma_identity::identity::IdentitySigner;
 use urma_runtime::{
@@ -39,7 +43,27 @@ pub fn prepare(
     limits: &Limits,
     budget: PlanLimits,
 ) -> Result<PreparedReport, Error> {
-    let snapshot = snapshot::prepare(repo, directory, limits)?;
+    prepare_named(
+        node,
+        signer,
+        repo,
+        directory,
+        limits,
+        budget,
+        &descriptor::source_name(repo)?,
+    )
+}
+
+pub fn prepare_named(
+    node: &Node,
+    signer: &impl IdentitySigner,
+    repo: &Path,
+    directory: &Path,
+    limits: &Limits,
+    budget: PlanLimits,
+    name: &str,
+) -> Result<PreparedReport, Error> {
+    let snapshot = snapshot::prepare_named(repo, directory, limits, name)?;
     let payload = storage::read_bounded(&directory.join("object.bin"), 64 * 1024 * 1024)?;
     let publication = plan::prepare_multipart(node, signer, &payload, Descriptor::PROFILE, budget)?;
     let hash = GitPlan::freeze(directory, &publication, limits)?;
@@ -81,7 +105,7 @@ pub fn record_review(directory: &Path, classifications: &[String]) -> Result<Str
     let actual = review::scan(
         &verified.repository,
         &verified.inventory,
-        &verified.descriptor.branch,
+        &verified.descriptor,
         scratch.path(),
     )?;
     let recorded: review::ScanReport =
@@ -126,7 +150,7 @@ pub fn recovery_limits(limits: &Limits) -> Result<RecoveryLimits, Error> {
     Ok(RecoveryLimits {
         max_payload_bytes: limits
             .max_pack_bytes
-            .checked_add(65_675)
+            .checked_add(Descriptor::MAX_PREFIX_BYTES)
             .ok_or_else(|| Error::Capacity("payload capacity overflow".into()))?,
         max_nodes: PublicationPlan::MAX_RECORDS,
     })
@@ -154,7 +178,7 @@ pub fn recover(
     let scratch = tempfile::tempdir_in(output)?;
     let anchor = node.tip()?;
     let mut object = recovery::recover(node, root, recovery_limits(limits)?, scratch.path())?;
-    if object.manifest().profile != Descriptor::PROFILE {
+    if ![Descriptor::PROFILE, Descriptor::UNNAMED_PROFILE].contains(&object.manifest().profile) {
         return Err(Error::Invalid("unsupported Git profile".into()));
     }
     let path = output.join("object.bin");
@@ -162,10 +186,13 @@ pub fn recover(
     std::io::copy(&mut object, &mut payload)?;
     payload.sync_all()?;
     let validated = snapshot::validate(&path, scratch.path(), limits)?;
+    validated
+        .descriptor
+        .require_profile(object.manifest().profile)?;
     let scan = review::scan(
         &validated.repository,
         &validated.inventory,
-        &validated.descriptor.branch,
+        &validated.descriptor,
         scratch.path(),
     )?;
     let locator = proofs::export(node, &object, output)?;
@@ -224,10 +251,13 @@ pub fn verify(directory: &Path, limits: &Limits) -> Result<RecoveredReport, Erro
     std::io::copy(&mut object, &mut file)?;
     file.sync_all()?;
     let validated = snapshot::validate(&payload, scratch.path(), limits)?;
+    validated
+        .descriptor
+        .require_profile(object.manifest().profile)?;
     let scan = review::scan(
         &validated.repository,
         &validated.inventory,
-        &validated.descriptor.branch,
+        &validated.descriptor,
         scratch.path(),
     )?;
     let locator: proofs::Locator =
@@ -258,26 +288,35 @@ pub fn clone_root(
     destination: &Path,
     limits: &Limits,
 ) -> Result<RecoveredReport, Error> {
-    if destination.try_exists()? {
-        return Err(Error::Invalid("clone destination already exists".into()));
-    }
-    let parent = storage_parent(destination);
+    Ok(clone_root_named(
+        node,
+        root,
+        config::CloneDestination(Some(destination.to_path_buf())),
+        limits,
+    )?
+    .0)
+}
+
+pub fn clone_root_named(
+    node: &Node,
+    root: Txid,
+    requested: config::CloneDestination,
+    limits: &Limits,
+) -> Result<(RecoveredReport, PathBuf), Error> {
+    let parent = config::staging_parent(&requested)?;
     let scratch = tempfile::Builder::new()
         .prefix(".urma-fetch-")
         .tempdir_in(parent)?;
     let recovered = scratch.path().join("snapshot");
     let report = recover(node, root, &recovered, limits)?;
+    let destination = config::destination(requested, &report.snapshot.descriptor, root)?;
     checkout::install_with_evidence(
         &recovered.join("object.bin"),
-        destination,
+        &destination,
         limits,
         &recovered,
     )?;
-    Ok(report)
-}
-
-fn storage_parent(path: &Path) -> &Path {
-    urma::config::output_parent(path)
+    Ok((report, destination))
 }
 
 pub fn parse_root(node: &Node, text: &str) -> Result<Txid, Error> {

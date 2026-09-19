@@ -68,7 +68,7 @@ pub fn verify(plan: &PublicationPlan, directory: &Path, limits: &Limits) -> Resu
     let capacity = RecoveryLimits {
         max_payload_bytes: limits
             .max_pack_bytes
-            .checked_add(65_675)
+            .checked_add(Descriptor::MAX_PREFIX_BYTES)
             .ok_or_else(|| Error::Capacity("payload capacity overflow".into()))?,
         max_nodes: PublicationPlan::MAX_RECORDS,
     };

@@ -153,7 +153,7 @@ pub fn reconstruct(
     let root = source.record(locator.root)?;
     let object = urma::multipart::reconstruct(&root, &mut source, limits, scratch)
         .map_err(|cause| Error::Io(std::io::Error::other(cause)))?;
-    if object.manifest().profile != Descriptor::PROFILE {
+    if ![Descriptor::PROFILE, Descriptor::UNNAMED_PROFILE].contains(&object.manifest().profile) {
         return Err(Error::Invalid(
             "Git profile or export author metadata".into(),
         ));

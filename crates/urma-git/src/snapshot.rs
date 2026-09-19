@@ -37,7 +37,12 @@ pub fn create_private_directory(path: &Path) -> Result<(), Error> {
     Ok(())
 }
 
-fn freeze(repo: &Path, destination: &Path, limits: &Limits) -> Result<Descriptor, Error> {
+fn freeze(
+    repo: &Path,
+    destination: &Path,
+    limits: &Limits,
+    name: &str,
+) -> Result<Descriptor, Error> {
     let repo = repo.canonicalize()?;
     let branch = git::output(&repo, &["symbolic-ref", "--quiet", "HEAD"], 65537)?;
     let branch = branch
@@ -90,6 +95,7 @@ fn freeze(repo: &Path, destination: &Path, limits: &Limits) -> Result<Descriptor
         return Err(Error::Capacity("native PACK bytes".into()));
     }
     let descriptor = Descriptor {
+        repository_name: name.to_owned(),
         object_format,
         head: hex::decode(&head)?,
         branch,
@@ -108,14 +114,24 @@ fn freeze(repo: &Path, destination: &Path, limits: &Limits) -> Result<Descriptor
 }
 
 pub fn prepare(repo: &Path, destination: &Path, limits: &Limits) -> Result<SnapshotReport, Error> {
-    let descriptor = freeze(repo, destination, limits)?;
+    prepare_named(repo, destination, limits, &descriptor::source_name(repo)?)
+}
+
+pub fn prepare_named(
+    repo: &Path,
+    destination: &Path,
+    limits: &Limits,
+    name: &str,
+) -> Result<SnapshotReport, Error> {
+    descriptor::validate_name(name)?;
+    let descriptor = freeze(repo, destination, limits, name)?;
     let scratch = tempfile::tempdir_in(destination)?;
     let payload_path = destination.join("object.bin");
     let verified = validate(&payload_path, scratch.path(), limits)?;
     let scan = review::scan(
         &verified.repository,
         &verified.inventory,
-        &descriptor.branch,
+        &descriptor,
         scratch.path(),
     )?;
     let report = SnapshotReport {

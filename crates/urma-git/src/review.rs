@@ -21,6 +21,7 @@ pub struct Finding {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScanReport {
+    pub repository_name: String,
     pub scanner: String,
     pub complete: bool,
     pub objects: usize,
@@ -90,17 +91,23 @@ fn scan_reader(reader: &mut impl Read, object: &str, report: &mut ScanReport) ->
 pub fn scan(
     repo: &Path,
     inventory: &Inventory,
-    mut branch: &[u8],
+    public: &descriptor::Descriptor,
     scratch: &Path,
 ) -> Result<ScanReport, Error> {
     let mut report = ScanReport {
-        scanner: "urma-git-patterns-v1".into(),
+        repository_name: public.repository_name.clone(),
+        scanner: "urma-git-patterns-v2".into(),
         complete: false,
         objects: 0,
         bytes: 0,
         findings: Vec::new(),
     };
-    scan_reader(&mut branch, "branch", &mut report)?;
+    scan_reader(&mut public.branch.as_slice(), "branch", &mut report)?;
+    scan_reader(
+        &mut public.repository_name.as_bytes(),
+        "repository-name",
+        &mut report,
+    )?;
     for object in &inventory.objects {
         let path = scratch.join("scan-object");
         git::run(
