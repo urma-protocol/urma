@@ -118,6 +118,7 @@ fn signed_publication_restart_reorg_and_recovery() {
     let fresh = Node::connect(config).unwrap();
     for step in 0..12 {
         let report = publish(&fresh, &reloaded, &reloaded.id().unwrap(), &journal).unwrap();
+        assert_eq!(report.complete, report.confirmed);
         if report.confirmed {
             break;
         }
@@ -151,7 +152,7 @@ fn signed_publication_restart_reorg_and_recovery() {
     assert_eq!(bytes, payload);
     node.call("invalidateblock", &[json!(block)]).unwrap();
     let reorg = publish(&fresh, &reloaded, &reloaded.id().unwrap(), &journal).unwrap();
-    assert!(reorg.complete);
+    assert!(!reorg.complete);
     assert!(!reorg.confirmed);
     assert!(
         recover(

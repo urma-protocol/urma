@@ -94,19 +94,17 @@ pub fn publish(
         raw_transactions.push(&pair.commit);
         raw_transactions.push(&pair.reveal);
     }
-    for (index, raw) in raw_transactions.iter().enumerate() {
+    for raw in &raw_transactions {
         if !advance(node, raw, &mut report)? {
             store(journal, &report)?;
             return Ok(report);
         }
-        let last = index + 1 == raw_transactions.len();
         let presence = &report
             .transactions
             .last()
             .context("transaction observation missing")?
             .presence;
         if !matches!(presence, Presence::Confirmed { .. }) {
-            report.complete = last && !matches!(presence, Presence::Missing);
             report.blocked_reason =
                 "awaiting one confirmation before dependent publication or recovery".into();
             store(journal, &report)?;
