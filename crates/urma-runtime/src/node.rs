@@ -158,7 +158,7 @@ impl Node {
             }
             Err(error) => return Err(error.into()),
         };
-        if urma::config::confirmations(&value)? == 0 {
+        if urma::config::confirmations(&value)? <= 0 {
             let mempool = self.call("getrawmempool", &[])?;
             return Ok(
                 if mempool
@@ -247,8 +247,13 @@ impl Node {
                 raw_transaction: raw.as_str().context("missing funding bytes")?.to_owned(),
                 vout: output.vout,
             };
+            let (outpoint, previous) = funding.prevout()?;
             ensure!(
-                funding.prevout()?.1.script_pubkey == urma_wallet::signing::script(signer)?,
+                outpoint.txid == output.txid && previous.value.to_sat() == output.value,
+                "funding transaction disagrees with scanned outpoint"
+            );
+            ensure!(
+                previous.script_pubkey == urma_wallet::signing::script(signer)?,
                 "funding identity mismatch"
             );
             return Ok(funding);
