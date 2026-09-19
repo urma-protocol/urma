@@ -64,7 +64,7 @@ pub fn prepare_multipart(
     prepare_bytes(&record.encode()?, author, funding, chain, fee_rate)
 }
 
-fn prepare_bytes(
+pub fn prepare_bytes(
     record: &[u8],
     author: &impl IdentitySigner,
     funding: Funding,
