@@ -8,7 +8,10 @@ use bitcoin::{
 };
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
-use urma::error::{Context, Error, ensure};
+use urma::{
+    error::{Context, Error, ensure},
+    publication::PublicPlan,
+};
 use urma_core::multipart::ChildReference;
 use urma_identity::identity::IdentitySigner;
 use urma_wallet::{
@@ -31,8 +34,21 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
         records: u32,
     ) -> Result<Self, Error> {
         ensure!(
-            records > 0 && records <= limits.max_records && records <= PublicationPlan::MAX_RECORDS,
-            "publication exceeds caller record budget or 1024-record client capacity"
+            records <= PublicationPlan::MAX_RECORDS,
+            "in-memory publication exceeds client capacity"
+        );
+        Self::streaming(node, signer, limits, records)
+    }
+
+    pub(crate) fn streaming(
+        node: &Node,
+        signer: &'a S,
+        limits: PlanLimits,
+        records: u32,
+    ) -> Result<Self, Error> {
+        ensure!(
+            records > 0 && records <= limits.max_records,
+            "publication exceeds caller record budget"
         );
         ensure!(
             (1..=100).contains(&limits.fee_rate) && limits.max_fee > 0,
@@ -60,6 +76,15 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
     }
 
     pub(crate) fn append(&mut self, record: &[u8]) -> Result<ChildReference, Error> {
+        let (reference, pair) = self.prepare_record(record)?;
+        self.plan.records.push(pair);
+        Ok(reference)
+    }
+
+    pub(crate) fn prepare_record(
+        &mut self,
+        record: &[u8],
+    ) -> Result<(ChildReference, PublicPlan), Error> {
         let previous = self.funding.prevout()?.1;
         let mut pair = urma::publication::prepare_bytes(
             record,
@@ -112,8 +137,11 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
             txid: reveal.compute_txid(),
             record_hash: Sha256::digest(record).into(),
         };
-        self.plan.records.push(pair);
-        Ok(reference)
+        Ok((reference, pair))
+    }
+
+    pub(crate) fn metadata(&self) -> &PublicationPlan {
+        &self.plan
     }
 
     pub(crate) fn finish(self) -> Result<PublicationPlan, Error> {

@@ -10,6 +10,9 @@ pub mod publish;
 pub mod recovery;
 mod validation;
 
+pub mod disk_plan;
+pub mod disk_publish;
+mod disk_writer;
 pub mod endpoints;
 mod esplora;
 mod remote;

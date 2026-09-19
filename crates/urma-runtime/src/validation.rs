@@ -7,6 +7,8 @@ use bitcoin::{
     sighash::SighashCache,
 };
 use urma::error::{Context, Error, ensure};
+use urma::publication::PublicPlan;
+use urma_chain::observation::Chain;
 
 fn transaction(raw: &str) -> Result<Transaction, Error> {
     Ok(deserialize(&hex::decode(raw)?)?)
@@ -70,12 +72,38 @@ pub(crate) fn validate(plan: &PublicationPlan) -> Result<(), Error> {
         plan.total_fee <= plan.maximum_fee && plan.maximum_fee > 0,
         "plan fee budget exceeded"
     );
-    let mut total = 0u64;
-    let mut previous_commit = String::new();
-    let mut last = String::new();
-    for (index, pair) in plan.records.iter().enumerate() {
+    let mut state = Validation::new();
+    for pair in &plan.records {
+        state.append(pair, plan.chain, &plan.author)?;
+    }
+    state.finish(plan.total_fee, &plan.root_txid)
+}
+
+pub(crate) struct Validation {
+    count: u32,
+    total: u64,
+    previous_commit: String,
+    last: String,
+}
+
+impl Validation {
+    pub(crate) fn new() -> Self {
+        Self {
+            count: 0,
+            total: 0,
+            previous_commit: String::new(),
+            last: String::new(),
+        }
+    }
+
+    pub(crate) fn append(
+        &mut self,
+        pair: &PublicPlan,
+        chain: Chain,
+        author: &str,
+    ) -> Result<(), Error> {
         ensure!(
-            pair.chain.genesis()? == plan.chain.genesis()?
+            pair.chain.genesis()? == chain.genesis()?
                 && pair.version == urma_core::format::Urma::VERSION,
             "plan record network or version mismatch"
         );
@@ -83,23 +111,23 @@ pub(crate) fn validate(plan: &PublicationPlan) -> Result<(), Error> {
             (1..=100).contains(&pair.fee_rate),
             "invalid record fee rate"
         );
-        if index > 0 {
+        if self.count > 0 {
             ensure!(
-                pair.funding.raw_transaction == previous_commit && pair.funding.vout == 1,
+                pair.funding.raw_transaction == self.previous_commit && pair.funding.vout == 1,
                 "broken publication funding chain"
             );
         }
         let (outpoint, previous) = pair.funding.prevout()?;
         let commit = transaction(&pair.commit)?;
         let reveal = transaction(&pair.reveal)?;
-        verify_commit(&commit, &previous, &plan.author)?;
+        verify_commit(&commit, &previous, author)?;
         ensure!(
             commit.input[0].previous_output == outpoint,
             "commit does not spend declared funding"
         );
         let parsed = urma_core::envelope::verify_reveal(&reveal, &commit)?;
         ensure!(
-            parsed.author.to_string() == plan.author,
+            parsed.author.to_string() == author,
             "record author mismatch"
         );
         ensure!(
@@ -126,13 +154,18 @@ pub(crate) fn validate(plan: &PublicationPlan) -> Result<(), Error> {
             .to_sat()
             .checked_sub(outputs)
             .context("negative publication fee")?;
-        total = total.checked_add(fee).context("fee sum overflow")?;
-        previous_commit = pair.commit.clone();
-        last = reveal.compute_txid().to_string();
+        self.total = self.total.checked_add(fee).context("fee sum overflow")?;
+        self.previous_commit = pair.commit.clone();
+        self.last = reveal.compute_txid().to_string();
+        self.count = self.count.checked_add(1).context("record count overflow")?;
+        Ok(())
     }
-    ensure!(
-        total == plan.total_fee && last == plan.root_txid,
-        "plan fee or locator mismatch"
-    );
-    Ok(())
+
+    pub(crate) fn finish(&self, total_fee: u64, root_txid: &str) -> Result<(), Error> {
+        ensure!(
+            self.total == total_fee && self.last == root_txid,
+            "plan fee or locator mismatch"
+        );
+        Ok(())
+    }
 }
