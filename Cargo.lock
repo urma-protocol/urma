@@ -1238,6 +1238,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "urma-runtime"
+version = "0.1.0"
+dependencies = [
+ "bitcoin",
+ "bitcoincore-rpc",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tracing",
+ "url",
+ "urma",
+ "urma-chain",
+ "urma-core",
+ "urma-identity",
+ "urma-wallet",
+]
+
+[[package]]
 name = "urma-wallet"
 version = "0.1.0"
 dependencies = [
