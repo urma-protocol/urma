@@ -220,3 +220,12 @@ pub(crate) fn publication_directory(
 pub(crate) fn publication_poll_interval() -> std::time::Duration {
     std::time::Duration::from_secs(30)
 }
+
+pub(crate) struct FeeCeiling(pub Option<u64>);
+
+pub(crate) fn publication_fee_ceiling(requested: FeeCeiling, estimate: u64) -> u64 {
+    match requested.0 {
+        Some(limit) => limit,
+        None => estimate,
+    }
+}

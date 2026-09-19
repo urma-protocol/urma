@@ -9,6 +9,7 @@ mod archive_cli;
 mod capture_cli;
 mod config;
 mod files_cli;
+mod funding_cli;
 mod git_cli;
 mod git_publish_cli;
 mod key_cli;

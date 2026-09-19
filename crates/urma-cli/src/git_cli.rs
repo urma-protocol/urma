@@ -1,6 +1,6 @@
 use crate::{
-    approve_publication, config, detail, git_publish_cli, key_cli::VaultAccess, node_cli::NodeArgs,
-    print_report, progress, stage,
+    approve_publication, config, detail, funding_cli, git_publish_cli, key_cli::VaultAccess,
+    node_cli::NodeArgs, print_report, progress, stage,
 };
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -147,19 +147,26 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
     })?;
     let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;
-    let report = stage("Preparing and validating the Git publication...", || {
-        workflows::prepare_named(
+    let limits = args.resources.load()?;
+    stage("Preparing and validating the Git snapshot...", || {
+        urma_git::snapshot::prepare_named(&args.repo, &args.output, &limits, &name)
+    })
+    .map_err(boundary)?;
+    let length = args.output.join("object.bin").metadata()?.len();
+    let quote = urma_runtime::quote::multipart(length, &signer, args.fee_rate)?;
+    funding_cli::preview(node.chain(), &quote, args.max_fee);
+    funding_cli::check(&node, &signer, &quote, args.max_fee)?;
+    let report = stage("Signing and verifying the publication plan...", || {
+        workflows::prepare_snapshot(
             &node,
             &signer,
-            &args.repo,
             &args.output,
-            &args.resources.load()?,
+            &limits,
             PlanLimits {
                 fee_rate: args.fee_rate,
-                max_fee: args.max_fee,
-                max_records: urma_runtime::disk_plan::DiskPlan::MAX_RECORDS,
+                max_fee: quote.maximum_fee,
+                max_records: quote.records,
             },
-            &name,
         )
     })
     .map_err(boundary)?;

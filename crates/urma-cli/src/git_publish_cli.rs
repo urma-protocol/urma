@@ -1,5 +1,7 @@
+use crate::funding_cli::{amount, currency};
 use crate::{
-    approve_publication, config, detail, key_cli::VaultAccess, node_cli::NodeArgs, progress,
+    approve_publication, config, detail, funding_cli, key_cli::VaultAccess, node_cli::NodeArgs,
+    progress,
 };
 use clap::Args;
 use serde_json::Value;
@@ -45,18 +47,6 @@ fn boundary(error: urma_git::error::Error) -> Error {
     Error::Io(std::io::Error::other(error))
 }
 
-fn currency(chain: urma_chain::observation::Chain) -> &'static str {
-    use urma_chain::observation::Chain;
-    match chain {
-        Chain::LitecoinMainnet | Chain::LitecoinTestnet => "LTC",
-        Chain::BitcoinTestnet4 | Chain::BitcoinRegtest => "BTC",
-    }
-}
-
-fn amount(value: u64) -> String {
-    format!("{}.{:08}", value / 100_000_000, value % 100_000_000)
-}
-
 fn prepare(
     args: &PublishArgs,
     directory: &std::path::Path,
@@ -72,7 +62,7 @@ fn prepare(
     let signer = vault.keyring().active()?;
     let length = directory.join("object.bin").metadata()?.len();
     let quote = quote::multipart(length, &signer, args.fee_rate)?;
-    let unit = currency(args.node.chain()?);
+
     progress(format!("Local snapshot: {}", directory.display()));
     progress(format!(
         "Snapshot: {} tree entries, {} PACK bytes; {} records / {} transactions.",
@@ -81,25 +71,13 @@ fn prepare(
         quote.records,
         u64::from(quote.records) * 2
     ));
-    progress(format!(
-        "Estimated fee ceiling: {} {unit} ({} base units).",
-        amount(quote.maximum_fee),
-        quote.maximum_fee
-    ));
-    progress(format!(
-        "Required funding: {} {unit} in one confirmed UTXO; returned outputs and change are not fees.",
-        amount(quote.funding)
-    ));
+    let ceiling =
+        config::publication_fee_ceiling(config::FeeCeiling(args.max_fee), quote.maximum_fee);
+    funding_cli::preview(args.node.chain()?, &quote, ceiling);
     ensure!(
         snapshot.scan.findings.is_empty(),
         "scanner found possible secrets; inspect scan.json and prepare/review explicitly before publishing"
     );
-    for maximum in args.max_fee.iter() {
-        ensure!(
-            quote.maximum_fee <= *maximum,
-            "estimated fee exceeds --max-fee; nothing submitted"
-        );
-    }
     progress("Checking identity funding and freezing exact signed transactions...".into());
     detail(
         2,
@@ -109,6 +87,7 @@ fn prepare(
         ),
     );
     let node = args.node.connect()?;
+    funding_cli::check(&node, &signer, &quote, ceiling)?;
     workflows::prepare_snapshot(
         &node,
         &signer,
