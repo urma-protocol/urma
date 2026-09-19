@@ -1,4 +1,4 @@
-use crate::{descriptor, error::Error, git, inventory::Inventory};
+use crate::{config, descriptor, error::Error, inventory::Inventory, scan_pool};
 use regex::bytes::Regex;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -7,6 +7,7 @@ use std::{
     fs::File,
     io::{Read, Write},
     path::Path,
+    sync::atomic::{AtomicUsize, Ordering},
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -29,7 +30,7 @@ pub struct ScanReport {
     pub findings: Vec<Finding>,
 }
 
-fn rules() -> Result<Vec<(&'static str, Regex)>, Error> {
+pub(crate) fn rules() -> Result<Vec<(&'static str, Regex)>, Error> {
     Ok(vec![
         (
             "private-key",
@@ -49,23 +50,45 @@ fn rules() -> Result<Vec<(&'static str, Regex)>, Error> {
     ])
 }
 
-fn scan_reader(reader: &mut impl Read, object: &str, report: &mut ScanReport) -> Result<(), Error> {
-    let rules = rules()?;
+fn read_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> Result<usize, Error> {
+    let mut count = 0;
+    while count < buffer.len() {
+        let received = reader.read(&mut buffer[count..])?;
+        if received == 0 {
+            break;
+        }
+        count += received;
+    }
+    Ok(count)
+}
+
+pub(crate) fn scan_reader(
+    reader: &mut impl Read,
+    object: &str,
+    report: &mut ScanReport,
+    rules: &[(&str, Regex)],
+    findings: &AtomicUsize,
+) -> Result<(), Error> {
     let mut buffer = vec![0_u8; 65536 + 512];
     let mut carry = 0;
     let mut offset = 0_u64;
     let mut found = BTreeSet::new();
     loop {
-        let count = reader.read(&mut buffer[carry..65536 + carry])?;
+        let count = read_chunk(reader, &mut buffer[carry..65536 + carry])?;
         if count == 0 {
             break;
         }
         let used = carry + count;
-        for (name, regex) in &rules {
+        for (name, regex) in rules {
             for matched in regex.find_iter(&buffer[..used]) {
                 let position = offset + u64::try_from(matched.start())?;
                 if !found.insert((name.to_string(), position)) {
                     continue;
+                }
+                if findings.fetch_add(1, Ordering::Relaxed) >= config::SCAN_FINDINGS_LIMIT {
+                    return Err(Error::Capacity(
+                        "scanner finding limit exceeded; review content before retrying".into(),
+                    ));
                 }
                 let id = hex::encode(Sha256::digest(format!("{object}:{name}:{position}")));
                 report.findings.push(Finding {
@@ -102,38 +125,23 @@ pub fn scan(
         bytes: 0,
         findings: Vec::new(),
     };
-    scan_reader(&mut public.branch.as_slice(), "branch", &mut report)?;
+    let rules = rules()?;
+    let findings = AtomicUsize::new(0);
+    scan_reader(
+        &mut public.branch.as_slice(),
+        "branch",
+        &mut report,
+        &rules,
+        &findings,
+    )?;
     scan_reader(
         &mut public.repository_name.as_bytes(),
         "repository-name",
         &mut report,
+        &rules,
+        &findings,
     )?;
-    for object in &inventory.objects {
-        let path = scratch.join("scan-object");
-        git::run(
-            repo,
-            &[
-                "cat-file".as_ref(),
-                object.kind.as_ref(),
-                object.oid.as_ref(),
-            ],
-            Path::new("/dev/null"),
-            &path,
-        )?;
-        let mut file = File::open(&path)?;
-        if file.metadata()?.len() != object.size {
-            return Err(Error::Invalid("object changed while scanning".into()));
-        }
-        if object.kind == "blob" {
-            reject_lfs(&mut file)?;
-        }
-        scan_reader(&mut file, &object.oid, &mut report)?;
-        report.objects += 1;
-        if report.objects.is_multiple_of(128) {
-            tracing::debug!(target: "urma_progress", objects = report.objects, bytes = report.bytes, "Scanning snapshot objects");
-        }
-        std::fs::remove_file(path)?;
-    }
+    scan_pool::scan(repo, inventory, scratch, &mut report, &findings)?;
     report.complete = true;
     Ok(report)
 }
@@ -142,12 +150,16 @@ pub fn reject_lfs(input: &mut (impl Read + std::io::Seek)) -> Result<(), Error> 
     let mut prefix = [0_u8; 256];
     let count = input.read(&mut prefix)?;
     input.rewind()?;
+    reject_lfs_prefix(&prefix[..count])
+}
+
+pub(crate) fn reject_lfs_prefix(prefix: &[u8]) -> Result<(), Error> {
     for known in [
         b"version https://git-lfs.github.com/spec/".as_slice(),
         b"version https://hawser.github.com/spec/",
         b"version https://git-media.io/",
     ] {
-        if prefix[..count].starts_with(known) {
+        if prefix.starts_with(known) {
             return Err(Error::Invalid(
                 "Git LFS pointer or malformed known LFS header".into(),
             ));

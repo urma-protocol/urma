@@ -7,7 +7,7 @@ use clap::Args;
 use serde_json::Value;
 use std::path::PathBuf;
 use urma::error::{Error, ensure};
-use urma_git::{plans::GitPlan, review, snapshot, workflows};
+use urma_git::{plans::GitPlan, review, workflows};
 use urma_runtime::{node::Node, plan::PlanLimits, quote};
 
 #[derive(Args)]
@@ -21,7 +21,7 @@ pub(crate) struct PublishArgs {
     plan: Option<PathBuf>,
     #[arg(
         long,
-        help = "Plan directory [default: unique directory inside .git/urma/publications]"
+        help = "Reusable plan directory [default: .urma-plan in the repository]"
     )]
     output: Option<PathBuf>,
     #[arg(long, default_value_t = 1, help = "Fee rate in base units per vbyte")]
@@ -51,13 +51,13 @@ fn prepare(
     args: &PublishArgs,
     directory: &std::path::Path,
 ) -> Result<workflows::PreparedReport, Error> {
-    ensure!(
-        !directory.try_exists()?,
-        "plan directory already exists; use git resume, --plan, or choose another --output"
-    );
+    let guard = urma_git::workspace::lock(directory).map_err(boundary)?;
+    urma_git::workspace::ensure_unpublished(directory).map_err(boundary)?;
     let limits = config::git_limits()?;
     progress("Preparing committed HEAD and scanning public content...".into());
-    let snapshot = snapshot::prepare(&args.repo, directory, &limits).map_err(boundary)?;
+    let name = urma_git::descriptor::source_name(&args.repo).map_err(boundary)?;
+    let snapshot =
+        urma_git::workspace::snapshot(&args.repo, directory, &limits, &name).map_err(boundary)?;
     let vault = args.access.open()?;
     let signer = vault.keyring().active()?;
     let length = directory.join("object.bin").metadata()?.len();
@@ -88,7 +88,7 @@ fn prepare(
     );
     let node = args.node.connect()?;
     funding_cli::check(&node, &signer, &quote, ceiling)?;
-    workflows::prepare_snapshot(
+    let report = workflows::prepare_snapshot(
         &node,
         &signer,
         directory,
@@ -99,7 +99,9 @@ fn prepare(
             max_records: quote.records,
         },
     )
-    .map_err(boundary)
+    .map_err(boundary)?;
+    drop(guard);
+    Ok(report)
 }
 
 fn describe(

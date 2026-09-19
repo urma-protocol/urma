@@ -6,6 +6,7 @@ use crate::{
     plans::GitPlan,
     proofs, review,
     snapshot::{self, SnapshotReport},
+    workspace,
 };
 use bitcoin::Txid;
 use serde::{Deserialize, Serialize};
@@ -61,11 +62,50 @@ pub fn prepare_named(
     budget: PlanLimits,
     name: &str,
 ) -> Result<PreparedReport, Error> {
-    snapshot::prepare_named(repo, directory, limits, name)?;
-    prepare_snapshot(node, signer, directory, limits, budget)
+    let guard = workspace::lock(directory)?;
+    workspace::snapshot(repo, directory, limits, name)?;
+    let result = prepare_snapshot(node, signer, directory, limits, budget);
+    drop(guard);
+    result
 }
 
 pub fn prepare_snapshot(
+    node: &Node,
+    signer: &impl IdentitySigner,
+    directory: &Path,
+    limits: &Limits,
+    budget: PlanLimits,
+) -> Result<PreparedReport, Error> {
+    workspace::ensure_unpublished(directory)?;
+    if directory.join("plan.json").try_exists()? {
+        let (_, _, existing) = GitPlan::load_with_publication(directory)?;
+        let first = existing.record(0)?;
+        let (outpoint, _) = first.funding.prevout()?;
+        if existing.chain.genesis().map_err(urma::error::Error::from)?
+            == node.chain().genesis().map_err(urma::error::Error::from)?
+            && existing.author == signer.public_key().inner.x_only_public_key().0.to_string()
+            && first.fee_rate == budget.fee_rate
+            && existing.maximum_fee <= budget.max_fee
+            && node
+                .available_utxos(signer)?
+                .iter()
+                .any(|output| output.txid == outpoint.txid && output.vout == outpoint.vout)
+        {
+            tracing::info!(target: "urma_progress", "Reusing the existing signed publication plan");
+            return inspect_plan(directory);
+        }
+    }
+    let staging = tempfile::Builder::new()
+        .prefix(".urma-sign-")
+        .tempdir_in(urma::config::output_parent(directory))?;
+    let fresh = staging.path().join("plan");
+    workspace::copy_snapshot(directory, &fresh)?;
+    let report = sign_snapshot(node, signer, &fresh, limits, budget)?;
+    workspace::replace(&fresh, directory)?;
+    Ok(report)
+}
+
+fn sign_snapshot(
     node: &Node,
     signer: &impl IdentitySigner,
     directory: &Path,
@@ -119,6 +159,7 @@ pub fn inspect_plan(directory: &Path) -> Result<PreparedReport, Error> {
 }
 
 pub fn record_review(directory: &Path, classifications: &[String]) -> Result<String, Error> {
+    let guard = workspace::lock(directory)?;
     let (plan, hash) = GitPlan::load(directory)?;
     let scratch = tempfile::tempdir_in(directory)?;
     let verified = snapshot::validate(&directory.join("object.bin"), scratch.path(), &plan.limits)?;
@@ -136,6 +177,7 @@ pub fn record_review(directory: &Path, classifications: &[String]) -> Result<Str
         ));
     }
     review::record(directory, &hash, classifications)?;
+    drop(guard);
     Ok(hash)
 }
 
@@ -144,6 +186,7 @@ pub fn publish(
     directory: &Path,
     approved: &str,
 ) -> Result<publish::PublishReport, Error> {
+    let guard = workspace::lock(directory)?;
     let (plan, hash, publication) = GitPlan::load_with_publication(directory)?;
     if approved != hash {
         return Err(Error::ReviewRequired(
@@ -159,12 +202,9 @@ pub fn publish(
         publish::ensure_journal_distinct(&directory.join("plan.json"), mutable)?;
         publish::ensure_journal_distinct(&directory.join("review.json"), mutable)?;
     }
-    Ok(disk_publish::publish(
-        node,
-        &publication,
-        &plan.publication_id,
-        &journal,
-    )?)
+    let report = disk_publish::publish(node, &publication, &plan.publication_id, &journal)?;
+    drop(guard);
+    Ok(report)
 }
 
 pub fn recovery_limits(limits: &Limits) -> Result<RecoveryLimits, Error> {

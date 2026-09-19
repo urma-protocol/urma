@@ -124,6 +124,8 @@ fn boundary(error: urma_git::error::Error) -> Error {
 }
 
 fn prepare(args: PrepareArgs) -> Result<Value, Error> {
+    let guard = urma_git::workspace::lock(&args.output).map_err(boundary)?;
+    urma_git::workspace::ensure_unpublished(&args.output).map_err(boundary)?;
     let name = urma_git::config::publication_name(
         &args.repo,
         urma_git::config::PublicationName(args.name),
@@ -149,7 +151,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
     let signer = vault.keyring().active()?;
     let limits = args.resources.load()?;
     stage("Preparing and validating the Git snapshot...", || {
-        urma_git::snapshot::prepare_named(&args.repo, &args.output, &limits, &name)
+        urma_git::workspace::snapshot(&args.repo, &args.output, &limits, &name)
     })
     .map_err(boundary)?;
     let length = args.output.join("object.bin").metadata()?.len();
@@ -170,6 +172,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
         )
     })
     .map_err(boundary)?;
+    drop(guard);
     match config::output()? {
         config::Output::Json => Ok(serde_json::to_value(report)?),
         config::Output::Human => {

@@ -14,5 +14,9 @@ pub mod inventory;
 pub mod plans;
 pub mod proofs;
 pub mod review;
+mod scan_batch;
+mod scan_pool;
 pub mod snapshot;
 pub mod workflows;
+
+pub mod workspace;
