@@ -26,7 +26,7 @@ pub struct PublishReport {
     pub transactions: Vec<TransactionStatus>,
 }
 
-fn store(path: &Path, report: &PublishReport) -> Result<(), Error> {
+pub(crate) fn store(path: &Path, report: &PublishReport) -> Result<(), Error> {
     let parent = urma::config::output_parent(path);
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
     temporary.write_all(&serde_json::to_vec_pretty(report)?)?;
@@ -122,7 +122,7 @@ pub fn publish(
     Ok(report)
 }
 
-fn advance(node: &Node, raw: &str, report: &mut PublishReport) -> Result<bool, Error> {
+pub(crate) fn advance(node: &Node, raw: &str, report: &mut PublishReport) -> Result<bool, Error> {
     let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
     let txid = transaction.compute_txid();
     let mut presence = node.presence(txid)?;
