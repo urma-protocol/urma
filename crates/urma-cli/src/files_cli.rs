@@ -174,7 +174,11 @@ pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
     ensure!(!args.output.try_exists()?, "plan output already exists");
     let inventory = Inventory::load(&args.bundle)?;
     let mut records = Vec::new();
-    for object in urma_files::inventory::authenticated_objects(&args.bundle, &secret)? {
+    for object in urma_files::inventory::authenticated_objects(
+        &args.bundle,
+        &secret,
+        usize::try_from(args.max_records)?,
+    )? {
         records.extend(object.records);
     }
     let vault = args.identity.open()?;

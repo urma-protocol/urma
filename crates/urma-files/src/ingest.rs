@@ -124,10 +124,8 @@ fn scan(inputs: &[PathBuf]) -> Result<Vec<SourceEntry>, Error> {
     }
     let mut entries = Vec::new();
     let mut total = 0u64;
-    loop {
-        let Some((source, path)) = pending.pop() else {
-            break;
-        };
+    while !pending.is_empty() {
+        let (source, path) = pending.pop().context("intake stack unexpectedly empty")?;
         safety::validate_path(&path)?;
         let metadata = fs::symlink_metadata(&source)?;
         ensure!(

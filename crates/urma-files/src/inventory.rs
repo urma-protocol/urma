@@ -1,5 +1,6 @@
-use crate::{config::MAX_ENTRIES, recover, safety};
+use crate::{catalog::Content, config::MAX_ENTRIES, recover, safety};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, path::Path};
 use urma::{
     container,
@@ -84,11 +85,43 @@ pub fn prepared_objects(directory: &Path) -> Result<Vec<PreparedObject>, Error> 
 pub fn authenticated_objects(
     directory: &Path,
     secret: &urma_identity::keys::RecoverySecret,
+    max_records: usize,
 ) -> Result<Vec<PreparedObject>, Error> {
-    recover::inspect_bundle(directory, secret)?;
-    let objects = prepared_objects(directory)?;
-    for object in &objects {
-        secret.with_bytes(|root| container::open(root, &object.records))?;
+    let catalog = recover::inspect_bundle(directory, secret)?;
+    let inventory = Inventory::load(directory)?;
+    let mut references = std::collections::BTreeMap::new();
+    for entry in &catalog.entries {
+        if let Content::File { object, .. } = &entry.content {
+            references.insert(object.id.as_str(), object);
+        }
+    }
+    let mut objects = Vec::new();
+    let mut count = 0usize;
+    for id in &inventory.objects {
+        let records = load_object(directory, id)?;
+        count = count
+            .checked_add(records.len())
+            .ok_or_else(|| Error::Capacity("record count overflow".into()))?;
+        ensure!(
+            count <= max_records,
+            "bundle exceeds selected publication record limit"
+        );
+        let bytes = secret.with_bytes(|root| container::open(root, &records))?;
+        if *id != inventory.catalog {
+            let expected = references
+                .get(id.as_str())
+                .ok_or_else(|| Error::Invalid("unexpected inventory object".into()))?;
+            ensure!(
+                u64::try_from(bytes.len())? == expected.bytes
+                    && hex::encode(Sha256::digest(&bytes)) == expected.sha256,
+                "original does not match authenticated catalog"
+            );
+        }
+        objects.push(PreparedObject {
+            id: id.clone(),
+            records,
+            is_catalog: *id == inventory.catalog,
+        });
     }
     Ok(objects)
 }
