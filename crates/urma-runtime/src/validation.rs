@@ -107,6 +107,15 @@ pub(crate) fn validate(plan: &PublicationPlan) -> Result<(), Error> {
                 && reveal.output[0].script_pubkey == previous.script_pubkey,
             "publication change destination mismatch"
         );
+        let committed = commit.output[0]
+            .value
+            .to_sat()
+            .checked_add(commit.output[1].value.to_sat())
+            .context("commit output sum overflow")?;
+        ensure!(
+            committed <= previous.value.to_sat(),
+            "commit spends more than declared funding"
+        );
         let outputs = commit.output[1]
             .value
             .to_sat()
