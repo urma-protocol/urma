@@ -1,4 +1,4 @@
-use crate::error::Error;
+use crate::{config, error::Error};
 use std::{
     ffi::{OsStr, OsString},
     fs::File,
@@ -9,13 +9,10 @@ use std::{
 
 pub fn command(repo: &Path) -> Command {
     let mut command = Command::new("/usr/bin/prlimit");
-    command.args([
-        "--as=536870912",
-        "--cpu=1800",
-        "--fsize=67108864",
-        "--",
-        "/usr/bin/git",
-    ]);
+    command
+        .args(["--as=536870912", "--cpu=1800"])
+        .arg(format!("--fsize={}", config::worker_file_capacity()))
+        .args(["--", "/usr/bin/git"]);
     command
         .env_clear()
         .env("PATH", "/usr/bin:/bin")
@@ -41,6 +38,12 @@ pub fn command(repo: &Path) -> Command {
             "pack.windowMemory=64m",
             "-c",
             "core.deltaBaseCacheLimit=64m",
+            "-c",
+            "core.packedGitWindowSize=32m",
+            "-c",
+            "core.packedGitLimit=128m",
+            "-c",
+            "core.bigFileThreshold=16m",
         ]);
     command
 }

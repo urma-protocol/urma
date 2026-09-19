@@ -14,12 +14,10 @@ use std::{
     io::Seek,
     path::{Path, PathBuf},
 };
-use urma::{multipart::RecoveryLimits, storage};
+use urma::multipart::RecoveryLimits;
 use urma_identity::identity::IdentitySigner;
 use urma_runtime::{
-    node::Node,
-    plan::{self, PlanLimits, PublicationPlan},
-    publish, recovery,
+    disk_plan::DiskPlan, disk_publish, node::Node, plan::PlanLimits, publish, recovery,
 };
 
 #[derive(Serialize)]
@@ -64,14 +62,23 @@ pub fn prepare_named(
     name: &str,
 ) -> Result<PreparedReport, Error> {
     let snapshot = snapshot::prepare_named(repo, directory, limits, name)?;
-    let payload = storage::read_bounded(&directory.join("object.bin"), 64 * 1024 * 1024)?;
-    let publication = plan::prepare_multipart(node, signer, &payload, Descriptor::PROFILE, budget)?;
+    let mut payload = File::open(directory.join("object.bin"))?;
+    let length = payload.metadata()?.len();
+    let publication = DiskPlan::prepare_multipart(
+        node,
+        signer,
+        &mut payload,
+        length,
+        Descriptor::PROFILE,
+        budget,
+        &directory.join("publication"),
+    )?;
     let hash = GitPlan::freeze(directory, &publication, limits)?;
     Ok(PreparedReport {
         plan_id: hash,
         root_txid: publication.root_txid,
         author: publication.author,
-        transactions: publication.records.len() * 2,
+        transactions: usize::try_from(publication.record_count)? * 2,
         total_fee: publication.total_fee,
         maximum_fee: publication.maximum_fee,
         review_required: true,
@@ -81,15 +88,14 @@ pub fn prepare_named(
 }
 
 pub fn inspect_plan(directory: &Path) -> Result<PreparedReport, Error> {
-    let (plan, hash) = GitPlan::load(directory)?;
-    let publication = plan.publication(directory)?;
+    let (_, hash, publication) = GitPlan::load_with_publication(directory)?;
     let snapshot: SnapshotReport =
         serde_json::from_reader(File::open(directory.join("snapshot.json"))?)?;
     Ok(PreparedReport {
         plan_id: hash,
         root_txid: publication.root_txid,
         author: publication.author,
-        transactions: publication.records.len() * 2,
+        transactions: usize::try_from(publication.record_count)? * 2,
         total_fee: publication.total_fee,
         maximum_fee: publication.maximum_fee,
         review_required: true,
@@ -124,21 +130,22 @@ pub fn publish(
     directory: &Path,
     approved: &str,
 ) -> Result<publish::PublishReport, Error> {
-    let (plan, hash) = GitPlan::load(directory)?;
+    let (plan, hash, publication) = GitPlan::load_with_publication(directory)?;
     if approved != hash {
         return Err(Error::ReviewRequired(
             "approval does not match exact Git plan".into(),
         ));
     }
     review::require(directory, &hash)?;
-    let publication = plan.publication(directory)?;
     let journal = directory.join("progress.json");
-    for artifact in &plan.artifacts {
-        publish::ensure_journal_distinct(&directory.join(&artifact.name), &journal)?;
+    for mutable in [&journal, &journal.with_extension("observations.jsonl")] {
+        for artifact in &plan.artifacts {
+            publish::ensure_journal_distinct(&directory.join(&artifact.name), mutable)?;
+        }
+        publish::ensure_journal_distinct(&directory.join("plan.json"), mutable)?;
+        publish::ensure_journal_distinct(&directory.join("review.json"), mutable)?;
     }
-    publish::ensure_journal_distinct(&directory.join("plan.json"), &journal)?;
-    publish::ensure_journal_distinct(&directory.join("review.json"), &journal)?;
-    Ok(publish::publish(
+    Ok(disk_publish::publish(
         node,
         &publication,
         &plan.publication_id,
@@ -152,7 +159,7 @@ pub fn recovery_limits(limits: &Limits) -> Result<RecoveryLimits, Error> {
             .max_pack_bytes
             .checked_add(Descriptor::MAX_PREFIX_BYTES)
             .ok_or_else(|| Error::Capacity("payload capacity overflow".into()))?,
-        max_nodes: PublicationPlan::MAX_RECORDS,
+        max_nodes: DiskPlan::MAX_RECORDS,
     })
 }
 
@@ -177,7 +184,8 @@ pub fn recover(
     snapshot::create_private_directory(output)?;
     let scratch = tempfile::tempdir_in(output)?;
     let anchor = node.tip()?;
-    let mut object = recovery::recover(node, root, recovery_limits(limits)?, scratch.path())?;
+    let mut object =
+        recovery::recover_retained(node, root, recovery_limits(limits)?, scratch.path(), output)?;
     if ![Descriptor::PROFILE, Descriptor::UNNAMED_PROFILE].contains(&object.manifest().profile) {
         return Err(Error::Invalid("unsupported Git profile".into()));
     }

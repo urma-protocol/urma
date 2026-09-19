@@ -140,7 +140,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
         PlanLimits {
             fee_rate: args.fee_rate,
             max_fee: args.max_fee,
-            max_records: urma_runtime::plan::PublicationPlan::MAX_RECORDS,
+            max_records: urma_runtime::disk_plan::DiskPlan::MAX_RECORDS,
         },
         &name,
     )

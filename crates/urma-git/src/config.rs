@@ -51,3 +51,11 @@ pub fn publication_name(repo: &Path, requested: PublicationName) -> Result<Strin
         None => descriptor::source_name(repo),
     }
 }
+
+pub fn pack_capacity() -> u64 {
+    urma_core::multipart::Geometry::MAX_OBJECT_BYTES - Descriptor::MAX_PREFIX_BYTES
+}
+
+pub fn worker_file_capacity() -> u64 {
+    urma_core::multipart::Geometry::MAX_OBJECT_BYTES
+}

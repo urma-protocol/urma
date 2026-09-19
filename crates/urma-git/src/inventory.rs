@@ -1,4 +1,4 @@
-use crate::{error::Error, git};
+use crate::{config, error::Error, git};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -19,7 +19,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
-            max_pack_bytes: 64 * 1024 * 1024,
+            max_pack_bytes: config::pack_capacity(),
             max_objects: 1_000_000,
             max_paths: 1_000_000,
             max_depth: 256,

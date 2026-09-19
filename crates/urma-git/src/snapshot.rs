@@ -154,7 +154,7 @@ pub fn write_json(path: &Path, value: &impl Serialize) -> Result<(), Error> {
         .write(true)
         .create_new(true)
         .open(path)?;
-    file.write_all(&serde_json::to_vec_pretty(value)?)?;
+    serde_json::to_writer_pretty(&mut file, value)?;
     file.sync_all()?;
     Ok(())
 }

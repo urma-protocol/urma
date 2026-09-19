@@ -5,7 +5,6 @@
     unused_variables,
     unused_assignments
 )]
-mod binding;
 pub mod checkout;
 pub mod config;
 pub mod descriptor;
