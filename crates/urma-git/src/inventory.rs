@@ -2,6 +2,8 @@ use crate::{config, error::Error, git};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs::File,
+    io::{BufRead, BufReader, Read, Write},
     path::Path,
 };
 
@@ -192,34 +194,76 @@ fn inspect_objects(
     head: &str,
     limits: &Limits,
 ) -> Result<Vec<Object>, Error> {
-    let mut objects = Vec::new();
-    let mut total = 0_u64;
+    let scratch = tempfile::tempdir_in(repo)?;
+    let input = scratch.path().join("object-ids");
+    let output = scratch.path().join("object-metadata");
+    let mut list = File::create(&input)?;
     for oid in ids {
-        if objects.len().is_multiple_of(128) {
-            tracing::debug!(target: "urma_progress", inspected = objects.len(), total = ids.len(), "Inspecting Git objects");
-        }
-        let kind = String::from_utf8(git::output(repo, &["cat-file", "-t", oid], 32)?)?
-            .trim()
-            .to_owned();
-        if (oid == head && kind != "commit") || (oid != head && kind != "tree" && kind != "blob") {
-            return Err(Error::Invalid("HEAD-only object closure".into()));
-        }
-        let size = String::from_utf8(git::output(repo, &["cat-file", "-s", oid], 32)?)?
-            .trim()
-            .parse::<u64>()?;
+        writeln!(list, "{oid}")?;
+    }
+    list.flush()?;
+    tracing::debug!(target: "urma_progress", "Reading metadata for {} objects with one git cat-file --batch-check", ids.len());
+    git::run(
+        repo,
+        &[
+            "cat-file".as_ref(),
+            "--batch-check=%(objectname) %(objecttype) %(objectsize)".as_ref(),
+        ],
+        &input,
+        &output,
+    )?;
+    let file = File::open(output)?;
+    let bound = u64::try_from(ids.len())?
+        .checked_mul(192)
+        .ok_or_else(|| Error::Capacity("object metadata size overflow".into()))?;
+    if file.metadata()?.len() > bound {
+        return Err(Error::Capacity("object metadata response".into()));
+    }
+    let mut reader = BufReader::new(file);
+    let mut objects = Vec::new();
+    let mut total = 0u64;
+    for oid in ids {
+        let object = metadata_row(&mut reader, oid, head)?;
         total = total
-            .checked_add(size)
+            .checked_add(object.size)
             .ok_or_else(|| Error::Capacity("expanded bytes overflow".into()))?;
         if total > limits.max_expanded_bytes {
             return Err(Error::Capacity("expanded object bytes".into()));
         }
-        objects.push(Object {
-            oid: oid.clone(),
-            kind,
-            size,
-        });
+        objects.push(object);
     }
+    let mut trailing = [0u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        return Err(Error::Invalid("extra object metadata rows".into()));
+    }
+    tracing::debug!(target: "urma_progress", "Inspected {} objects, {} expanded bytes", objects.len(), total);
     Ok(objects)
+}
+
+fn metadata_row(reader: &mut impl BufRead, oid: &str, head: &str) -> Result<Object, Error> {
+    let mut line = Vec::new();
+    reader.take(192).read_until(b'\n', &mut line)?;
+    if !line.ends_with(b"\n") {
+        return Err(Error::Invalid(
+            "missing or oversized object metadata row".into(),
+        ));
+    }
+    let text = String::from_utf8(line)?;
+    let fields = text.trim_end_matches('\n').split(' ').collect::<Vec<_>>();
+    if fields.len() != 3 || fields[0] != oid {
+        return Err(Error::Invalid(
+            "missing, reordered or invalid object metadata".into(),
+        ));
+    }
+    let kind = fields[1];
+    if (oid == head && kind != "commit") || (oid != head && kind != "tree" && kind != "blob") {
+        return Err(Error::Invalid("HEAD-only object closure".into()));
+    }
+    Ok(Object {
+        oid: oid.to_owned(),
+        kind: kind.to_owned(),
+        size: fields[2].parse()?,
+    })
 }
 
 fn escaped_path(path: &[u8]) -> String {

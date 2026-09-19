@@ -54,7 +54,7 @@ pub fn run(repo: &Path, args: &[&OsStr], input: &Path, output: &Path) -> Result<
             .parent()
             .ok_or_else(|| Error::Invalid("worker output parent".into()))?,
     )?;
-    tracing::trace!(target: "urma_progress", operation = ?args.first(), "Running Git worker");
+    trace_command(args)?;
     let status = command(repo)
         .args(args)
         .stdin(File::open(input)?)
@@ -78,7 +78,7 @@ pub fn output(repo: &Path, args: &[&str], limit: u64) -> Result<Vec<u8>, Error> 
 fn output_os(repo: &Path, args: &[&OsStr], limit: u64) -> Result<Vec<u8>, Error> {
     let mut stdout = tempfile::tempfile_in(repo)?;
     let mut stderr = tempfile::tempfile_in(repo)?;
-    tracing::trace!(target: "urma_progress", operation = ?args.first(), "Running Git worker");
+    trace_command(args)?;
     let status = command(repo)
         .args(args)
         .stdin(Stdio::null())
@@ -149,4 +149,14 @@ pub fn branch_head(repo: &Path, branch: &[u8]) -> Result<String, Error> {
         128,
     )?;
     Ok(String::from_utf8(bytes)?.trim().to_owned())
+}
+
+fn trace_command(args: &[&OsStr]) -> Result<(), Error> {
+    let operation = args
+        .first()
+        .ok_or_else(|| Error::Invalid("empty Git command".into()))?
+        .to_str()
+        .ok_or_else(|| Error::Invalid("non-UTF8 Git command name".into()))?;
+    tracing::trace!(target: "urma_progress", "Running git {}", operation.escape_debug());
+    Ok(())
 }
