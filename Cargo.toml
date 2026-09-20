@@ -14,7 +14,6 @@ members = [
     "crates/urma-files",
     "crates/urma-git",
 ]
-exclude = ["android/jni", "wire", "faucet", "alibi-crate"]
 
 [workspace.package]
 version = "0.1.0"
