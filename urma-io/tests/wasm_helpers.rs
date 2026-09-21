@@ -11,7 +11,10 @@ fn browser_native_file_helpers_fail_explicitly() {
         wasm::create_private_directory(path).unwrap_err().kind(),
         ErrorKind::Unsupported
     );
-    for result in [wasm::read_private(path, 1024), wasm::read_regular(path, 1024)] {
+    for result in [
+        wasm::read_private(path, 1024),
+        wasm::read_regular(path, 1024),
+    ] {
         match result {
             Err(Error::Io(cause)) => assert_eq!(cause.kind(), ErrorKind::Unsupported),
             other => panic!("expected unsupported filesystem operation, got {other:?}"),
