@@ -13,8 +13,7 @@ use crate::{
 };
 use bitcoin::{
     Address, Amount, Block, BlockHash, Network, OutPoint, Transaction, TxOut, Txid, Witness,
-    consensus::{deserialize, serialize},
-    hashes::Hash,
+    consensus::serialize, hashes::Hash,
 };
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use rand::rngs::OsRng;
@@ -600,7 +599,7 @@ fn read_records(
         ensure!(encoded.len() <= 8_000_000, "block exceeds byte limit");
         let raw = hex::decode(encoded)?;
         scanned_bytes += raw.len();
-        let block: Block = deserialize(&raw)?;
+        let block = urma_chain::decode::bitcoin_block(&raw, hash)?;
         validate_block_for_network(&block, hash, node.network)
             .with_context(|| format!("validate block {height}"))?;
         ensure!(

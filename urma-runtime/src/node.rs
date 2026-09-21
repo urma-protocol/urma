@@ -1,17 +1,18 @@
+use crate::config;
 use crate::error::{Context, Error, ensure};
-use crate::{config, transaction::decode};
 use crate::{
     endpoints::{self, PublicEndpoint},
     transport::Pool,
 };
-use bitcoin::{Transaction, Txid, consensus::deserialize};
+use bitcoin::{Transaction, Txid};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use urma_chain::{
+    decode::{self as chain_decode, DecodeError},
     observation::Chain,
-    validation::{BlockValidationError, validate_block_integrity},
+    validation::BlockValidationError,
 };
 use urma_identity::identity::IdentitySigner;
 use urma_wallet::funding::Funding;
@@ -122,12 +123,16 @@ impl Node {
     pub fn block(&self, height: u64) -> Result<bitcoin::Block, Error> {
         let hash = self.block_hash(height)?;
         let value = self.call("getblock", &[json!(hash), json!(0)])?;
-        let block: bitcoin::Block = deserialize(&hex::decode(
-            value.as_str().context("missing block bytes")?,
-        )?)?;
-        validate_block_integrity(&block, hash).map_err(|cause| match cause {
-            BlockValidationError::HashMismatch => Error::Invalid("RPC block hash mismatch".into()),
-            BlockValidationError::MerkleRootMismatch => {
+        let raw = hex::decode(value.as_str().context("missing block bytes")?)?;
+        let decoded = match &self.backend {
+            Backend::Local(_) => chain_decode::block(&raw, self.chain, hash),
+            Backend::Public(_) => chain_decode::esplora_block(&raw, self.chain, hash),
+        };
+        let block = decoded.map_err(|cause| match cause {
+            DecodeError::Integrity(BlockValidationError::HashMismatch) => {
+                Error::Invalid("RPC block hash mismatch".into())
+            }
+            DecodeError::Integrity(BlockValidationError::MerkleRootMismatch) => {
                 Error::Invalid("RPC block merkle root mismatch".into())
             }
             cause => Error::from(cause),
@@ -190,7 +195,7 @@ impl Node {
     pub fn transaction(&self, txid: Txid) -> Result<Transaction, Error> {
         let raw = self.call("getrawtransaction", &[json!(txid), json!(false)])?;
         let raw = raw.as_str().context("missing raw transaction")?;
-        let transaction = decode(raw, raw.len())?;
+        let transaction = chain_decode::transaction(&hex::decode(raw)?, self.chain)?;
         ensure!(
             transaction.compute_txid() == txid,
             "RPC transaction hash mismatch"

@@ -164,7 +164,8 @@ impl Source {
 
     fn block(&self, hash: BlockHash) -> Result<(Block, usize), Error> {
         let bytes = self.get(&format!("/block/{hash}/raw"), SOURCE_MAX_BLOCK_BYTES)?;
-        let block: Block = deserialize(&bytes).context("invalid source raw block")?;
+        let block =
+            urma_chain::decode::bitcoin_block(&bytes, hash).context("invalid source raw block")?;
         bitcoin_rpc::validate_block_for_network(&block, hash, self.network)?;
         Ok((block, bytes.len()))
     }

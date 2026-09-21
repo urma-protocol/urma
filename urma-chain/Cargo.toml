@@ -13,3 +13,4 @@ description = "URMA blockchain observations, transaction decoding and proof-of-w
 bitcoin = "0.32"
 serde = { version = "1", features = ["derive"] }
 hex = "0.4"
+litecoin = { version = "=0.32.8-rc.1", default-features = false, features = ["std"] }

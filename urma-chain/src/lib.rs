@@ -5,6 +5,7 @@
     unused_variables,
     unused_assignments
 )]
+pub mod decode;
 pub mod observation;
 pub mod transaction;
 pub mod validation;

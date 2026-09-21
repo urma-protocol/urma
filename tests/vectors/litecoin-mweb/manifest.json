@@ -1,0 +1,30 @@
+{
+  "network": "litecoin-testnet",
+  "height": 4892705,
+  "hash": "2b70f30e5c2a5e9e8510cc6a9c86339b2f7ffe618a32bc40902fd4cb842fd459",
+  "raw_source": "https://litecoinspace.org/testnet/api/block/2b70f30e5c2a5e9e8510cc6a9c86339b2f7ffe618a32bc40902fd4cb842fd459/raw",
+  "txids_source": "https://litecoinspace.org/testnet/api/block/2b70f30e5c2a5e9e8510cc6a9c86339b2f7ffe618a32bc40902fd4cb842fd459/txids",
+  "retrieved": "2026-09-21",
+  "bytes": 1247,
+  "encoding": "Esplora transparent envelope: four complete transactions including HogEx, no extension presence byte or body",
+  "decoder_contract": {
+    "block": "Strict Core encoding; complete HogEx must be followed by an extension presence byte and complete body when present",
+    "esplora_block": "Explicit provider encoding; exact EOF after complete HogEx also accepted; any present suffix parsed fully",
+    "result": "bitcoin::Block is a transparent read projection, not the original Litecoin serialization; preserve original bytes independently for proofs and wire storage",
+    "integrity": "Requested header hash, transparent transaction Merkle root and witness commitment checked; Bitcoin network-specific PoW checks remain at native callers",
+    "unsupported": "Transactions with embedded confidential MWEB data, including MWEB-only transactions, fail closed",
+    "limits": "8,000,000 input bytes as a client resource limit, not a Litecoin consensus weight limit; canonical roundtrip and end-of-input required",
+    "limitations": "No MWEB consensus, range-proof, kernel-signature, extension commitment, chain-work or Litecoin scrypt validation. Structural parsing of an extension body does not authenticate its contents. This reader is for transparent URMA observations."
+  },
+  "dependency": {
+    "crate": "litecoin =0.32.8-rc.1",
+    "usage": "Bounded structural transaction and MWEB body parsing only; never use its compute_wtxid for MWEB/HogEx",
+    "corrections": "Core excludes MWEB metadata from ordinary txid/wtxid; strip only HogEx metadata before bitcoin hashing. Embedded MWEB transactions are rejected. Block extension presence follows HogEx without the crate's additional header-version-bit condition."
+  },
+  "references": [
+    "https://github.com/litecoin-project/litecoin/blob/master/src/primitives/transaction.h",
+    "https://github.com/litecoin-project/litecoin/blob/master/src/primitives/transaction.cpp",
+    "https://github.com/litecoin-project/litecoin/blob/master/src/primitives/block.h",
+    "https://github.com/litecoin-project/litecoin/blob/master/src/consensus/merkle.cpp"
+  ]
+}

@@ -26,6 +26,7 @@ pub enum Error {
     Random(rand::Error),
     Secp256k1(bitcoin::secp256k1::Error),
     Transaction(bitcoin::consensus::encode::Error),
+    ChainDecode(urma_chain::decode::DecodeError),
     Push(bitcoin::script::PushBytesError),
     TaprootBuilder(bitcoin::taproot::TaprootBuilderError),
     Taproot(bitcoin::taproot::TaprootError),
@@ -70,6 +71,7 @@ impl Display for Error {
             Self::Random(cause) => Display::fmt(cause, formatter),
             Self::Secp256k1(cause) => Display::fmt(cause, formatter),
             Self::Transaction(cause) => Display::fmt(cause, formatter),
+            Self::ChainDecode(cause) => Display::fmt(cause, formatter),
             Self::Push(cause) => Display::fmt(cause, formatter),
             Self::TaprootBuilder(cause) => Display::fmt(cause, formatter),
             Self::Taproot(cause) => Display::fmt(cause, formatter),
@@ -111,6 +113,7 @@ impl std::error::Error for Error {
             Self::Random(cause) => Some(cause),
             Self::Secp256k1(cause) => Some(cause),
             Self::Transaction(cause) => Some(cause),
+            Self::ChainDecode(cause) => Some(cause),
             Self::Push(cause) => Some(cause),
             Self::TaprootBuilder(cause) => Some(cause),
             Self::Taproot(cause) => Some(cause),
@@ -133,6 +136,12 @@ impl std::error::Error for Error {
         }
     }
 }
+impl From<urma_chain::decode::DecodeError> for Error {
+    fn from(cause: urma_chain::decode::DecodeError) -> Self {
+        Self::ChainDecode(cause)
+    }
+}
+
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
