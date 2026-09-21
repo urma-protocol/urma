@@ -17,6 +17,7 @@ use std::{
 };
 use urma_identity::identity::IdentitySigner;
 use urma_runtime::multipart::RecoveryLimits;
+use urma_runtime::publication_progress::Progress;
 use urma_runtime::{
     disk_plan::DiskPlan, disk_publish, node::Node, plan::PlanLimits, publish, recovery,
 };
@@ -192,6 +193,36 @@ pub fn publish(
     directory: &Path,
     approved: &str,
 ) -> Result<publish::PublishReport, Error> {
+    Ok(
+        publish_progress(node, directory, approved, &mut |progress| {
+            tracing::debug!(target: "urma_progress", "{}", progress.summary());
+            Ok(())
+        })?
+        .report,
+    )
+}
+
+pub fn watch(
+    node: &Node,
+    directory: &Path,
+    notify: &mut impl FnMut(&Progress) -> Result<(), urma_runtime::error::Error>,
+) -> Result<Progress, Error> {
+    let (plan, hash, publication) = GitPlan::load_with_publication(directory)?;
+    tracing::debug!(plan = %hash, publication = %plan.publication_id, "observing immutable Git plan");
+    Ok(disk_publish::watch(
+        node,
+        &publication,
+        &directory.join("progress.json"),
+        notify,
+    )?)
+}
+
+pub fn publish_progress(
+    node: &Node,
+    directory: &Path,
+    approved: &str,
+    notify: &mut impl FnMut(&Progress) -> Result<(), urma_runtime::error::Error>,
+) -> Result<Progress, Error> {
     let guard = workspace::lock(directory)?;
     let (plan, hash, publication) = GitPlan::load_with_publication(directory)?;
     if approved != hash {
@@ -208,7 +239,8 @@ pub fn publish(
         publish::ensure_journal_distinct(&directory.join("plan.json"), mutable)?;
         publish::ensure_journal_distinct(&directory.join("review.json"), mutable)?;
     }
-    let report = disk_publish::publish(node, &publication, &plan.publication_id, &journal)?;
+    let report =
+        disk_publish::publish_progress(node, &publication, &plan.publication_id, &journal, notify)?;
     drop(guard);
     Ok(report)
 }

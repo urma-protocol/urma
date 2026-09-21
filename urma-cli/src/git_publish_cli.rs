@@ -1,7 +1,7 @@
 use crate::funding_cli::{amount, currency};
 use crate::{
-    approve_publication, config, detail, funding_cli, key_cli::VaultAccess, node_cli::NodeArgs,
-    progress,
+    approve_publication, config, detail, funding_cli, git_follow_cli, key_cli::VaultAccess,
+    node_cli::NodeArgs, progress,
 };
 use clap::Args;
 use serde_json::Value;
@@ -41,6 +41,8 @@ pub(crate) struct PublishArgs {
     node: NodeArgs,
     #[command(flatten)]
     access: VaultAccess,
+    #[command(flatten)]
+    follow: git_follow_cli::FollowArgs,
 }
 
 fn boundary(error: urma_git::error::Error) -> Error {
@@ -190,45 +192,6 @@ pub(crate) fn run(args: PublishArgs) -> Result<Value, Error> {
     if !reviewed {
         workflows::record_review(&directory, &[]).map_err(boundary)?;
     }
-    submit(&node, &directory, &report.plan_id)?;
+    git_follow_cli::publish(&node, &directory, &report.plan_id, &args.follow)?;
     Ok(Value::Null)
-}
-
-fn submit(node: &Node, directory: &std::path::Path, approved: &str) -> Result<(), Error> {
-    progress("Publishing approved transactions. Waiting for confirmations when required; Ctrl-C leaves the plan resumable.".into());
-    let mut last = String::new();
-    loop {
-        let result = workflows::publish(node, directory, approved).map_err(boundary)?;
-        for transaction in &result.transactions {
-            detail(
-                3,
-                format!(
-                    "Transaction observation: {}",
-                    serde_json::to_string(transaction)?
-                ),
-            );
-        }
-        if result.complete {
-            progress(format!("Publication confirmed. Root: {}", result.root_txid));
-            return Ok(());
-        }
-        ensure!(
-            urma_runtime::disk_publish::may_resume_automatically(&result),
-            "publication needs attention: {}; plan saved at {}",
-            result.blocked_reason,
-            directory.display()
-        );
-        if last != result.blocked_reason {
-            progress("Waiting for chain confirmations; the approved fee will not increase.".into());
-            last = result.blocked_reason;
-        }
-        detail(
-            1,
-            format!(
-                "Pending root: {}; checking again in 30 seconds.",
-                result.root_txid
-            ),
-        );
-        std::thread::sleep(config::publication_poll_interval());
-    }
 }

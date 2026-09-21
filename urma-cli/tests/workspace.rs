@@ -181,3 +181,35 @@ fn publication_name_is_overridable_and_validated_before_network_access() {
     );
     assert!(invalid.stdout.is_empty());
 }
+
+#[test]
+fn git_prepare_fee_ceiling_is_optional_without_a_fixed_default() {
+    let output = Command::new(env!("CARGO_BIN_EXE_urma"))
+        .args(["git", "prepare", "--help"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let help = String::from_utf8(output.stdout).unwrap();
+    let fee = help.split("--max-fee").nth(1).unwrap();
+    assert!(fee.contains("otherwise use the calculated quote"));
+    assert!(!fee.contains("100000"));
+    assert!(!fee.contains("[default:"));
+}
+
+#[test]
+fn git_prepare_accepts_explicit_fee_limits_without_a_minimum_default() {
+    let directory = tempfile::tempdir().unwrap();
+    for limit in ["0", "1", "100000", "750000"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_urma"))
+            .current_dir(directory.path())
+            .args(["git", "prepare", "--name", "../unsafe", "--max-fee", limit])
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        assert!(
+            String::from_utf8(output.stderr)
+                .unwrap()
+                .contains("unsafe repository name")
+        );
+    }
+}

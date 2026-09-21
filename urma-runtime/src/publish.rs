@@ -77,7 +77,7 @@ pub fn test_accept(node: &Node, raw: &str) -> Result<MempoolCheck, Error> {
     }
 }
 
-fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
+pub(crate) fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
     match test_accept(node, raw)? {
         MempoolCheck::Allowed => (),
         MempoolCheck::Rejected(reason) => return Ok(reason),
@@ -96,12 +96,26 @@ fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
         Err(error) => {
             tracing::warn!(txid = %txid, "broadcast reply unavailable; reconciling exact signed transaction");
             match node.presence(txid)? {
-                Presence::Missing => return Err(error),
+                Presence::Missing => {
+                    if temporary_rejection(&error) {
+                        return Ok("mempool full".into());
+                    }
+                    return Err(error);
+                }
                 Presence::Mempool | Presence::Confirmed { .. } => {}
             }
         }
     }
     Ok(String::new())
+}
+
+fn temporary_rejection(error: &Error) -> bool {
+    match error {
+        Error::Rpc(bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(
+            rejection,
+        ))) => rejection.code == -26 && rejection.message == "mempool full",
+        _ => false,
+    }
 }
 
 pub fn publish(

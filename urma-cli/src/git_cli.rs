@@ -1,6 +1,6 @@
 use crate::{
-    approve_publication, config, detail, funding_cli, git_publish_cli, key_cli::VaultAccess,
-    node_cli::NodeArgs, print_report, progress, stage,
+    approve_publication, config, detail, funding_cli, git_follow_cli, git_publish_cli,
+    key_cli::VaultAccess, node_cli::NodeArgs, progress, stage,
 };
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -36,10 +36,9 @@ pub(crate) struct PrepareArgs {
     fee_rate: u64,
     #[arg(
         long,
-        default_value_t = 100_000,
-        help = "Maximum total fee in litoshis; planning never broadcasts"
+        help = "Optional total fee ceiling in litoshis; otherwise use the calculated quote. Planning never broadcasts"
     )]
-    max_fee: u64,
+    max_fee: Option<u64>,
 }
 
 #[derive(Args)]
@@ -54,6 +53,8 @@ pub(crate) struct ResumeArgs {
     yes: bool,
     #[command(flatten)]
     node: NodeArgs,
+    #[command(flatten)]
+    follow: git_follow_cli::FollowArgs,
 }
 
 #[derive(Args)]
@@ -87,6 +88,10 @@ pub(crate) enum GitCommand {
     Publish(git_publish_cli::PublishArgs),
     #[command(about = "Continue the same publication after confirmation")]
     Resume(ResumeArgs),
+    #[command(
+        about = "Read-only observation until the target; cannot submit prepared or missing transactions"
+    )]
+    Watch(git_follow_cli::WatchArgs),
     #[command(about = "Recover content and transaction proofs without checkout")]
     Recover(RecoverArgs),
     #[command(
@@ -138,9 +143,8 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
     detail(
         1,
         format!(
-            "Plan directory: {}; fee ceiling: {} base units; rate: {} base units/vB.",
+            "Plan directory: {}; rate: {} base units/vB.",
             args.output.display(),
-            args.max_fee,
             args.fee_rate
         ),
     );
@@ -156,8 +160,10 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
     .map_err(boundary)?;
     let length = args.output.join("object.bin").metadata()?.len();
     let quote = urma_runtime::quote::multipart(length, &signer, args.fee_rate, args.node.chain()?)?;
-    funding_cli::preview(node.chain(), &quote, args.max_fee);
-    funding_cli::check(&node, &signer, &quote, args.max_fee)?;
+    let ceiling =
+        config::publication_fee_ceiling(config::FeeCeiling(args.max_fee), quote.maximum_fee);
+    funding_cli::preview(node.chain(), &quote, ceiling);
+    funding_cli::check(&node, &signer, &quote, ceiling)?;
     let report = stage("Signing and verifying the publication plan...", || {
         workflows::prepare_snapshot(
             &node,
@@ -203,18 +209,8 @@ fn resume(args: ResumeArgs) -> Result<Value, Error> {
         reviewed.total_fee,
         args.yes,
     )?;
-    let report = workflows::publish(&node, &args.plan, &reviewed.plan_id).map_err(boundary)?;
-    let mut value = serde_json::to_value(&report)?;
-    value["publication_plan_id"] = json!(report.plan_id);
-    value["plan_id"] = json!(reviewed.plan_id);
-    if !report.complete {
-        print_report(value)?;
-        return Err(Error::Missing(format!(
-            "Git publication remains incomplete: {}",
-            report.blocked_reason
-        )));
-    }
-    Ok(value)
+    git_follow_cli::publish(&node, &args.plan, &reviewed.plan_id, &args.follow)?;
+    Ok(Value::Null)
 }
 
 fn recover(args: RecoverArgs) -> Result<Value, Error> {
@@ -243,6 +239,7 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
         } => review(&plan, &classify_public_test_material),
         GitCommand::Publish(args) => git_publish_cli::run(args),
         GitCommand::Resume(args) => resume(args),
+        GitCommand::Watch(args) => git_follow_cli::watch(args),
         GitCommand::Recover(args) => recover(args),
         GitCommand::Clone {
             root,

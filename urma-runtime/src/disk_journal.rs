@@ -4,11 +4,54 @@ use crate::{
     node::Node,
     publish::{PublishReport, ensure_journal_distinct},
 };
+use crate::{node::Presence, storage};
 use std::{
+    collections::HashMap,
     fs::{File, OpenOptions},
-    io::Write,
+    io::{BufRead, BufReader, Read, Write},
     path::Path,
 };
+
+pub(crate) fn history(journal: &Path, id: &str) -> Result<HashMap<String, Presence>, Error> {
+    let mut history = HashMap::new();
+    if journal.try_exists()? {
+        let report: PublishReport =
+            serde_json::from_slice(&storage::read_bounded(journal, 1024 * 1024)?)?;
+        ensure!(report.plan_id == id, "journal belongs to another plan");
+        for row in report.transactions {
+            history.insert(row.txid, row.presence);
+        }
+    }
+    let observations = journal.with_extension("observations.jsonl");
+    if observations.try_exists()? {
+        let mut reader = BufReader::new(File::open(observations)?);
+        loop {
+            let mut line = Vec::new();
+            let count = reader
+                .by_ref()
+                .take(1024 * 1024)
+                .read_until(b'\n', &mut line)?;
+            if count == 0 {
+                break;
+            }
+            ensure!(count < 1024 * 1024, "observation exceeds journal capacity");
+            if !line.ends_with(b"\n") {
+                break;
+            }
+            let value: serde_json::Value = serde_json::from_slice(&line)?;
+            let report: PublishReport = serde_json::from_value(value["report"].clone())?;
+            ensure!(report.plan_id == id, "observations belong to another plan");
+            for row in report.transactions {
+                history.insert(row.txid, row.presence);
+            }
+            ensure!(
+                history.len() <= usize::try_from(DiskPlan::MAX_RECORDS)? * 2,
+                "observation transaction capacity exceeded"
+            );
+        }
+    }
+    Ok(history)
+}
 
 pub(crate) fn guard(plan: &DiskPlan, journal: &Path) -> Result<(), Error> {
     let observations = journal.with_extension("observations.jsonl");

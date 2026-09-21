@@ -6,6 +6,7 @@
 pub mod node;
 pub mod plan;
 mod planner;
+pub mod publication_progress;
 pub mod publish;
 pub mod recovery;
 mod validation;

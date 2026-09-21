@@ -101,7 +101,13 @@ impl Pool {
                     cancelled.store(true, Ordering::Release);
                     return Ok(value);
                 }
-                Err(Error::Missing(message)) => {
+                Err(Error::Missing(message))
+                    if matches!(
+                        message.as_str(),
+                        "transaction not found on selected network"
+                            | "transaction or block not found on selected network"
+                    ) =>
+                {
                     tracing::warn!(%message, "record absent from one provider");
                     missing += 1;
                     failures.push(message);
@@ -117,7 +123,7 @@ impl Pool {
             "{method} on {chain:?}: {}. Retry or configure a local node; check --testnet for test data.",
             failures.join("; ")
         );
-        if queued > 0 && missing > 0 {
+        if queued > 0 && missing == queued && queued == self.workers.len() {
             return Err(Error::Missing(message));
         }
         Err(Error::Unsupported(message))

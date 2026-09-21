@@ -12,6 +12,7 @@ mod config;
 mod files_cli;
 mod funding_cli;
 mod git_cli;
+mod git_follow_cli;
 mod git_publish_cli;
 mod key_cli;
 mod litecoin_cli;
