@@ -188,6 +188,7 @@ pub(crate) fn advance(node: &Node, raw: &str, report: &mut PublishReport) -> Res
     Ok(true)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn ensure_journal_distinct(plan_path: &Path, journal_path: &Path) -> Result<(), Error> {
     use std::os::unix::fs::MetadataExt;
     let plan = std::fs::canonicalize(plan_path)?;
@@ -214,6 +215,15 @@ pub fn ensure_journal_distinct(plan_path: &Path, journal_path: &Path) -> Result<
         );
     }
     Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub fn ensure_journal_distinct(plan_path: &Path, journal_path: &Path) -> Result<(), Error> {
+    Err(Error::Unsupported(format!(
+        "native journal path validation is unavailable on WASM: {} and {}",
+        plan_path.display(),
+        journal_path.display()
+    )))
 }
 
 pub(crate) fn start(

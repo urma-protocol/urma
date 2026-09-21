@@ -1,11 +1,14 @@
+#[cfg(not(target_arch = "wasm32"))]
 use crate::{Error, files::read_into};
 use sha2::{Digest, Sha256};
+use std::io::{self, Read};
+#[cfg(not(target_arch = "wasm32"))]
 use std::{
     fs::{File, OpenOptions},
-    io::{self, Read},
     os::unix::fs::{DirBuilderExt, OpenOptionsExt, PermissionsExt},
     path::Path,
 };
+#[cfg(not(target_arch = "wasm32"))]
 use zeroize::Zeroizing;
 
 pub fn digest(input: &mut impl Read) -> Result<[u8; 32], io::Error> {
@@ -21,10 +24,12 @@ pub fn digest(input: &mut impl Read) -> Result<[u8; 32], io::Error> {
     Ok(hash.finalize().into())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn create_private_directory(path: &Path) -> Result<(), io::Error> {
     std::fs::DirBuilder::new().mode(0o700).create(path)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read_regular(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
     let file = OpenOptions::new()
         .read(true)
@@ -42,6 +47,7 @@ pub fn read_regular(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Err
     Ok(bytes)
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub fn read_private(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
     let file = File::open(path)?;
     if file.metadata()?.permissions().mode() & 0o077 != 0 {

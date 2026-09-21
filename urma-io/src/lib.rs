@@ -11,4 +11,10 @@ pub use config::output_parent;
 pub use error::Error;
 pub use files::{read_bounded, write_new, write_replace};
 mod native;
-pub use native::{create_private_directory, digest, read_private, read_regular};
+pub use native::digest;
+#[cfg(not(target_arch = "wasm32"))]
+pub use native::{create_private_directory, read_private, read_regular};
+#[cfg(target_arch = "wasm32")]
+mod wasm;
+#[cfg(target_arch = "wasm32")]
+pub use wasm::{create_private_directory, read_private, read_regular};
