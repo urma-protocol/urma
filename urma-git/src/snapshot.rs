@@ -4,6 +4,7 @@ use crate::{
     git,
     inventory::{self, Inventory, Limits},
     review,
+    scan_batch::Batch,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -306,24 +307,17 @@ fn validate_blobs(repo: &Path, inventory: &Inventory, scratch: &Path) -> Result<
         .count();
     let mut done = 0u64;
     tracing::info!(target: "urma_ui", phase = "Validating blobs", done, total);
-    for object in &inventory.objects {
-        if object.kind != "blob" {
-            continue;
+    Batch::with(repo, scratch, |batch| {
+        for object in &inventory.objects {
+            if object.kind != "blob" {
+                continue;
+            }
+            batch.copy_blob(&object.oid, object.size, &mut std::io::sink())?;
+            done += 1;
+            tracing::info!(target: "urma_ui", phase = "Validating blobs", done, total);
         }
-        let path = scratch.join("blob-check");
-        git::run(
-            repo,
-            &["cat-file".as_ref(), "blob".as_ref(), object.oid.as_ref()],
-            Path::new("/dev/null"),
-            &path,
-        )?;
-        review::reject_lfs(&mut File::open(&path)?)?;
-        std::fs::remove_file(path)?;
-        done += 1;
-        tracing::info!(target: "urma_ui", phase = "Validating blobs", done, total);
-    }
-    tracing::info!(target: "urma_ui", phase = "Finishing blob validation");
-    Ok(())
+        Ok(())
+    })
 }
 
 pub fn install_head(repo: &Path, descriptor: &Descriptor) -> Result<(), Error> {

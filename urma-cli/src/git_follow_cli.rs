@@ -2,7 +2,7 @@ use crate::{config, detail, git_terminal, is_terminal, node_cli::NodeArgs, progr
 use clap::{Args, ValueEnum};
 use serde_json::Value;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{
         Arc,
@@ -116,6 +116,7 @@ fn follow(node: &Node, directory: &Path, mode: Mode<'_>, until: Completion) -> R
     let mut display = Display::new(stopped, until);
     loop {
         display.check()?;
+        let tip = node.tip()?;
         let mut notify = |report: &Progress| display.show(report, false);
         let report = match mode {
             Mode::Watch => workflows::watch(node, directory, &mut notify),
@@ -164,14 +165,34 @@ fn follow(node: &Node, directory: &Path, mode: Mode<'_>, until: Completion) -> R
         }
         detail(
             1,
-            "Checking again in 30 seconds; approved fees unchanged.".into(),
+            "Checking again within 30 seconds, or on a new local block; approved fees unchanged."
+                .into(),
         );
-        let start = Instant::now();
-        while start.elapsed() < config::publication_poll_interval() {
-            display.check()?;
-            std::thread::sleep(Duration::from_millis(100));
-        }
+        wait(node, &tip, &report, &display)?;
     }
+}
+
+fn wait(
+    node: &Node,
+    tip: &(u64, String),
+    report: &Progress,
+    display: &Display,
+) -> Result<(), Error> {
+    let start = Instant::now();
+    let mut checked = Instant::now();
+    let watch_blocks = !node.is_public()
+        && report.report.blocked_reason != "mempool full; approved fees unchanged";
+    while start.elapsed() < config::publication_poll_interval() {
+        display.check()?;
+        if watch_blocks && checked.elapsed() >= config::publication_tip_interval() {
+            if node.tip()? != *tip {
+                return Ok(());
+            }
+            checked = Instant::now();
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    Ok(())
 }
 
 enum TerminalUi {
@@ -184,6 +205,7 @@ struct Display {
     plan_id: String,
     last: String,
     seen: HashMap<String, State>,
+    seen_on_network: HashSet<String>,
     printed: Instant,
     started: Instant,
     ui: TerminalUi,
@@ -202,6 +224,7 @@ impl Display {
             plan_id: String::new(),
             last: String::new(),
             seen: HashMap::new(),
+            seen_on_network: HashSet::new(),
             printed: Instant::now(),
             started: Instant::now(),
             ui,
@@ -272,11 +295,10 @@ impl Display {
         let mut observed = report.clone();
         for row in &mut observed.observations {
             let previous = self.seen.get(&row.txid);
-            if row.state == State::Prepared
-                && previous.iter().any(|state| {
-                    matches!(state, State::Confirmed | State::Mempool | State::Missing)
-                })
-            {
+            if matches!(row.state, State::Confirmed | State::Mempool) {
+                self.seen_on_network.insert(row.txid.clone());
+            }
+            if row.state == State::Prepared && self.seen_on_network.contains(&row.txid) {
                 row.state = State::Missing;
             }
             if !previous.iter().any(|state| **state == row.state) {
@@ -286,6 +308,10 @@ impl Display {
         }
         self.update_bar(&observed)?;
         let summary = format!("{}; {}", observed.summary(), report.report.blocked_reason);
+        if final_pass || (summary != self.last && self.printed.elapsed() >= Duration::from_secs(5))
+        {
+            tracing::info!(target: "urma_cli", plan = %self.plan_id, "Publication: {summary}");
+        }
         match &self.ui {
             TerminalUi::Interactive(_) => {}
             TerminalUi::Plain => {

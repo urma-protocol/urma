@@ -7,10 +7,43 @@ use urma_runtime::node::NodeConfig;
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Settings {
+    pub(crate) log_level: LogLevel,
     pub(crate) rpc_url: Option<String>,
     pub(crate) node_auth_file: Option<PathBuf>,
     pub(crate) vault: Option<PathBuf>,
     pub(crate) unlock_file: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum LogLevel {
+    #[default]
+    Info,
+    Warn,
+    Debug,
+}
+
+impl LogLevel {
+    pub(crate) fn filter(self) -> tracing_subscriber::filter::LevelFilter {
+        use tracing_subscriber::filter::LevelFilter;
+        match self {
+            Self::Info => LevelFilter::INFO,
+            Self::Warn => LevelFilter::WARN,
+            Self::Debug => LevelFilter::DEBUG,
+        }
+    }
+}
+
+pub(crate) fn log_directory() -> Result<PathBuf, Error> {
+    let state = match std::env::var_os("XDG_STATE_HOME") {
+        Some(value) if PathBuf::from(&value).is_absolute() => PathBuf::from(value),
+        Some(value) => {
+            tracing::warn!(path = ?value, "ignoring relative XDG_STATE_HOME");
+            home()?.join(".local/state")
+        }
+        None => home()?.join(".local/state"),
+    };
+    Ok(state.join("urma/logs"))
 }
 
 pub(crate) fn home() -> Result<PathBuf, Error> {
@@ -204,6 +237,10 @@ pub(crate) fn publication_directory(
 
 pub(crate) fn publication_poll_interval() -> std::time::Duration {
     std::time::Duration::from_secs(30)
+}
+
+pub(crate) fn publication_tip_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(2)
 }
 
 pub(crate) struct FeeCeiling(pub Option<u64>);

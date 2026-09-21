@@ -12,6 +12,7 @@ use urma_runtime::{disk_plan::DiskPlan, plan::PlanLimits};
 fn command(mock: &Mock, directory: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_urma"));
     command
+        .env("XDG_STATE_HOME", directory.join("state"))
         .env("URMA_CONFIG", directory.join("absent-config"))
         .env("URMA_NETWORK", "bitcoin-regtest")
         .env("URMA_RPC_URL", &mock.config.rpc_url)
@@ -281,6 +282,47 @@ fn bounded_output(mut command: Command) -> Output {
         std::thread::sleep(Duration::from_millis(20));
     }
     child.wait_with_output().unwrap()
+}
+
+#[test]
+fn new_local_block_wakes_publication_without_waiting_full_poll_interval() {
+    let directory = tempfile::tempdir().unwrap();
+    let mock = Mock::new(directory.path());
+    let _plan = fixture(directory.path(), &mock);
+    let mut child = command(&mock, directory.path(), &["git", "publish", "--yes"])
+        .spawn()
+        .unwrap();
+    let start = Instant::now();
+    while mock.state.lock().unwrap().submissions.len() < 3 {
+        assert!(start.elapsed() < Duration::from_secs(10));
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    mock.confirm_all();
+    {
+        let mut state = mock.state.lock().unwrap();
+        state.auto_confirm = true;
+        state.next_block = true;
+    }
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(10) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("new block did not wake publisher");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let output = child.wait_with_output().unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("Target Confirmed reached for all 6")
+    );
+    assert_eq!(mock.state.lock().unwrap().submissions.len(), 6);
 }
 
 #[test]

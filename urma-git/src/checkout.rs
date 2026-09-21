@@ -4,13 +4,10 @@ use crate::{
     git,
     inventory::{Entry, Limits},
     proofs, review,
+    scan_batch::Batch,
     snapshot::{self, ValidatedSnapshot},
 };
-use std::{
-    fs::File,
-    io::{Read, Write},
-    path::Path,
-};
+use std::{fs::File, io::Write, path::Path};
 
 pub fn install(
     payload: &Path,
@@ -40,21 +37,71 @@ fn install_staged(
     limits: &Limits,
     evidence: Evidence<'_>,
 ) -> Result<snapshot::SnapshotReport, Error> {
+    if destination.try_exists()? {
+        return Err(Error::Invalid("clone destination already exists".into()));
+    }
+    let stage = tempfile::Builder::new()
+        .prefix(".urma-clone-")
+        .tempdir_in(urma_io::output_parent(destination))?;
+    let validated = snapshot::validate(payload, stage.path(), limits)?;
+    let scan = review::scan(
+        &validated.repository,
+        &validated.inventory,
+        &validated.descriptor,
+        stage.path(),
+    )?;
+    let report = snapshot::SnapshotReport {
+        schema: 1,
+        descriptor: validated.descriptor.clone(),
+        inventory: validated.inventory.clone(),
+        payload_sha256: hex::encode(descriptor::digest(&mut File::open(payload)?)?),
+        scope: "current committed snapshot; earlier history is not included".into(),
+        limits: limits.clone(),
+        scan,
+    };
+    finish_install(payload, destination, &validated, &report, evidence)?;
+    Ok(report)
+}
+
+pub(crate) fn install_verified(
+    payload: &Path,
+    destination: &Path,
+    validated: &ValidatedSnapshot,
+    report: &snapshot::SnapshotReport,
+    evidence: &Path,
+) -> Result<(), Error> {
+    finish_install(
+        payload,
+        destination,
+        validated,
+        report,
+        Evidence::Chain(evidence),
+    )
+}
+
+fn finish_install(
+    payload: &Path,
+    destination: &Path,
+    validated: &ValidatedSnapshot,
+    report: &snapshot::SnapshotReport,
+    evidence: Evidence<'_>,
+) -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
     if destination.try_exists()? {
         return Err(Error::Invalid("clone destination already exists".into()));
     }
-    let parent = urma_io::output_parent(destination);
-    let stage = tempfile::Builder::new()
-        .prefix(".urma-clone-")
-        .tempdir_in(parent)?;
-    let validated = snapshot::validate(payload, stage.path(), limits)?;
-    materialize(&validated)?;
+    materialize(validated)?;
     let head = hex::encode(&validated.descriptor.head);
     git::output(&validated.repository, &["read-tree", &head], 4096)?;
     let status = git::output(
         &validated.repository,
-        &["status", "--porcelain=v1", "--untracked-files=all"],
+        &[
+            "-c",
+            "core.preloadIndex=false",
+            "status",
+            "--porcelain=v1",
+            "--untracked-files=all",
+        ],
         1024 * 1024,
     )?;
     if !status.is_empty() {
@@ -65,33 +112,21 @@ fn install_staged(
     let retained = validated.repository.join(".git/urma");
     snapshot::create_private_directory(&retained)?;
     std::fs::copy(payload, retained.join("object.bin"))?;
-    let scan = review::scan(
-        &validated.repository,
-        &validated.inventory,
-        &validated.descriptor,
-        stage.path(),
-    )?;
-    let report = snapshot::SnapshotReport {
-        schema: 1,
-        descriptor: validated.descriptor,
-        inventory: validated.inventory,
-        payload_sha256: hex::encode(descriptor::digest(&mut File::open(payload)?)?),
-        scope: "current committed snapshot; earlier history is not included".into(),
-        limits: limits.clone(),
-        scan,
-    };
-    snapshot::write_json(&retained.join("snapshot.json"), &report)?;
+    let retained_hash = hex::encode(descriptor::digest(&mut File::open(
+        retained.join("object.bin"),
+    )?)?);
+    if retained_hash != report.payload_sha256 {
+        return Err(Error::Invalid(
+            "retained payload changed after validation".into(),
+        ));
+    }
+    snapshot::write_json(&retained.join("snapshot.json"), report)?;
     std::fs::set_permissions(
         &validated.repository,
         std::fs::Permissions::from_mode(0o700),
     )?;
     retain_evidence(&retained, evidence)?;
     sync_directory(&validated.repository)?;
-    if destination.try_exists()? {
-        return Err(Error::Invalid(
-            "clone destination appeared during staging".into(),
-        ));
-    }
     rustix::fs::renameat_with(
         rustix::fs::CWD,
         &validated.repository,
@@ -100,13 +135,21 @@ fn install_staged(
         rustix::fs::RenameFlags::NOREPLACE,
     )
     .map_err(|error| Error::Io(error.into()))?;
-    File::open(parent)?.sync_all()?;
-    Ok(report)
+    File::open(urma_io::output_parent(destination))?.sync_all()?;
+    Ok(())
 }
 
 fn materialize(snapshot: &ValidatedSnapshot) -> Result<(), Error> {
+    Batch::with(&snapshot.repository, &snapshot.repository, |batch| {
+        materialize_batch(snapshot, batch)
+    })
+}
+
+fn materialize_batch(snapshot: &ValidatedSnapshot, batch: &mut Batch) -> Result<(), Error> {
     use std::os::unix::{ffi::OsStringExt, fs::PermissionsExt};
     let mut links = Vec::new();
+    let total = snapshot.inventory.entries.len();
+    let mut done = 0u64;
     for entry in &snapshot.inventory.entries {
         let path = snapshot
             .repository
@@ -115,34 +158,36 @@ fn materialize(snapshot: &ValidatedSnapshot) -> Result<(), Error> {
             std::fs::create_dir(&path)?;
         } else if entry.mode == 0o120000 {
             links.push(entry);
+            continue;
         } else {
-            git::run(
-                &snapshot.repository,
-                &["cat-file".as_ref(), "blob".as_ref(), entry.oid.as_ref()],
-                Path::new("/dev/null"),
-                &path,
-            )?;
+            let mut output = File::create(&path)?;
+            batch.copy_blob(&entry.oid, entry.size, &mut output)?;
             let mode = if entry.mode == 0o100755 { 0o755 } else { 0o644 };
             std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode))?;
-            verify_file(&snapshot.repository, &path, entry)?;
+            verify_file(&path, entry)?;
         }
+        done += 1;
+        tracing::info!(target: "urma_ui", phase = "Materializing checkout", done, total);
     }
     for entry in links {
-        materialize_link(snapshot, entry)?;
+        materialize_link(snapshot, entry, batch)?;
+        done += 1;
+        tracing::info!(target: "urma_ui", phase = "Materializing checkout", done, total);
     }
     Ok(())
 }
 
-fn materialize_link(snapshot: &ValidatedSnapshot, entry: &Entry) -> Result<(), Error> {
+fn materialize_link(
+    snapshot: &ValidatedSnapshot,
+    entry: &Entry,
+    batch: &mut Batch,
+) -> Result<(), Error> {
     use std::os::unix::{ffi::OsStringExt, fs::symlink};
     if entry.size > 65536 {
         return Err(Error::Capacity("symlink target".into()));
     }
-    let target = git::output(
-        &snapshot.repository,
-        &["cat-file", "blob", &entry.oid],
-        65536,
-    )?;
+    let mut target = Vec::new();
+    batch.copy_blob(&entry.oid, entry.size, &mut target)?;
     if target.contains(&0) {
         return Err(Error::Invalid("symlink target contains NUL".into()));
     }
@@ -158,7 +203,7 @@ fn materialize_link(snapshot: &ValidatedSnapshot, entry: &Entry) -> Result<(), E
     Ok(())
 }
 
-fn verify_file(repo: &Path, path: &Path, entry: &Entry) -> Result<(), Error> {
+fn verify_file(path: &Path, entry: &Entry) -> Result<(), Error> {
     use std::os::unix::fs::PermissionsExt;
     let metadata = std::fs::symlink_metadata(path)?;
     let executable = metadata.permissions().mode() & 0o111 != 0;
@@ -167,24 +212,6 @@ fn verify_file(repo: &Path, path: &Path, entry: &Entry) -> Result<(), Error> {
         return Err(Error::Invalid(
             "filesystem cannot preserve published entry".into(),
         ));
-    }
-    let input = File::open(path)?;
-    let mut output = tempfile::tempfile_in(repo)?;
-    let status = git::command(repo)
-        .args(["hash-object", "--stdin", "--no-filters"])
-        .stdin(input)
-        .stdout(output.try_clone()?)
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    if !status.success() {
-        return Err(Error::Git("checkout hash verification".into()));
-    }
-    use std::io::Seek;
-    output.rewind()?;
-    let mut oid = String::new();
-    output.read_to_string(&mut oid)?;
-    if oid.trim() != entry.oid {
-        return Err(Error::Invalid("checkout file OID".into()));
     }
     Ok(())
 }

@@ -11,6 +11,7 @@ use urma_runtime::{disk_plan::DiskPlan, plan::PlanLimits};
 fn command(mock: &Mock, directory: &Path, args: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_urma"));
     command
+        .env("XDG_STATE_HOME", directory.join("state"))
         .env("URMA_CONFIG", directory.join("absent-config"))
         .env("URMA_NETWORK", "bitcoin-regtest")
         .env("URMA_RPC_URL", &mock.config.rpc_url)

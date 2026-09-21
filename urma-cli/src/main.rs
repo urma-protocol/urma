@@ -18,6 +18,7 @@ mod git_publish_cli;
 mod git_terminal;
 mod key_cli;
 mod litecoin_cli;
+mod logging;
 mod node_cli;
 mod public_cli;
 mod wallet_cli;
@@ -80,6 +81,7 @@ enum Command {
 }
 
 pub(crate) fn progress(message: String) {
+    tracing::info!(target: "urma_cli", message = ?console::strip_ansi_codes(&message));
     git_terminal::suspend(|| eprintln!("{message}"));
 }
 
@@ -97,8 +99,48 @@ pub(crate) fn print_report(value: Value) -> Result<(), Error> {
 fn run() -> Result<(), Error> {
     let cli = Cli::parse();
     config::set_verbosity(cli.verbosity);
-    install_progress_logging(cli.verbosity)?;
-    match cli.command {
+    let log = logging::install(cli.verbosity, || git_terminal::LogWriter(std::io::stderr()))?;
+    progress(format!("Log: {}", log.display()));
+    let started = std::time::Instant::now();
+    tracing::info!(target: "urma_cli", command = command_name(&cli.command), version = env!("CARGO_PKG_VERSION"), "Command started");
+    let result = execute(cli.command);
+    match result {
+        Ok(()) => {
+            tracing::info!(target: "urma_cli", elapsed_seconds = started.elapsed().as_secs_f64(), "Command completed");
+            Ok(())
+        }
+        Err(error) => {
+            tracing::error!(target: "urma_cli", %error, elapsed_seconds = started.elapsed().as_secs_f64(), "Command failed");
+            Err(error)
+        }
+    }
+}
+
+fn command_name(command: &Command) -> &'static str {
+    use git_cli::GitCommand;
+    match command {
+        Command::Git { command } => match command {
+            GitCommand::Prepare(_) => "git prepare",
+            GitCommand::Publish(_) => "git publish",
+            GitCommand::Resume(_) => "git resume",
+            GitCommand::Watch(_) => "git watch",
+            GitCommand::Clone { .. } => "git clone",
+            GitCommand::Recover(_) => "git recover",
+            GitCommand::Verify { .. } => "git verify",
+            GitCommand::Inspect { .. } => "git inspect",
+            GitCommand::Review { .. } => "git review",
+        },
+        Command::Archive { .. } => "archive",
+        Command::Capture { .. } => "capture",
+        Command::Expert { .. } => "expert",
+        Command::Wire { .. } => "wire",
+        Command::Wallet { .. } => "wallet",
+        Command::Key { .. } => "key",
+    }
+}
+
+fn execute(command: Command) -> Result<(), Error> {
+    match command {
         Command::Archive { command } => print_report(files_cli::run(command)?),
         Command::Expert { command } => archive_cli::run(command),
         Command::Wire { command } => print_report(public_cli::run(command)?),
@@ -215,44 +257,25 @@ pub(crate) fn approve_publication(label: &str, id: &str, fee: u64, yes: bool) ->
 }
 
 pub(crate) fn detail(level: u8, message: String) {
+    tracing::debug!(target: "urma_cli", message = ?console::strip_ansi_codes(&message));
     if config::verbosity() >= level {
         eprintln!("{message}");
     }
 }
 
-fn install_progress_logging(verbosity: u8) -> Result<(), Error> {
-    use tracing_subscriber::{
-        Layer, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
-    };
-    let level = match verbosity {
-        0 => LevelFilter::WARN,
-        1 => LevelFilter::INFO,
-        2 => LevelFilter::DEBUG,
-        _ => LevelFilter::TRACE,
-    };
-    let filter = tracing_subscriber::filter::Targets::new().with_target("urma_progress", level);
-    tracing_subscriber::registry()
-        .with(git_progress::ProgressLayer.with_filter(
-            tracing_subscriber::filter::Targets::new().with_target("urma_ui", LevelFilter::INFO),
-        ))
-        .with(
-            tracing_subscriber::fmt::layer()
-                .without_time()
-                .with_target(false)
-                .with_level(false)
-                .with_ansi(false)
-                .with_writer(|| git_terminal::LogWriter(std::io::stderr()))
-                .with_filter(filter),
-        )
-        .try_init()
-        .map_err(|cause| Error::Io(std::io::Error::other(cause)))
+pub(crate) fn stage<T>(label: &str, operation: impl FnOnce() -> T) -> T {
+    let started = std::time::Instant::now();
+    tracing::info!(target: "urma_cli", stage = label, "Stage started");
+    let result = stage_inner(label, operation);
+    tracing::info!(target: "urma_stage", "{}: {:.2}s (finished)", label.trim_end_matches('.'), started.elapsed().as_secs_f64());
+    result
 }
 
-pub(crate) fn stage<T>(label: &str, operation: impl FnOnce() -> T) -> T {
+fn stage_inner<T>(label: &str, operation: impl FnOnce() -> T) -> T {
     if is_terminal() && config::verbosity() == 0 {
         let spinner = git_terminal::Stage::new(label);
         let result = operation();
-        progress(spinner.finish(label));
+        tracing::debug!(target: "urma_cli", "{}", spinner.finish(label));
         result
     } else {
         use std::{
@@ -272,14 +295,19 @@ pub(crate) fn stage<T>(label: &str, operation: impl FnOnce() -> T) -> T {
                             break;
                         }
                         Err(cause @ mpsc::RecvTimeoutError::Timeout) => {
-                            tracing::warn!(reason = %cause, "Progress timer tick");
-                            eprintln!("{label} ({}s elapsed)", started.elapsed().as_secs());
+                            tracing::warn!(target: "urma_timer", reason = %cause, "Progress timer tick");
+                            progress(format!("{label} ({}s elapsed)", started.elapsed().as_secs()));
                         }
                     }
                 }
             });
             let result = operation();
-            drop(sender);
+            match sender.send(()) {
+                Ok(()) => (),
+                Err(cause) => {
+                    tracing::warn!(%cause, "progress timer stopped before stage completion")
+                }
+            }
             result
         })
     }

@@ -2,6 +2,7 @@ use crate::{
     checkout, config,
     descriptor::{self, Descriptor},
     error::Error,
+    git,
     inventory::Limits,
     plans::GitPlan,
     proofs, review,
@@ -277,9 +278,26 @@ pub fn recover(
 ) -> Result<RecoveredReport, Error> {
     snapshot::create_private_directory(output)?;
     let scratch = tempfile::tempdir_in(output)?;
+    Ok(recover_staged(node, root, output, limits, scratch.path())?.0)
+}
+
+fn recover_staged(
+    node: &Node,
+    root: Txid,
+    output: &Path,
+    limits: &Limits,
+    scratch: &Path,
+) -> Result<(RecoveredReport, snapshot::ValidatedSnapshot), Error> {
     let anchor = node.tip()?;
-    let mut object =
-        recovery::recover_retained(node, root, recovery_limits(limits)?, scratch.path(), output)?;
+    let mut object = git::timed("Receiving and verifying URMA objects", || {
+        Ok(recovery::recover_retained(
+            node,
+            root,
+            recovery_limits(limits)?,
+            scratch,
+            output,
+        )?)
+    })?;
     if ![Descriptor::PROFILE, Descriptor::UNNAMED_PROFILE].contains(&object.manifest().profile) {
         return Err(Error::Invalid("unsupported Git profile".into()));
     }
@@ -287,35 +305,38 @@ pub fn recover(
     let mut payload = File::create(&path)?;
     std::io::copy(&mut object, &mut payload)?;
     payload.sync_all()?;
-    let validated = snapshot::validate(&path, scratch.path(), limits)?;
+    let validated = git::timed("Validating Git PACK", || {
+        snapshot::validate(&path, scratch, limits)
+    })?;
     validated
         .descriptor
         .require_profile(object.manifest().profile)?;
-    let scan = review::scan(
-        &validated.repository,
-        &validated.inventory,
-        &validated.descriptor,
-        scratch.path(),
-    )?;
-    tracing::info!(target: "urma_ui", phase = "Retaining and verifying transaction proofs");
-    let locator = proofs::export(node, &object, output)?;
-    let mut retained = proofs::reconstruct(output, recovery_limits(limits)?, scratch.path())?;
-    if descriptor::digest(&mut retained)? != object.manifest().payload_hash {
-        return Err(Error::Invalid("exported proof payload differs".into()));
-    }
+    let scan = git::timed("Inspecting snapshot content", || {
+        review::scan(
+            &validated.repository,
+            &validated.inventory,
+            &validated.descriptor,
+            scratch,
+        )
+    })?;
+    let locator = proofs::retained_locator(node, &object, output)?;
+    git::timed("Checking retained transaction proofs", || {
+        let mut retained = proofs::reconstruct(output, recovery_limits(limits)?, scratch)?;
+        if descriptor::digest(&mut retained)? != object.manifest().payload_hash {
+            return Err(Error::Invalid("exported proof payload differs".into()));
+        }
+        Ok(())
+    })?;
     if node.block_hash(anchor.0)?.to_string() != anchor.1 {
         return Err(Error::Invalid(
             "chain changed during Git recovery; retry".into(),
         ));
     }
-    std::fs::copy(
-        scratch.path().join("verified.pack"),
-        output.join("snapshot.pack"),
-    )?;
+    std::fs::copy(scratch.join("verified.pack"), output.join("snapshot.pack"))?;
     let snapshot = SnapshotReport {
         schema: 1,
-        descriptor: validated.descriptor,
-        inventory: validated.inventory,
+        descriptor: validated.descriptor.clone(),
+        inventory: validated.inventory.clone(),
         payload_sha256: hex::encode(descriptor::digest(&mut File::open(&path)?)?),
         scope: "current committed snapshot; earlier history is not included".into(),
         limits: limits.clone(),
@@ -332,7 +353,7 @@ pub fn recover(
     };
     snapshot::write_json(&output.join("recovery.json"), &report)?;
     File::open(output)?.sync_all()?;
-    Ok(report)
+    Ok((report, validated))
 }
 
 pub fn verify(directory: &Path, limits: &Limits) -> Result<RecoveredReport, Error> {
@@ -411,15 +432,19 @@ pub fn clone_root_named(
         .prefix(".urma-fetch-")
         .tempdir_in(parent)?;
     let recovered = scratch.path().join("snapshot");
-    let report = recover(node, root, &recovered, limits)?;
+    snapshot::create_private_directory(&recovered)?;
+    let validation = tempfile::tempdir_in(scratch.path())?;
+    let (report, validated) = recover_staged(node, root, &recovered, limits, validation.path())?;
     let destination = config::destination(requested, &report.snapshot.descriptor, root)?;
-    tracing::info!(target: "urma_ui", phase = "Installing and checking out verified snapshot");
-    checkout::install_with_evidence(
-        &recovered.join("object.bin"),
-        &destination,
-        limits,
-        &recovered,
-    )?;
+    git::timed("Installing and checking out verified snapshot", || {
+        checkout::install_verified(
+            &recovered.join("object.bin"),
+            &destination,
+            &validated,
+            &report.snapshot,
+            &recovered,
+        )
+    })?;
     Ok((report, destination))
 }
 

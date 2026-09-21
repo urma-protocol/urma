@@ -5,6 +5,7 @@
     unused_variables,
     unused_assignments
 )]
+mod blob_hash;
 pub mod checkout;
 pub mod config;
 pub mod descriptor;

@@ -5,7 +5,28 @@ use std::{
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
     process::{Command, Stdio},
+    time::Instant,
 };
+
+pub(crate) fn timed<T>(
+    phase: &str,
+    operation: impl FnOnce() -> Result<T, Error>,
+) -> Result<T, Error> {
+    tracing::info!(target: "urma_ui", phase);
+    tracing::info!(target: "urma_progress", phase, "Stage started");
+    let started = Instant::now();
+    let result = operation();
+    match result {
+        Ok(value) => {
+            tracing::info!(target: "urma_stage", "{phase}: {:.2}s (complete)", started.elapsed().as_secs_f64());
+            Ok(value)
+        }
+        Err(cause) => {
+            tracing::error!(target: "urma_stage", %cause, "{phase}: {:.2}s (failed)", started.elapsed().as_secs_f64());
+            Err(cause)
+        }
+    }
+}
 
 pub fn command(repo: &Path) -> Command {
     let mut command = Command::new("/usr/bin/prlimit");

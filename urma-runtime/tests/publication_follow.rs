@@ -17,8 +17,8 @@ impl Mock {
             *b"RUNTIME0",
             urma_runtime::plan::PlanLimits {
                 fee_rate: 1,
-                max_fee: 2_000_000,
-                max_records: 20,
+                max_fee: 10_000_000,
+                max_records: 64,
             },
             directory,
         )
@@ -72,7 +72,18 @@ fn watch_is_read_only_and_requires_every_transaction_with_fresh_evidence() {
     assert!(mempool.reached(Target::Mempool));
     assert!(!mempool.reached(Target::Confirmed));
     mock.confirm_all();
+    mock.state.lock().unwrap().methods.clear();
     assert!(observe(&mock, &plan, &journal).reached(Target::Confirmed));
+    assert_eq!(
+        mock.state
+            .lock()
+            .unwrap()
+            .methods
+            .iter()
+            .filter(|method| *method == "getblockheader")
+            .count(),
+        1
+    );
     mock.state.lock().unwrap().reorg = true;
     let reorg = observe(&mock, &plan, &journal);
     assert!(!reorg.reached(Target::Confirmed));
@@ -190,10 +201,11 @@ fn only_exact_congestion_is_retryable_and_rejection_is_durable() {
 }
 
 #[test]
-fn eight_commit_window_and_cancellation_checkpoint_bound_the_pipeline() {
+#[ignore = "slow 8 MiB buffer gate; cargo test -p urma-runtime --test publication_follow two_block_buffer_and_cancellation_checkpoint_bound_the_pipeline -- --ignored --exact"]
+fn two_block_buffer_and_cancellation_checkpoint_bound_the_pipeline() {
     let directory = tempfile::tempdir().unwrap();
     let mock = Mock::new(directory.path());
-    let payload = vec![17; urma_core::multipart::Geometry::DATA_BYTES * 8];
+    let payload = vec![17; urma_core::multipart::Geometry::DATA_BYTES * 32];
     let plan = mock.plan(&directory.path().join("publication"), &payload);
     let journal = directory.path().join("progress.json");
     let mut counts = Vec::new();
@@ -209,14 +221,35 @@ fn eight_commit_window_and_cancellation_checkpoint_bound_the_pipeline() {
     )
     .unwrap();
     assert!(counts.windows(2).all(|pair| pair[0] <= pair[1]));
-    assert_eq!(report.observations.len(), 20);
-    assert_eq!(mock.state.lock().unwrap().submissions.len(), 8);
+    assert_eq!(report.observations.len(), 68);
+    assert_eq!(mock.state.lock().unwrap().submissions.len(), 24);
     assert!(
         report
             .report
             .blocked_reason
-            .contains("eight funding commits")
+            .contains("blockchain confirmation")
     );
+    assert!(report.report.blocked_reason.contains("automatically"));
+    assert!(report.report.blocked_reason.contains("no user input"));
+    let restarted = DiskPlan::load(plan.directory()).unwrap();
+    for _ in 0..2 {
+        let report = publish(&mock, &restarted, &journal);
+        assert_eq!(
+            report
+                .observations
+                .iter()
+                .filter(|row| row.state == State::Prepared)
+                .count(),
+            44
+        );
+        assert!(
+            !report
+                .observations
+                .iter()
+                .any(|row| row.state == State::Missing)
+        );
+        assert_eq!(mock.state.lock().unwrap().submissions.len(), 24);
+    }
     let result = disk_publish::publish_progress(
         &mock.node(),
         &plan,
@@ -233,5 +266,128 @@ fn eight_commit_window_and_cancellation_checkpoint_bound_the_pipeline() {
         },
     );
     assert!(result.is_err());
-    assert_eq!(mock.state.lock().unwrap().submissions.len(), 8);
+    assert_eq!(mock.state.lock().unwrap().submissions.len(), 24);
+    mock.confirm_all();
+    let filled = publish(&mock, &restarted, &journal);
+    assert_eq!(mock.state.lock().unwrap().submissions.len(), 54);
+    mock.state.lock().unwrap().transactions.clear();
+    for index in 0..plan.record_count {
+        mock.state
+            .lock()
+            .unwrap()
+            .transactions
+            .insert(txid(&plan.record(index).unwrap().commit), true);
+    }
+    let backlog = publish(&mock, &restarted, &journal);
+    assert_eq!(
+        backlog
+            .observations
+            .iter()
+            .filter(|row| row.role == "data" && row.state == State::Mempool)
+            .count(),
+        30
+    );
+    assert!(
+        !backlog
+            .observations
+            .iter()
+            .any(|row| (row.role == "leaf" || row.role == "root") && row.state == State::Mempool)
+    );
+    assert_eq!(
+        filled
+            .observations
+            .iter()
+            .filter(|row| row.role == "data" && row.state == State::Mempool)
+            .count(),
+        24
+    );
+    assert_eq!(
+        filled
+            .observations
+            .iter()
+            .filter(|row| row.role == "commit" && row.state == State::Mempool)
+            .count(),
+        6
+    );
+    publish(&mock, &restarted, &journal);
+    assert_eq!(mock.state.lock().unwrap().submissions.len(), 84);
+}
+
+#[test]
+fn lost_submission_response_keeps_durable_attempt_without_summary_or_duplicate() {
+    let directory = tempfile::tempdir().unwrap();
+    let mock = Mock::new(directory.path());
+    let plan = mock.plan(&directory.path().join("publication"), b"fixture");
+    let journal = directory.path().join("progress.json");
+    mock.state.lock().unwrap().send_response_lost = true;
+    assert!(
+        disk_publish::publish_progress(
+            &mock.node(),
+            &plan,
+            &plan.id().unwrap(),
+            &journal,
+            &mut |_| Ok(())
+        )
+        .is_err()
+    );
+    assert!(!journal.exists());
+    assert!(journal.with_extension("observations.jsonl").exists());
+    mock.state.lock().unwrap().unavailable = false;
+    assert_eq!(
+        observe(&mock, &plan, &journal).observations[0].state,
+        State::Mempool
+    );
+    mock.state.lock().unwrap().send_response_lost = false;
+    publish(&mock, &plan, &journal);
+    assert_eq!(
+        mock.state
+            .lock()
+            .unwrap()
+            .submissions
+            .iter()
+            .filter(|raw| **raw == plan.record(0).unwrap().commit)
+            .count(),
+        1
+    );
+    mock.state
+        .lock()
+        .unwrap()
+        .transactions
+        .remove(&txid(&plan.record(0).unwrap().commit));
+    assert_eq!(
+        observe(&mock, &plan, &journal).observations[0].state,
+        State::Missing
+    );
+}
+
+#[test]
+fn legacy_summary_absence_is_not_submission_evidence_but_attempt_log_is() {
+    let directory = tempfile::tempdir().unwrap();
+    let mock = Mock::new(directory.path());
+    let plan = mock.plan(&directory.path().join("publication"), b"fixture");
+    let journal = directory.path().join("progress.json");
+    let report = observe(&mock, &plan, &journal).report;
+    std::fs::write(&journal, serde_json::to_vec(&report).unwrap()).unwrap();
+    assert!(
+        observe(&mock, &plan, &journal)
+            .observations
+            .iter()
+            .all(|row| row.state == State::Prepared)
+    );
+    let event = serde_json::json!({"report": report});
+    std::fs::write(
+        journal.with_extension("observations.jsonl"),
+        format!("{event}\n"),
+    )
+    .unwrap();
+    let observed = observe(&mock, &plan, &journal);
+    for transaction in &report.transactions {
+        assert!(
+            observed
+                .observations
+                .iter()
+                .any(|row| row.txid == transaction.txid && row.state == State::Missing)
+        );
+    }
+    assert!(mock.state.lock().unwrap().submissions.is_empty());
 }

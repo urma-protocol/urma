@@ -67,6 +67,14 @@ pub fn export(
             entry_request(part).check(&record)?;
         }
     }
+    retained_locator(node, recovered, directory)
+}
+
+pub(crate) fn retained_locator(
+    node: &Node,
+    recovered: &RecoveredObject,
+    directory: &Path,
+) -> Result<Locator, Error> {
     let locator = Locator {
         schema: 1,
         chain: node.chain(),

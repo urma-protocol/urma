@@ -227,3 +227,136 @@ fn scan_and_validation_events_preserve_snapshot_results() {
     );
     assert_eq!(events.counts("Validating blobs"), vec![(0, 1), (1, 1)]);
 }
+
+#[test]
+fn clone_many_files_reuses_validation_and_retains_verifiable_proofs() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo = temp.path().join("medium-fixture");
+    std::fs::create_dir(&repo).unwrap();
+    let mut random = 17u64;
+    for index in 0..1200 {
+        let mut bytes = vec![0; if index == 0 { 131_073 } else { 1024 }];
+        for byte in &mut bytes {
+            random ^= random << 13;
+            random ^= random >> 7;
+            random ^= random << 17;
+            *byte = random as u8;
+        }
+        std::fs::write(repo.join(format!("file-{index:04}")), bytes).unwrap();
+    }
+    std::fs::write(repo.join("empty"), []).unwrap();
+    for args in [
+        vec!["init", "--quiet"],
+        vec!["add", "."],
+        vec![
+            "-c",
+            "user.name=Fixture",
+            "-c",
+            "user.email=fixture@example.invalid",
+            "commit",
+            "--quiet",
+            "-m",
+            "fixture",
+        ],
+    ] {
+        assert!(
+            Command::new("git")
+                .current_dir(&repo)
+                .args(args)
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    let limits = urma_git::inventory::Limits::default();
+    let artifact = temp.path().join("artifact");
+    let original = urma_git::snapshot::prepare(&repo, &artifact, &limits).unwrap();
+    let mock = publication_node::Mock::new(temp.path());
+    let node = mock.node();
+    let mut payload = std::fs::File::open(artifact.join("object.bin")).unwrap();
+    let length = payload.metadata().unwrap().len();
+    let plan = DiskPlan::prepare_multipart(
+        &node,
+        &mock.signer,
+        &mut payload,
+        length,
+        urma_git::descriptor::Descriptor::PROFILE,
+        PlanLimits {
+            fee_rate: 1,
+            max_fee: 10_000_000,
+            max_records: 100,
+        },
+        &temp.path().join("signed"),
+    )
+    .unwrap();
+    for index in 0..plan.record_count {
+        let pair = plan.record(index).unwrap();
+        for raw in [pair.commit, pair.reveal] {
+            let id = publication_node::txid(&raw);
+            let mut state = mock.state.lock().unwrap();
+            state.transactions.insert(id.clone(), true);
+            state.raw_transactions.insert(id, raw);
+        }
+    }
+    let destination = temp.path().join("clone");
+    let events = Events::default();
+    let started = std::time::Instant::now();
+    let report = tracing::subscriber::with_default(
+        tracing_subscriber::registry().with(events.clone()),
+        || {
+            urma_git::workflows::clone_root(
+                &node,
+                plan.root_txid.parse().unwrap(),
+                &destination,
+                &limits,
+            )
+            .unwrap()
+        },
+    );
+    eprintln!(
+        "local mock clone: 1201 files, {} PACK bytes, {:.2}s",
+        original.descriptor.pack_length,
+        started.elapsed().as_secs_f64()
+    );
+    assert_eq!(
+        serde_json::to_value(&report.snapshot.descriptor).unwrap(),
+        serde_json::to_value(&original.descriptor).unwrap()
+    );
+    assert_eq!(
+        events
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|update| update.phase == "Validating PACK and committed object closure")
+            .count(),
+        1
+    );
+    assert_eq!(
+        events.counts("Materializing checkout").last(),
+        Some(&(1201, 1201))
+    );
+    for index in 0..1200 {
+        let name = format!("file-{index:04}");
+        assert_eq!(
+            std::fs::read(repo.join(&name)).unwrap(),
+            std::fs::read(destination.join(name)).unwrap()
+        );
+    }
+    assert_eq!(
+        std::fs::metadata(destination.join("empty")).unwrap().len(),
+        0
+    );
+    let evidence = destination.join(".git/urma");
+    let verified = urma_git::workflows::verify(&evidence, &limits).unwrap();
+    assert_eq!(verified.snapshot.payload_sha256, original.payload_sha256);
+    let root_proof = evidence.join("tx").join(format!("{}.bin", plan.root_txid));
+    let mut bytes = std::fs::read(&root_proof).unwrap();
+    let last = bytes.len() - 1;
+    bytes[last] ^= 1;
+    std::fs::write(root_proof, bytes).unwrap();
+    assert!(urma_git::workflows::verify(&evidence, &limits).is_err());
+    assert!(mock.state.lock().unwrap().submissions.is_empty());
+}

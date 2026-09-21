@@ -22,13 +22,16 @@ use urma_runtime::node::{Node, NodeConfig};
 #[derive(Default)]
 pub struct State {
     pub transactions: HashMap<String, bool>,
+    pub raw_transactions: HashMap<String, String>,
     pub submissions: Vec<String>,
     pub methods: Vec<String>,
     pub preflight: Option<String>,
     pub send_rejection: Option<String>,
+    pub send_response_lost: bool,
     pub unavailable: bool,
     pub auto_confirm: bool,
     pub reorg: bool,
+    pub next_block: bool,
 }
 
 pub struct Mock {
@@ -155,7 +158,9 @@ fn respond(
         } else {
             json!(hash)
         }),
-        "getblockchaininfo" => Ok(json!({"blocks":100,"bestblockhash":hash})),
+        "getblockchaininfo" => {
+            Ok(json!({"blocks":if state.next_block {101} else {100},"bestblockhash":hash}))
+        }
         "getblockheader" => Ok(json!({"height":100})),
         "getindexinfo" => Ok(json!({"txindex":{"synced":true}})),
         "scantxoutset" => Ok(
@@ -179,6 +184,13 @@ fn respond(
             if state.unavailable {
                 return Err((-28, "fixture source unavailable".into()));
             }
+            if args[1] == false {
+                return state
+                    .raw_transactions
+                    .get(args[0].as_str().unwrap())
+                    .map(|raw| json!(raw))
+                    .ok_or((-5, "fixture raw transaction missing".into()));
+            }
             match state.transactions.get(args[0].as_str().unwrap()) {
                 Some(true) => Ok(json!({"confirmations":1,"blockhash":hash})),
                 Some(false) => Ok(json!({"confirmations":0})),
@@ -200,6 +212,10 @@ fn respond(
             let id = txid(raw);
             state.submissions.push(raw.into());
             state.transactions.insert(id.clone(), state.auto_confirm);
+            if state.send_response_lost {
+                state.unavailable = true;
+                return Err((-28, "fixture response lost after acceptance".into()));
+            }
             Ok(json!(id))
         }
         other => panic!("unexpected RPC {other}"),

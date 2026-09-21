@@ -96,6 +96,9 @@ pub const BITCOIN_MAX_FEE_SATS: u64 = 500_000;
 pub const BITCOIN_MAX_FEE_RATE: u64 = 100;
 
 pub const STANDARD_TX_WEIGHT: u64 = 400_000;
+pub const PUBLICATION_BUFFER_WEIGHT: u64 = 7_960_000;
+pub const PUBLICATION_PENDING_COMMITS: usize = 24;
+pub const PUBLICATION_COMMIT_VBYTES: u64 = 90_000;
 pub const LITECOIN_DUST_RELAY_FEE: u64 = 30_000;
 
 pub fn publication_return(chain: urma_chain::observation::Chain) -> u64 {

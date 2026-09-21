@@ -199,6 +199,14 @@ impl Node {
     }
 
     pub fn presence(&self, txid: Txid) -> Result<Presence, Error> {
+        self.presence_cached(txid, &mut std::collections::HashMap::new())
+    }
+
+    pub(crate) fn presence_cached(
+        &self,
+        txid: Txid,
+        blocks: &mut std::collections::HashMap<String, Presence>,
+    ) -> Result<Presence, Error> {
         let result = self.call("getrawtransaction", &[json!(txid), json!(true)]);
         let value = match result {
             Ok(value) => value,
@@ -231,6 +239,10 @@ impl Node {
         let hash = value["blockhash"]
             .as_str()
             .context("missing inclusion block")?;
+        let cached = blocks.get(hash);
+        for presence in cached.iter() {
+            return Ok((*presence).clone());
+        }
         let header = self.call("getblockheader", &[json!(hash)])?;
         let height = header["height"]
             .as_u64()
@@ -239,10 +251,12 @@ impl Node {
         if active != json!(hash) {
             return Ok(Presence::Missing);
         }
-        Ok(Presence::Confirmed {
+        let presence = Presence::Confirmed {
             height,
             block_hash: hash.to_owned(),
-        })
+        };
+        blocks.insert(hash.to_owned(), presence.clone());
+        Ok(presence)
     }
 
     pub fn utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {

@@ -19,7 +19,9 @@ pub(crate) fn history(journal: &Path, id: &str) -> Result<HashMap<String, Presen
             serde_json::from_slice(&storage::read_bounded(journal, 1024 * 1024)?)?;
         ensure!(report.plan_id == id, "journal belongs to another plan");
         for row in report.transactions {
-            history.insert(row.txid, row.presence);
+            if !matches!(row.presence, Presence::Missing) {
+                history.insert(row.txid, row.presence);
+            }
         }
     }
     let observations = journal.with_extension("observations.jsonl");
