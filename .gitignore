@@ -2,6 +2,7 @@
 !*/
 !/Cargo.toml
 !/Cargo.lock
+!/law.toml
 !/urma-*/Cargo.toml
 !/urma-*/src/**/*.rs
 !/urma-*/tests/**/*.rs
@@ -16,7 +17,6 @@
 !/tests/vectors/**/*.urma
 !/tests/vectors/**/*.vault
 !/tests/vectors/identity-vault-v1/generate.py
-!/scripts/check-workspace-law.py
 !/scripts/generate-vectors.py
 !/scripts/generate-multipart-vectors.py
 !/scripts/open-bundle.sh
