@@ -4,13 +4,17 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+repository.workspace = true
+readme = false
+include = ["Cargo.toml", "src/**/*.rs"]
+description = "Command-line tools for URMA identities, wallets, Wire, archives and Git"
 
 [[bin]]
 name = "urma"
 path = "src/main.rs"
 
 [dependencies]
-urma-io = { path = "../urma-io" }
+urma-io = { version = "0.1.0", path = "../urma-io" }
 bitcoin = { version = "0.32", features = ["rand-std"] }
 bitcoincore-rpc = "0.19"
 aes = "0.8"
@@ -30,19 +34,19 @@ zeroize = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
 
-urma-core = { path = "../urma-core" }
-urma-profiles = { path = "../urma-profiles" }
-urma-identity = { path = "../urma-identity" }
-urma-wallet = { path = "../urma-wallet" }
-urma-workflows = { path = "../urma-workflows" }
+urma-core = { version = "0.1.0", path = "../urma-core" }
+urma-profiles = { version = "0.1.0", path = "../urma-profiles" }
+urma-identity = { version = "0.1.0", path = "../urma-identity" }
+urma-wallet = { version = "0.1.0", path = "../urma-wallet" }
+urma-workflows = { version = "0.1.0", path = "../urma-workflows" }
 
-urma-chain = { path = "../urma-chain" }
+urma-chain = { version = "0.1.0", path = "../urma-chain" }
 
-urma-wire = { path = "../urma-wire" }
-urma-runtime = { path = "../urma-runtime" }
+urma-wire = { version = "0.1.0", path = "../urma-wire" }
+urma-runtime = { version = "0.1.0", path = "../urma-runtime" }
 
-urma-files = { path = "../urma-files" }
-urma-git = { path = "../urma-git" }
+urma-files = { version = "0.1.0", path = "../urma-files" }
+urma-git = { version = "0.1.0", path = "../urma-git" }
 
 [dev-dependencies]
 anyhow = "1"

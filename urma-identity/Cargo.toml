@@ -4,11 +4,15 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+repository.workspace = true
+readme = false
+include = ["Cargo.toml", "src/**/*.rs"]
+description = "URMA identity keys, recovery phrases and encrypted vaults"
 
 [dependencies]
 bitcoin = "0.32"
 zeroize = "1"
-rand = { version = "0.8", default-features = false }
+rand = { version = "0.8", default-features = false, features = ["std"] }
 aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc", "zeroize"] }
 aes = { version = "0.8", features = ["zeroize"] }
 argon2 = { version = "0.5", default-features = false, features = ["alloc", "zeroize"] }

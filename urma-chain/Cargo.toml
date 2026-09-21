@@ -4,6 +4,10 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+repository.workspace = true
+readme = false
+include = ["Cargo.toml", "src/**/*.rs"]
+description = "URMA blockchain observations, transaction decoding and proof-of-work validation"
 
 [dependencies]
 bitcoin = "0.32"

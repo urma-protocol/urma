@@ -19,4 +19,5 @@ members = [
 version = "0.1.0"
 edition = "2024"
 license = "0BSD"
-publish = false
+publish = ["crates-io"]
+repository = "https://github.com/urma-protocol/urma"

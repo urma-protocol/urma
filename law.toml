@@ -1,3 +1,4 @@
+# Lawkeeper checks Rust code against the rules below: https://github.com/ZmoleCristian/lawkeeper
 # law.toml — the enforcement knobs, and the only place a project may argue with the law.
 # every key below is written at its default. deleting a key changes nothing, deleting the file
 # changes nothing: a missing file means exactly these values.

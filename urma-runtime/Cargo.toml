@@ -4,9 +4,13 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
+repository.workspace = true
+readme = false
+include = ["Cargo.toml", "src/**/*.rs"]
+description = "URMA publication planning, network transports and recovery"
 
 [dependencies]
-urma-io = { path = "../urma-io" }
+urma-io = { version = "0.1.0", path = "../urma-io" }
 minreq = { version = "2.14", features = ["https-rustls"] }
 bitcoin = { version = "0.32", features = ["serde", "rand-std"] }
 bitcoincore-rpc = "0.19"
@@ -17,9 +21,9 @@ sha2 = "0.10"
 tempfile = "3"
 url = "2"
 tracing = "0.1"
-urma-core = { path = "../urma-core" }
-urma-chain = { path = "../urma-chain" }
-urma-identity = { path = "../urma-identity" }
-urma-wallet = { path = "../urma-wallet" }
+urma-core = { version = "0.1.0", path = "../urma-core" }
+urma-chain = { version = "0.1.0", path = "../urma-chain" }
+urma-identity = { version = "0.1.0", path = "../urma-identity" }
+urma-wallet = { version = "0.1.0", path = "../urma-wallet" }
 rand = "0.8"
 zeroize = "1"

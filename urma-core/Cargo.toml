@@ -3,6 +3,9 @@ name = "urma-core"
 version.workspace = true
 edition.workspace = true
 publish.workspace = true
+repository.workspace = true
+readme = false
+include = ["Cargo.toml", "src/**/*.rs"]
 license.workspace = true
 description = "Canonical URMA V0 codecs, crypto and proof validation without I/O"
 
@@ -13,6 +16,6 @@ ctr = "0.9"
 hmac = "0.12"
 hex = "0.4"
 hkdf = "0.12"
-rand = { version = "0.8", default-features = false }
+rand = { version = "0.8", default-features = false, features = ["std"] }
 sha2 = "0.10"
 zeroize = "1"
