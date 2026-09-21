@@ -49,7 +49,7 @@ impl Lab {
         }
         let result = command
             .arg(concat!(
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
+                concat!(env!("CARGO_MANIFEST_DIR"), "/.."),
                 "/scripts/open-bundle.sh"
             ))
             .arg(&key_path)
@@ -82,7 +82,7 @@ fn must_fail(result: Output, output: &Path) {
 fn real_jpeg_roundtrip_in_sh_dash_and_busybox_without_our_binary() {
     let lab = Lab::new();
     let key = [42; 32];
-    let jpeg = include_bytes!("../../../tests/fixtures/sample.jpg");
+    let jpeg = include_bytes!("../../tests/fixtures/sample.jpg");
     let records = container::seal(&key, jpeg, urma_core::format::ContentType::Opaque).unwrap();
     let bundle = container::pack(&records).unwrap();
     assert_eq!(records.len(), 3);
@@ -309,7 +309,7 @@ fn existing_output_and_symlinks_are_never_overwritten() {
     for name in ["existing", "link", "directory"] {
         let result = Command::new("/bin/sh")
             .arg(concat!(
-                concat!(env!("CARGO_MANIFEST_DIR"), "/../.."),
+                concat!(env!("CARGO_MANIFEST_DIR"), "/.."),
                 "/scripts/open-bundle.sh"
             ))
             .arg(base.join("key"))

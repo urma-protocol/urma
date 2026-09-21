@@ -24,7 +24,7 @@ use urma_runtime::{
 };
 
 fn vectors() -> PathBuf {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("tests/vectors")
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/vectors")
 }
 fn manifest() -> Result<Value> {
     Ok(serde_json::from_slice(&fs::read(
@@ -96,7 +96,7 @@ fn independent_system_decoder_matches_entire_private_corpus() -> Result<()> {
         let output = temp.path().join(name);
         let result = Command::new("sh")
             .arg(
-                Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../.."))
+                Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/.."))
                     .join("scripts/open-bundle.sh"),
             )
             .arg(temp.path().join(case["root"].as_str().unwrap()))

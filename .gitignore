@@ -2,9 +2,9 @@
 !*/
 !/Cargo.toml
 !/Cargo.lock
-!/crates/*/Cargo.toml
-!/crates/*/src/**/*.rs
-!/crates/*/tests/**/*.rs
+!/urma-*/Cargo.toml
+!/urma-*/src/**/*.rs
+!/urma-*/tests/**/*.rs
 !/tests/fixtures/sample.jpg
 !/tests/fixtures/tiny-public-test.jpg
 !/tests/vectors/**/*.bin

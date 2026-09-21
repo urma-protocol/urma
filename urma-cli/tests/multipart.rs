@@ -29,7 +29,7 @@ use urma_runtime::{
 use urma_wallet::funding::Funding;
 
 fn vectors() -> PathBuf {
-    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("tests/vectors/multipart")
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/vectors/multipart")
 }
 fn manifest() -> Result<Value> {
     Ok(serde_json::from_slice(&fs::read(
@@ -350,7 +350,7 @@ fn multiple_leaves_stream_exact_bytes_and_reject_order_duplicates_and_missing() 
     let output = Command::new("python3")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../scripts/read-multipart.py"
+            "/../scripts/read-multipart.py"
         ))
         .arg("--directory")
         .arg(export.path())
@@ -612,7 +612,7 @@ fn independent_python_reader_checks_the_entire_corpus() -> Result<()> {
     let result = Command::new("python3")
         .arg(concat!(
             env!("CARGO_MANIFEST_DIR"),
-            "/../../scripts/read-multipart.py"
+            "/../scripts/read-multipart.py"
         ))
         .arg("--corpus")
         .arg(vectors())

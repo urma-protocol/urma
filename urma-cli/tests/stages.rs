@@ -388,7 +388,7 @@ pub mod source {
         #[test]
         fn transaction_bundle_preserves_shuffled_ciphertext_without_a_key_or_journal() {
             let key = [29; 32];
-            let original = include_bytes!("../../../tests/fixtures/sample.jpg");
+            let original = include_bytes!("../../tests/fixtures/sample.jpg");
             let mut records =
                 container::seal(&key, original, urma_core::format::ContentType::Opaque).unwrap();
             records.reverse();
@@ -816,7 +816,7 @@ pub mod backend {
         fn directory_replication_and_discovery_need_no_sender_manifest() {
             let work = tempfile::tempdir().unwrap();
             let key = [42; 32];
-            let bytes = include_bytes!("../../../tests/fixtures/sample.jpg");
+            let bytes = include_bytes!("../../tests/fixtures/sample.jpg");
             let records =
                 container::seal(&key, bytes, urma_core::format::ContentType::Opaque).unwrap();
             let first = work.path().join("first");

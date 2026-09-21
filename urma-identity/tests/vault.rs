@@ -14,7 +14,7 @@ static_assertions::assert_not_impl_any!(urma_identity::identity::IdentityKey: st
 static_assertions::assert_not_impl_any!(urma_identity::keys::RecoverySecret: IdentitySigner, From<IdentityPhrase>, From<urma_identity::identity::IdentityKey>);
 
 fn dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tests/vectors/identity-vault-v1")
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../tests/vectors/identity-vault-v1")
 }
 fn vectors() -> Value {
     serde_json::from_slice(&std::fs::read(dir().join("vectors.json")).unwrap()).unwrap()

@@ -27,7 +27,7 @@ impl Drop for Daemon {
 #[test]
 #[ignore = "starts an isolated local Bitcoin Core regtest node"]
 fn signed_publication_restart_reorg_and_recovery() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/urma-runtime-lab");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/urma-runtime-lab");
     std::fs::create_dir_all(&root).unwrap();
     let directory = tempfile::tempdir_in(&root).unwrap();
     let port = TcpListener::bind("127.0.0.1:0")

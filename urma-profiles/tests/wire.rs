@@ -1,8 +1,8 @@
 use bitcoin::{Transaction, Witness, consensus::deserialize};
 use urma_profiles::wire;
 
-const COMMIT: &[u8] = include_bytes!("../../../tests/vectors/proof-post.commit");
-const REVEAL: &[u8] = include_bytes!("../../../tests/vectors/proof-post.reveal");
+const COMMIT: &[u8] = include_bytes!("../../tests/vectors/proof-post.commit");
+const REVEAL: &[u8] = include_bytes!("../../tests/vectors/proof-post.reveal");
 
 #[test]
 fn verified_record_preserves_authenticated_bytes_and_rejects_tampering() {

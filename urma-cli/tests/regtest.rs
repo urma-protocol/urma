@@ -217,7 +217,7 @@ fn independent_recovery_interruption_restart_and_reorg() -> Result<()> {
     sender.call("generatetoaddress", &[json!(101), mining_address])?;
     sync(&sender, &receiver)?;
 
-    let jpeg = include_bytes!("../../../tests/fixtures/sample.jpg");
+    let jpeg = include_bytes!("../../tests/fixtures/sample.jpg");
     ensure!(
         jpeg.len() > urma_core::format::Urma::CHUNK_BYTES,
         "JPEG fixture must exercise multiple chunks"
@@ -435,7 +435,7 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
     )?;
     storage::write_new(
         &workdir.join("sample.jpg"),
-        include_bytes!("../../../tests/fixtures/sample.jpg"),
+        include_bytes!("../../tests/fixtures/sample.jpg"),
     )?;
     successful(cli(workdir, &["keygen", "--key", "media.key"], None)?)?;
     let prepared = successful(cli(
@@ -583,7 +583,7 @@ fn offline_prepare_and_staged_broadcast() -> Result<()> {
         recovered["objects"][0]["id"].as_str().unwrap()
     ));
     ensure!(
-        fs::read(file)? == include_bytes!("../../../tests/fixtures/sample.jpg"),
+        fs::read(file)? == include_bytes!("../../tests/fixtures/sample.jpg"),
         "offline-funded JPEG changed"
     );
     println!(

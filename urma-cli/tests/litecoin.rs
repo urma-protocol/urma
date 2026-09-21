@@ -448,7 +448,7 @@ fn spent_funding_policy_rejection_and_ambiguous_submission_fail_closed() {
 
 #[test]
 fn discovery_recovers_without_journal_and_reports_explicit_core_trust() {
-    let bytes = include_bytes!("../../../tests/fixtures/tiny-public-test.jpg");
+    let bytes = include_bytes!("../../tests/fixtures/tiny-public-test.jpg");
     let plan = fixture(bytes);
     let mut node = Mock::new(&plan);
     node.scan_blocks(&plan);
@@ -634,7 +634,7 @@ fn local_rpc_origin_validation_never_reads_credentials_for_remote_urls() {
 
 #[test]
 fn simulated_publish_then_independent_discovery_recovers_original_jpeg() {
-    let bytes = include_bytes!("../../../tests/fixtures/tiny-public-test.jpg");
+    let bytes = include_bytes!("../../tests/fixtures/tiny-public-test.jpg");
     let draft = fixture(bytes);
     let mut publisher = Mock::new(&draft);
     let signed = publisher.sign(&draft);

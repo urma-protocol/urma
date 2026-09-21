@@ -33,7 +33,7 @@ impl Drop for Daemon {
 #[test]
 #[ignore = "isolated Litecoin regtest; no live network or real keys"]
 fn litecoin_standard_full_record_and_dust() {
-    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/urma-ltc-policy");
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../target/urma-ltc-policy");
     std::fs::create_dir_all(&root).unwrap();
     let directory = tempfile::tempdir_in(root).unwrap();
     let port = TcpListener::bind("127.0.0.1:0")
