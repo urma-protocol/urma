@@ -109,6 +109,10 @@ fn clone_logs_timestamps_stages_and_configured_levels_without_verbosity_or_walle
                     && line.as_bytes().get(10) == Some(&b'T'))
         );
         assert!(stderr.contains("Installing and checking out verified snapshot:"));
+        assert!(
+            !stderr.contains("phase=") && !stderr.contains("done="),
+            "{stderr}"
+        );
         let files = logs(&state.join("urma/logs"));
         assert_eq!(files.len(), 1);
         assert_eq!(

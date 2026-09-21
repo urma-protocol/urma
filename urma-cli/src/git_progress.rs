@@ -1,5 +1,7 @@
 use crate::git_terminal;
 use std::{
+    fs::File,
+    io::Write,
     sync::Mutex,
     time::{Duration, Instant},
 };
@@ -7,7 +9,14 @@ use tracing::{
     Event, Subscriber,
     field::{Field, Visit},
 };
-use tracing_subscriber::{Layer, layer::Context};
+use tracing_subscriber::{
+    Layer,
+    fmt::{
+        format::Writer,
+        time::{FormatTime, SystemTime},
+    },
+    layer::Context,
+};
 
 #[derive(Default)]
 struct Update {
@@ -39,21 +48,43 @@ impl Visit for Update {
 }
 
 struct LoggedProgress {
+    file: File,
     phase: String,
     at: Instant,
 }
 
 pub(crate) struct ProgressLayer {
     logged: Mutex<LoggedProgress>,
+    enabled: bool,
 }
 
-impl Default for ProgressLayer {
-    fn default() -> Self {
+impl ProgressLayer {
+    pub(crate) fn new(file: File, enabled: bool) -> Self {
         Self {
             logged: Mutex::new(LoggedProgress {
+                file,
                 phase: String::new(),
                 at: Instant::now(),
             }),
+            enabled,
+        }
+    }
+}
+
+impl LoggedProgress {
+    fn record(&mut self, update: &Update) {
+        let mut timestamp = String::new();
+        match SystemTime.format_time(&mut Writer::new(&mut timestamp)) {
+            Ok(()) => (),
+            Err(cause) => panic!("cannot format progress timestamp: {cause}"),
+        }
+        let line = format!(
+            "{timestamp} INFO urma_activity: Progress phase={:?} done={} total={} counted={}\n",
+            update.phase, update.done, update.total, update.counted
+        );
+        match self.file.write_all(line.as_bytes()) {
+            Ok(()) => (),
+            Err(cause) => panic!("cannot write progress log: {cause}"),
         }
     }
 }
@@ -64,6 +95,9 @@ impl<S: Subscriber> Layer<S> for ProgressLayer {
         event.record(&mut update);
         if !update.phase.is_empty() {
             git_terminal::stage_progress(&update.phase, update.done, update.total, update.counted);
+            if !self.enabled {
+                return;
+            }
             let mut logged = match self.logged.lock() {
                 Ok(logged) => logged,
                 Err(cause) => panic!("progress log lock poisoned: {cause}"),
@@ -72,7 +106,7 @@ impl<S: Subscriber> Layer<S> for ProgressLayer {
                 || (update.counted && update.done == update.total)
                 || logged.at.elapsed() >= Duration::from_secs(5)
             {
-                tracing::info!(target: "urma_activity", phase = %update.phase, done = update.done, total = update.total, counted = update.counted, "Progress");
+                logged.record(&update);
                 logged.phase = update.phase;
                 logged.at = Instant::now();
             }

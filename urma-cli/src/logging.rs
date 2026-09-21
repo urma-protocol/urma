@@ -41,7 +41,7 @@ pub(crate) fn install(
     };
     tracing_subscriber::registry()
         .with(
-            git_progress::ProgressLayer::default()
+            git_progress::ProgressLayer::new(file.try_clone()?, level >= LevelFilter::INFO)
                 .with_filter(Targets::new().with_target("urma_ui", LevelFilter::INFO)),
         )
         .with(
