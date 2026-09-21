@@ -10,10 +10,10 @@ include = ["Cargo.toml", "src/**/*.rs"]
 description = "URMA Wire proof reading, confirmed indexing and reorganization handling"
 
 [dependencies]
-urma-chain = { version = "0.1.1", path = "../urma-chain" }
-urma-profiles = { version = "0.1.1", path = "../urma-profiles" }
-urma-io = { version = "0.1.1", path = "../urma-io" }
-urma-core = { version = "0.1.1", path = "../urma-core" }
+urma-chain = { version = "0.2.0", path = "../urma-chain" }
+urma-profiles = { version = "0.2.0", path = "../urma-profiles" }
+urma-io = { version = "0.2.0", path = "../urma-io" }
+urma-core = { version = "0.2.0", path = "../urma-core" }
 bitcoin = "0.32"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"

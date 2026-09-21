@@ -31,7 +31,12 @@ fn validate_record(record: &[u8]) -> Result<(), Error> {
             MultipartRecord::decode(record)?;
         }
         RecordKind::Container => bail!("offline container cannot be published as a record"),
-        RecordKind::Post | RecordKind::Reply | RecordKind::Profile | RecordKind::Avatar => {
+        RecordKind::Post
+        | RecordKind::Reply
+        | RecordKind::Profile
+        | RecordKind::Avatar
+        | RecordKind::WirePost
+        | RecordKind::WireReply => {
             PublicRecord::decode(record)?;
         }
     }

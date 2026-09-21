@@ -49,6 +49,16 @@ pub fn identity(index: &Index, author: bitcoin::XOnlyPublicKey) -> Result<Value,
 fn render(entry: &Entry) -> Result<Value, Error> {
     let payload = match PublicRecord::decode(&hex::decode(&entry.record)?)? {
         PublicRecord::Post(text) => json!({"kind":"post","text":text}),
+        PublicRecord::WirePost { topics, text } => {
+            json!({"kind":"post","text":text,"wire":topics.wire,"hashtags":topics.hashtags})
+        }
+        PublicRecord::WireReply {
+            target,
+            topics,
+            text,
+        } => {
+            json!({"kind":"reply","reply_to":target.to_string(),"text":text,"wire":topics.wire,"hashtags":topics.hashtags})
+        }
         PublicRecord::Reply { target, text } => {
             json!({"kind":"reply","reply_to":target.to_string(),"text":text})
         }

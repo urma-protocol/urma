@@ -134,6 +134,8 @@ pub fn open_record(root: &[u8; 32], record: &[u8]) -> Result<RecordMatch, Error>
         | RecordKind::Container
         | RecordKind::DataPart
         | RecordKind::LeafManifest
+        | RecordKind::WirePost
+        | RecordKind::WireReply
         | RecordKind::RootManifest => return Ok(RecordMatch::Unrelated),
     }
     let header = inspect_header(record)?;

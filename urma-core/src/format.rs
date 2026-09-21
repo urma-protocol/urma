@@ -1,4 +1,5 @@
 use crate::error::{Error, bail, ensure};
+use crate::topics::Topics;
 use bitcoin::{Txid, hashes::Hash};
 
 pub struct Urma;
@@ -37,6 +38,8 @@ pub enum RecordKind {
     DataPart = 7,
     LeafManifest = 8,
     RootManifest = 9,
+    WirePost = 10,
+    WireReply = 11,
 }
 
 impl RecordKind {
@@ -51,6 +54,8 @@ impl RecordKind {
             Self::DataPart => 7,
             Self::LeafManifest => 8,
             Self::RootManifest => 9,
+            Self::WirePost => 10,
+            Self::WireReply => 11,
         }
     }
 
@@ -79,6 +84,8 @@ impl RecordKind {
             7 => Ok(Self::DataPart),
             8 => Ok(Self::LeafManifest),
             9 => Ok(Self::RootManifest),
+            10 => Ok(Self::WirePost),
+            11 => Ok(Self::WireReply),
             kind => Err(Error::Unsupported(format!("unsupported URMA kind {kind}"))),
         }
     }
@@ -121,9 +128,21 @@ impl ContentType {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PublicRecord {
     Post(String),
-    Reply { target: Txid, text: String },
+    Reply {
+        target: Txid,
+        text: String,
+    },
     Profile(String),
     Avatar(Box<[u8; 512]>),
+    WirePost {
+        topics: Topics,
+        text: String,
+    },
+    WireReply {
+        target: Txid,
+        topics: Topics,
+        text: String,
+    },
 }
 
 impl PublicRecord {
@@ -133,10 +152,24 @@ impl PublicRecord {
             Self::Reply { .. } => RecordKind::Reply,
             Self::Profile(..) => RecordKind::Profile,
             Self::Avatar(..) => RecordKind::Avatar,
+            Self::WirePost { .. } => RecordKind::WirePost,
+            Self::WireReply { .. } => RecordKind::WireReply,
         }
     }
 
     pub fn encode(&self) -> Result<Vec<u8>, Error> {
+        if let Self::WirePost { topics, text } | Self::WireReply { topics, text, .. } = self {
+            let mut bytes = self.kind().prefix().to_vec();
+            if let Self::WireReply { target, .. } = self {
+                bytes.extend_from_slice(target.as_byte_array());
+            }
+            bytes.extend_from_slice(&topics.encode_body(text)?);
+            ensure!(
+                bytes.len() <= Urma::MAX_PUBLIC_BYTES,
+                "public record exceeds 32 KiB"
+            );
+            return Ok(bytes);
+        }
         let body_size = match self {
             Self::Post(text) | Self::Profile(text) => text.len(),
             Self::Reply { text, .. } => text
@@ -144,6 +177,9 @@ impl PublicRecord {
                 .checked_add(32)
                 .ok_or_else(|| Error::Invalid("reply size overflow".into()))?,
             Self::Avatar(pixels) => pixels.len(),
+            Self::WirePost { .. } | Self::WireReply { .. } => {
+                bail!("structured record handled separately")
+            }
         };
         ensure!(
             body_size <= Urma::MAX_PUBLIC_BYTES - Urma::PREFIX_BYTES,
@@ -158,6 +194,9 @@ impl PublicRecord {
                 bytes.extend_from_slice(text.as_bytes());
             }
             Self::Avatar(pixels) => bytes.extend_from_slice(pixels.as_slice()),
+            Self::WirePost { .. } | Self::WireReply { .. } => {
+                bail!("structured record handled separately")
+            }
         }
         ensure!(
             bytes.len() <= Urma::MAX_PUBLIC_BYTES,
@@ -184,6 +223,20 @@ impl PublicRecord {
                 })
             }
             RecordKind::Avatar => Ok(Self::Avatar(Box::new(body.try_into()?))),
+            RecordKind::WirePost => {
+                let (topics, text) = Topics::decode_body(body)?;
+                Ok(Self::WirePost { topics, text })
+            }
+            RecordKind::WireReply => {
+                ensure!(body.len() >= 32, "truncated reply target");
+                let target = Txid::from_byte_array(body[..32].try_into()?);
+                let (topics, text) = Topics::decode_body(&body[32..])?;
+                Ok(Self::WireReply {
+                    target,
+                    topics,
+                    text,
+                })
+            }
             RecordKind::Private
             | RecordKind::Container
             | RecordKind::DataPart

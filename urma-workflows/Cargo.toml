@@ -10,9 +10,9 @@ include = ["Cargo.toml", "src/**/*.rs"]
 description = "URMA archive and vault workflows"
 
 [dependencies]
-urma-io = { version = "0.1.1", path = "../urma-io" }
-urma-core = { version = "0.1.1", path = "../urma-core" }
-urma-identity = { version = "0.1.1", path = "../urma-identity" }
+urma-io = { version = "0.2.0", path = "../urma-io" }
+urma-core = { version = "0.2.0", path = "../urma-core" }
+urma-identity = { version = "0.2.0", path = "../urma-identity" }
 rand = "0.8"
 zeroize = "1"
-urma-runtime = { version = "0.1.1", path = "../urma-runtime" }
+urma-runtime = { version = "0.2.0", path = "../urma-runtime" }

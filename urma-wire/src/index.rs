@@ -45,7 +45,7 @@ impl Index {
         let bytes = urma_io::read_bounded(path, Self::MAX_BYTES)?;
         let index: Self = serde_json::from_slice(&bytes)?;
         ensure!(
-            index.format == "URMA-WIRE-INDEX-1",
+            index.format == "URMA-WIRE-INDEX-1" || index.format == "URMA-WIRE-INDEX-2",
             "unsupported Wire index"
         );
         ensure!(index.blocks.len() <= 500_000, "Wire checkpoint capacity");
@@ -94,7 +94,7 @@ pub fn sync<R: Reader>(
         Index::load(path)?
     } else {
         Index {
-            format: "URMA-WIRE-INDEX-1".into(),
+            format: "URMA-WIRE-INDEX-2".into(),
             genesis: genesis.clone(),
             start,
             blocks: Vec::new(),
@@ -103,6 +103,11 @@ pub fn sync<R: Reader>(
     };
     if index.genesis != genesis || index.start != start {
         return Err(Error::Invalid("index chain/start mismatch".into()).into());
+    }
+    if index.format == "URMA-WIRE-INDEX-1" {
+        index.blocks.clear();
+        index.entries.clear();
+        index.format = "URMA-WIRE-INDEX-2".into();
     }
     let tip = reader.tip_height().map_err(SyncError::Source)?;
     let rolled_back = rollback(reader, &mut index, tip)?;
@@ -198,12 +203,17 @@ fn read_entries<R: Reader>(
         let candidate = match envelope::extract_reveal(tx) {
             Ok(parsed) => parsed,
             Err(cause) => {
-                tracing::warn!(%cause, "candidate is not a supported URMA reveal");
+                tracing::warn!(error = %cause, "candidate is not a supported URMA reveal");
                 continue;
             }
         };
         match RecordKind::parse(&candidate.record).map_err(Error::from)? {
-            RecordKind::Post | RecordKind::Reply | RecordKind::Profile | RecordKind::Avatar => {}
+            RecordKind::Post
+            | RecordKind::Reply
+            | RecordKind::Profile
+            | RecordKind::Avatar
+            | RecordKind::WirePost
+            | RecordKind::WireReply => {}
             other => {
                 tracing::trace!(?other, "non-Wire URMA record");
                 continue;
@@ -219,7 +229,7 @@ fn read_entries<R: Reader>(
             u32::try_from(position).map_err(Error::from)?,
         ) {
             Ok(entry) => entries.push(entry),
-            Err(cause) => tracing::warn!(%cause, "rejected Wire author proof"),
+            Err(cause) => tracing::warn!(error = %cause, "rejected Wire author proof"),
         }
     }
     Ok(entries)
