@@ -82,6 +82,7 @@ pub(crate) fn scan(
     findings: &AtomicUsize,
 ) -> Result<(), Error> {
     let count = config::scan_workers(inventory.objects.len())?;
+    tracing::info!(target: "urma_ui", phase = "Scanning public objects", done = 0u64, total = inventory.objects.len());
     tracing::info!(target: "urma_progress", "Scanning with {} persistent Git workers (CPU and memory budget)", count);
     let jobs = Jobs {
         repo,
@@ -120,6 +121,7 @@ pub(crate) fn scan(
                     if report.objects.is_multiple_of(128) {
                         tracing::debug!(target: "urma_progress", "Scanned {} / {} objects, {} bytes", report.objects, inventory.objects.len(), report.bytes);
                     }
+                    tracing::info!(target: "urma_ui", phase = "Scanning public objects", done = report.objects, total = inventory.objects.len());
                 }
                 Err(cause) => {
                     tracing::warn!(%cause, "parallel scanner failed");
@@ -138,6 +140,7 @@ pub(crate) fn scan(
         }
     });
     errors.into_iter().try_for_each(Err::<(), Error>)?;
+    tracing::info!(target: "urma_ui", phase = "Checking complete scan results");
     finish(report, inventory, results)
 }
 

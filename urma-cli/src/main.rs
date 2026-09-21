@@ -13,7 +13,9 @@ mod files_cli;
 mod funding_cli;
 mod git_cli;
 mod git_follow_cli;
+mod git_progress;
 mod git_publish_cli;
+mod git_terminal;
 mod key_cli;
 mod litecoin_cli;
 mod node_cli;
@@ -78,7 +80,7 @@ enum Command {
 }
 
 pub(crate) fn progress(message: String) {
-    eprintln!("{message}");
+    git_terminal::suspend(|| eprintln!("{message}"));
 }
 
 pub(crate) fn print_report(value: Value) -> Result<(), Error> {
@@ -117,7 +119,11 @@ fn main() {
     match run() {
         Ok(()) => {}
         Err(error) => {
-            eprintln!("error: {error}");
+            if is_terminal() {
+                eprintln!("{}: {error}", console::style("error").red().bold());
+            } else {
+                eprintln!("error: {error}");
+            }
             std::process::exit(1);
         }
     }
@@ -165,9 +171,28 @@ fn terminal_text(text: &str) -> String {
     safe
 }
 
+pub(crate) fn is_terminal() -> bool {
+    use std::io::IsTerminal;
+    std::io::stderr().is_terminal()
+        && !std::env::var_os("URMA_OUTPUT")
+            .iter()
+            .any(|value| value == "json")
+}
+
 pub(crate) fn approve_publication(label: &str, id: &str, fee: u64, yes: bool) -> Result<(), Error> {
     use std::io::{IsTerminal, Write};
-    eprintln!("{label}\nPlan: {id}\nTotal fee: {fee} base units.");
+    if is_terminal() {
+        eprintln!(
+            "{}\n  {}: {}\n  {}: {}",
+            console::style(label).bold(),
+            console::style("Plan").dim(),
+            console::style(id).cyan(),
+            console::style("Total fee").dim(),
+            console::style(format!("{fee} base units")).yellow().bold()
+        );
+    } else {
+        eprintln!("{label}\nPlan: {id}\nTotal fee: {fee} base units.");
+    }
     if yes {
         return Ok(());
     }
@@ -175,14 +200,17 @@ pub(crate) fn approve_publication(label: &str, id: &str, fee: u64, yes: bool) ->
         std::io::stdin().is_terminal(),
         "publication needs approval; review the plan, then run this command with --yes"
     );
-    eprint!("Publish this exact plan? [y/N] ");
-    std::io::stderr().flush()?;
-    let mut answer = String::new();
-    std::io::stdin().read_line(&mut answer)?;
-    urma_runtime::error::ensure!(
-        matches!(answer.trim(), "y" | "Y" | "yes"),
-        "publication cancelled; nothing submitted"
-    );
+    let confirmed = if is_terminal() {
+        git_terminal::confirm(&dialoguer::console::Term::stderr())
+            .map_err(|error| Error::Io(std::io::Error::other(error)))?
+    } else {
+        eprint!("Publish this exact plan? [y/N] ");
+        std::io::stderr().flush()?;
+        let mut answer = String::new();
+        std::io::stdin().read_line(&mut answer)?;
+        git_terminal::accepted(&answer)
+    };
+    urma_runtime::error::ensure!(confirmed, "publication cancelled; nothing submitted");
     Ok(())
 }
 
@@ -193,53 +221,66 @@ pub(crate) fn detail(level: u8, message: String) {
 }
 
 fn install_progress_logging(verbosity: u8) -> Result<(), Error> {
-    use tracing_subscriber::{filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt};
+    use tracing_subscriber::{
+        Layer, filter::LevelFilter, layer::SubscriberExt, util::SubscriberInitExt,
+    };
     let level = match verbosity {
-        0 | 1 => LevelFilter::INFO,
+        0 => LevelFilter::WARN,
+        1 => LevelFilter::INFO,
         2 => LevelFilter::DEBUG,
         _ => LevelFilter::TRACE,
     };
     let filter = tracing_subscriber::filter::Targets::new().with_target("urma_progress", level);
     tracing_subscriber::registry()
-        .with(filter)
+        .with(git_progress::ProgressLayer.with_filter(
+            tracing_subscriber::filter::Targets::new().with_target("urma_ui", LevelFilter::INFO),
+        ))
         .with(
             tracing_subscriber::fmt::layer()
                 .without_time()
                 .with_target(false)
                 .with_level(false)
                 .with_ansi(false)
-                .with_writer(std::io::stderr),
+                .with_writer(|| git_terminal::LogWriter(std::io::stderr()))
+                .with_filter(filter),
         )
         .try_init()
         .map_err(|cause| Error::Io(std::io::Error::other(cause)))
 }
 
 pub(crate) fn stage<T>(label: &str, operation: impl FnOnce() -> T) -> T {
-    use std::{
-        sync::mpsc,
-        time::{Duration, Instant},
-    };
-    progress(label.to_owned());
-    let started = Instant::now();
-    let (sender, receiver) = mpsc::channel::<()>();
-    std::thread::scope(|scope| {
-        scope.spawn(move || {
-            loop {
-                match receiver.recv_timeout(Duration::from_secs(10)) {
-                    Ok(()) => break,
-                    Err(cause @ mpsc::RecvTimeoutError::Disconnected) => {
-                        tracing::warn!(reason = %cause, "Progress stage finished");
-                        break;
-                    }
-                    Err(cause @ mpsc::RecvTimeoutError::Timeout) => {
-                        tracing::warn!(reason = %cause, "Progress timer tick");
-                        eprintln!("{label} ({}s elapsed)", started.elapsed().as_secs());
+    if is_terminal() && config::verbosity() == 0 {
+        let spinner = git_terminal::Stage::new(label);
+        let result = operation();
+        progress(spinner.finish(label));
+        result
+    } else {
+        use std::{
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+        progress(label.to_owned());
+        let started = Instant::now();
+        let (sender, receiver) = mpsc::channel::<()>();
+        std::thread::scope(|scope| {
+            scope.spawn(move || {
+                loop {
+                    match receiver.recv_timeout(Duration::from_secs(10)) {
+                        Ok(()) => break,
+                        Err(cause @ mpsc::RecvTimeoutError::Disconnected) => {
+                            tracing::warn!(reason = %cause, "Progress stage finished");
+                            break;
+                        }
+                        Err(cause @ mpsc::RecvTimeoutError::Timeout) => {
+                            tracing::warn!(reason = %cause, "Progress timer tick");
+                            eprintln!("{label} ({}s elapsed)", started.elapsed().as_secs());
+                        }
                     }
                 }
-            }
-        });
-        let result = operation();
-        drop(sender);
-        result
-    })
+            });
+            let result = operation();
+            drop(sender);
+            result
+        })
+    }
 }

@@ -66,6 +66,7 @@ fn freeze(
         other => return Err(Error::Invalid(format!("Git object format {other}"))),
     };
     tracing::info!(target: "urma_progress", "Inspecting HEAD object inventory...");
+    tracing::info!(target: "urma_ui", phase = "Inspecting HEAD object inventory");
     let inventory = inventory::inspect(&repo, &head, limits)?;
     create_private_directory(destination)?;
     let scratch = tempfile::tempdir_in(destination)?;
@@ -76,6 +77,7 @@ fn freeze(
     }
     list.sync_all()?;
     tracing::info!(target: "urma_progress", objects = inventory.objects.len(), "Creating native Git PACK...");
+    tracing::info!(target: "urma_ui", phase = "Creating native Git PACK");
     let pack_path = destination.join("snapshot.pack");
     git::run(
         &repo,
@@ -172,6 +174,7 @@ pub fn validate(
     scratch: &Path,
     limits: &Limits,
 ) -> Result<ValidatedSnapshot, Error> {
+    tracing::info!(target: "urma_ui", phase = "Validating PACK and committed object closure");
     let mut input = File::open(payload)?;
     let descriptor = Descriptor::decode(&mut input)?;
     if descriptor.pack_length > limits.max_pack_bytes {
@@ -293,6 +296,13 @@ fn validate_closure(repo: &Path, inventory: &Inventory, count: usize) -> Result<
 }
 
 fn validate_blobs(repo: &Path, inventory: &Inventory, scratch: &Path) -> Result<(), Error> {
+    let total = inventory
+        .objects
+        .iter()
+        .filter(|object| object.kind == "blob")
+        .count();
+    let mut done = 0u64;
+    tracing::info!(target: "urma_ui", phase = "Validating blobs", done, total);
     for object in &inventory.objects {
         if object.kind != "blob" {
             continue;
@@ -306,7 +316,10 @@ fn validate_blobs(repo: &Path, inventory: &Inventory, scratch: &Path) -> Result<
         )?;
         review::reject_lfs(&mut File::open(&path)?)?;
         std::fs::remove_file(path)?;
+        done += 1;
+        tracing::info!(target: "urma_ui", phase = "Validating blobs", done, total);
     }
+    tracing::info!(target: "urma_ui", phase = "Finishing blob validation");
     Ok(())
 }
 

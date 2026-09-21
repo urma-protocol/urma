@@ -21,7 +21,10 @@ aes = "0.8"
 ctr = "0.9"
 hmac = "0.12"
 clap = { version = "4", features = ["derive"] }
+console = "0.15"
 ctrlc = "3.4"
+dialoguer = "0.11"
+indicatif = "0.18"
 hex = "0.4"
 hkdf = "0.12"
 minreq = { version = "2.14", features = ["https-rustls"] }

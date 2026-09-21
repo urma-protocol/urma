@@ -133,6 +133,8 @@ fn inventory<S: MultipartSource>(
     file: &mut File,
 ) -> Result<(), RecoveryError> {
     let mut inventory = ManifestInventory::new(root.txid(), manifest).map_err(inventory_error)?;
+    let mut received = 0u64;
+    tracing::info!(target: "urma_ui", phase = "Receiving manifests", done = received, total = manifest.entries.len());
     for batch in manifest.entries.chunks(8) {
         let requests: Vec<_> = batch
             .iter()
@@ -151,6 +153,8 @@ fn inventory<S: MultipartSource>(
                 file.write_all(reference.txid.as_byte_array())?;
                 file.write_all(&reference.record_hash)?;
             }
+            received += 1;
+            tracing::info!(target: "urma_ui", phase = "Receiving manifests", done = received, total = manifest.entries.len());
         }
     }
     file.rewind()?;
@@ -184,6 +188,7 @@ fn reconstruct_parts<S: MultipartSource>(
 ) -> Result<(), RecoveryError> {
     let mut digest = Sha256::new();
     let mut length = 0u64;
+    tracing::info!(target: "urma_ui", phase = "Receiving payload bytes", done = length, total = manifest.length);
     for start in (0..geometry.parts()).step_by(8) {
         let count = (geometry.parts() - start).min(8);
         let requests = read_requests(inventory, count)?;
@@ -204,9 +209,11 @@ fn reconstruct_parts<S: MultipartSource>(
                 .ok_or_else(|| Error::Invalid("reconstruction length overflow".into()))?;
             digest.update(&part.payload);
             payload.write_all(&part.payload)?;
+            tracing::info!(target: "urma_ui", phase = "Receiving payload bytes", done = length, total = manifest.length);
         }
     }
     let actual_hash: [u8; 32] = digest.finalize().into();
+    tracing::info!(target: "urma_ui", phase = "Verifying complete payload digest");
     if length != manifest.length || actual_hash != manifest.payload_hash {
         return Err(Error::Invalid("complete payload length or digest mismatch".into()).into());
     }

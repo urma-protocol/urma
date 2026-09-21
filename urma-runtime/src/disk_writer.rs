@@ -50,7 +50,7 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
         })
     }
 
-    fn append(&mut self, bytes: &[u8]) -> Result<ChildReference, Error> {
+    fn append(&mut self, bytes: &[u8], total: u32) -> Result<ChildReference, Error> {
         let (reference, pair) = self.planner.prepare_record(bytes)?;
         let encoded = serde_json::to_vec(&pair)?;
         ensure!(
@@ -72,6 +72,7 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
             .count
             .checked_add(1)
             .context("disk plan record count overflow")?;
+        tracing::info!(target: "urma_ui", phase = "Signing records", done = self.count, total);
         Ok(reference)
     }
 
@@ -83,14 +84,17 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
         profile: [u8; 8],
     ) -> Result<DiskPlan, Error> {
         let mut hash = Sha256::new();
+        tracing::info!(target: "urma_ui", phase = "Signing records", done = 0u64, total = geometry.nodes());
         let mut references = tempfile::tempfile_in(self.directory)?;
         for index in 0..geometry.parts() {
             signing_progress(index, geometry.parts());
             let mut payload = vec![0; geometry.part_length(index)?];
             reader.read_exact(&mut payload)?;
             hash.update(&payload);
-            let reference =
-                self.append(&MultipartRecord::Data(DataPart { index, payload }).encode()?)?;
+            let reference = self.append(
+                &MultipartRecord::Data(DataPart { index, payload }).encode()?,
+                geometry.nodes(),
+            )?;
             references.write_all(&reference.txid.to_byte_array())?;
             references.write_all(&reference.record_hash)?;
         }
@@ -117,6 +121,7 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
                         entries,
                     })
                     .encode()?,
+                    geometry.nodes(),
                 )?,
             );
             remaining -= count;
@@ -133,11 +138,16 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
             entries: leaves,
         })
         .encode()?;
-        self.append(&root)?;
+        self.append(&root, geometry.nodes())?;
+        tracing::info!(target: "urma_ui", phase = "Saving and validating signed records");
         ensure!(
             self.count == geometry.nodes(),
             "disk plan geometry mismatch"
         );
+        self.finish()
+    }
+
+    fn finish(self) -> Result<DiskPlan, Error> {
         self.records.sync_all()?;
         self.index.sync_all()?;
         let plan = DiskPlan::from_metadata(

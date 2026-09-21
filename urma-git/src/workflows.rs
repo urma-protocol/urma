@@ -134,6 +134,7 @@ fn sign_snapshot(
         &directory.join("publication"),
     )?;
     tracing::info!(target: "urma_progress", "Verifying and freezing signed plan artifacts...");
+    tracing::info!(target: "urma_ui", phase = "Verifying and freezing signed plan artifacts");
     let hash = GitPlan::freeze(directory, &publication, limits)?;
     Ok(PreparedReport {
         plan_id: hash,
@@ -295,6 +296,7 @@ pub fn recover(
         &validated.descriptor,
         scratch.path(),
     )?;
+    tracing::info!(target: "urma_ui", phase = "Retaining and verifying transaction proofs");
     let locator = proofs::export(node, &object, output)?;
     let mut retained = proofs::reconstruct(output, recovery_limits(limits)?, scratch.path())?;
     if descriptor::digest(&mut retained)? != object.manifest().payload_hash {
@@ -410,6 +412,7 @@ pub fn clone_root_named(
     let recovered = scratch.path().join("snapshot");
     let report = recover(node, root, &recovered, limits)?;
     let destination = config::destination(requested, &report.snapshot.descriptor, root)?;
+    tracing::info!(target: "urma_ui", phase = "Installing and checking out verified snapshot");
     checkout::install_with_evidence(
         &recovered.join("object.bin"),
         &destination,

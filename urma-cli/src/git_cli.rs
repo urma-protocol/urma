@@ -1,5 +1,5 @@
 use crate::{
-    approve_publication, config, detail, funding_cli, git_follow_cli, git_publish_cli,
+    approve_publication, config, detail, funding_cli, git_follow_cli, git_publish_cli, is_terminal,
     key_cli::VaultAccess, node_cli::NodeArgs, progress, stage,
 };
 use clap::{Args, Subcommand};
@@ -136,10 +136,18 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
         urma_git::config::PublicationName(args.name),
     )
     .map_err(boundary)?;
-    progress(format!(
-        "Preparing {name} on {}. No broadcast.",
-        args.node.chain()?.label()
-    ));
+    if is_terminal() {
+        progress(format!(
+            "Preparing {} on {}. No broadcast.",
+            console::style(&name).cyan().bold(),
+            console::style(args.node.chain()?.label()).green().bold()
+        ));
+    } else {
+        progress(format!(
+            "Preparing {name} on {}. No broadcast.",
+            args.node.chain()?.label()
+        ));
+    }
     detail(
         1,
         format!(
@@ -214,11 +222,16 @@ fn resume(args: ResumeArgs) -> Result<Value, Error> {
 }
 
 fn recover(args: RecoverArgs) -> Result<Value, Error> {
-    let node = args.node.connect()?;
+    let node = stage("Connecting to the selected network...", || {
+        args.node.connect()
+    })?;
     let root = workflows::parse_root(&node, &args.root).map_err(boundary)?;
-    Ok(serde_json::to_value(
-        workflows::recover(&node, root, &args.output, &args.resources.load()?).map_err(boundary)?,
-    )?)
+    let limits = args.resources.load()?;
+    let report = stage("Recovering content and transaction proofs...", || {
+        workflows::recover(&node, root, &args.output, &limits)
+    })
+    .map_err(boundary)?;
+    Ok(serde_json::to_value(report)?)
 }
 
 fn review(plan: &Path, classifications: &[String]) -> Result<Value, Error> {
@@ -250,7 +263,7 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
             let requested = urma_git::config::CloneDestination(directory);
             urma_git::config::staging_parent(&requested).map_err(boundary)?;
             progress(format!("Connecting to {}...", node.chain()?.label()));
-            let node = node.connect()?;
+            let node = stage("Connecting to node...", || node.connect())?;
             detail(1, format!("Requested root: {root}"));
             detail(
                 3,
@@ -259,10 +272,10 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
                     node.inclusion_evidence()
                 ),
             );
-            progress("Receiving and verifying URMA objects...".into());
-            let (report, directory) =
+            let (report, directory) = stage("Receiving and verifying URMA objects...", || {
                 workflows::clone_root_named(&node, root, requested, &resources.load()?)
-                    .map_err(boundary)?;
+            })
+            .map_err(boundary)?;
             progress(format!("Cloning into '{}'...", directory.display()));
             progress(format!(
                 "Receiving objects: {} bytes, done.",

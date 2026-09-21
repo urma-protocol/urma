@@ -1,7 +1,7 @@
 use crate::funding_cli::{amount, currency};
 use crate::{
-    approve_publication, config, detail, funding_cli, git_follow_cli, key_cli::VaultAccess,
-    node_cli::NodeArgs, progress,
+    approve_publication, config, detail, funding_cli, git_follow_cli, is_terminal,
+    key_cli::VaultAccess, node_cli::NodeArgs, progress, stage,
 };
 use clap::Args;
 use serde_json::Value;
@@ -49,6 +49,49 @@ fn boundary(error: urma_git::error::Error) -> Error {
     Error::Io(std::io::Error::other(error))
 }
 
+fn report_snapshot(
+    directory: &std::path::Path,
+    snapshot: &urma_git::snapshot::SnapshotReport,
+    quote: &quote::Quote,
+) {
+    if is_terminal() {
+        progress(format!(
+            "{} {}",
+            console::style("Local snapshot:").bold(),
+            console::style(directory.display()).cyan()
+        ));
+        progress(format!(
+            "{} {} tree entries, {} PACK bytes; {} records / {} transactions.",
+            console::style("Snapshot:").bold(),
+            console::style(snapshot.inventory.entries.len()).cyan(),
+            console::style(snapshot.descriptor.pack_length).cyan(),
+            console::style(quote.records).cyan(),
+            console::style(u64::from(quote.records) * 2).cyan()
+        ));
+    } else {
+        progress(format!("Local snapshot: {}", directory.display()));
+        progress(format!(
+            "Snapshot: {} tree entries, {} PACK bytes; {} records / {} transactions.",
+            snapshot.inventory.entries.len(),
+            snapshot.descriptor.pack_length,
+            quote.records,
+            u64::from(quote.records) * 2
+        ));
+    }
+}
+
+fn report_funding_check() {
+    if is_terminal() {
+        progress(format!(
+            "{}",
+            console::style("Checking identity funding and freezing exact signed transactions...")
+                .bold()
+        ));
+    } else {
+        progress("Checking identity funding and freezing exact signed transactions...".into());
+    }
+}
+
 fn prepare(
     args: &PublishArgs,
     directory: &std::path::Path,
@@ -56,23 +99,17 @@ fn prepare(
     let guard = urma_git::workspace::lock(directory).map_err(boundary)?;
     urma_git::workspace::ensure_unpublished(directory).map_err(boundary)?;
     let limits = config::git_limits()?;
-    progress("Preparing committed HEAD and scanning public content...".into());
     let name = urma_git::descriptor::source_name(&args.repo).map_err(boundary)?;
-    let snapshot =
-        urma_git::workspace::snapshot(&args.repo, directory, &limits, &name).map_err(boundary)?;
-    let vault = args.access.open()?;
+    let snapshot = stage(
+        "Preparing committed HEAD and scanning public content...",
+        || urma_git::workspace::snapshot(&args.repo, directory, &limits, &name),
+    )
+    .map_err(boundary)?;
+    let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;
     let length = directory.join("object.bin").metadata()?.len();
     let quote = quote::multipart(length, &signer, args.fee_rate, args.node.chain()?)?;
-
-    progress(format!("Local snapshot: {}", directory.display()));
-    progress(format!(
-        "Snapshot: {} tree entries, {} PACK bytes; {} records / {} transactions.",
-        snapshot.inventory.entries.len(),
-        snapshot.descriptor.pack_length,
-        quote.records,
-        u64::from(quote.records) * 2
-    ));
+    report_snapshot(directory, &snapshot, &quote);
     let ceiling =
         config::publication_fee_ceiling(config::FeeCeiling(args.max_fee), quote.maximum_fee);
     funding_cli::preview(args.node.chain()?, &quote, ceiling);
@@ -80,7 +117,7 @@ fn prepare(
         snapshot.scan.findings.is_empty(),
         "scanner found possible secrets; inspect scan.json and prepare/review explicitly before publishing"
     );
-    progress("Checking identity funding and freezing exact signed transactions...".into());
+    report_funding_check();
     detail(
         2,
         format!(
@@ -88,19 +125,23 @@ fn prepare(
             args.fee_rate
         ),
     );
-    let node = args.node.connect()?;
+    let node = stage("Connecting to the selected network...", || {
+        args.node.connect()
+    })?;
     funding_cli::check(&node, &signer, &quote, ceiling)?;
-    let report = workflows::prepare_snapshot(
-        &node,
-        &signer,
-        directory,
-        &limits,
-        PlanLimits {
-            fee_rate: args.fee_rate,
-            max_fee: quote.maximum_fee,
-            max_records: quote.records,
-        },
-    )
+    let report = stage("Signing and verifying the publication plan...", || {
+        workflows::prepare_snapshot(
+            &node,
+            &signer,
+            directory,
+            &limits,
+            PlanLimits {
+                fee_rate: args.fee_rate,
+                max_fee: quote.maximum_fee,
+                max_records: quote.records,
+            },
+        )
+    })
     .map_err(boundary)?;
     funding_cli::preflight(&node, directory)?;
     drop(guard);
@@ -119,39 +160,80 @@ fn describe(
     );
     let unit = currency(node.chain());
     let funding = publication.record(0)?.funding.prevout()?.1.value.to_sat();
-    progress(format!("Network: {}", node.chain().label()));
-    progress(format!(
-        "Public snapshot: {} / HEAD {}",
-        report.snapshot.descriptor.repository_name,
-        hex::encode(&report.snapshot.descriptor.head)
-    ));
-    progress(format!(
-        "{} transactions; exact total fee: {} {unit} ({} base units).",
-        report.transactions,
-        amount(report.total_fee),
-        report.total_fee
-    ));
-    progress(format!(
-        "Selected funding: {} {unit}; value retained after fees: {} {unit}.",
-        amount(funding),
-        amount(funding - report.total_fee)
-    ));
+    if is_terminal() {
+        progress(format!(
+            "{} {}",
+            console::style("Network:").bold(),
+            console::style(node.chain().label()).cyan()
+        ));
+        progress(format!(
+            "{} {} / HEAD {}",
+            console::style("Public snapshot:").bold(),
+            console::style(&report.snapshot.descriptor.repository_name).bold(),
+            console::style(hex::encode(&report.snapshot.descriptor.head)).cyan()
+        ));
+        progress(format!(
+            "{} transactions; exact total fee: {} ({} base units).",
+            console::style(report.transactions).cyan(),
+            console::style(format!("{} {unit}", amount(report.total_fee)))
+                .yellow()
+                .bold(),
+            console::style(report.total_fee).dim()
+        ));
+        progress(format!(
+            "Selected funding: {}; value retained after fees: {}.",
+            console::style(format!("{} {unit}", amount(funding)))
+                .green()
+                .bold(),
+            console::style(format!("{} {unit}", amount(funding - report.total_fee))).cyan()
+        ));
+        progress(format!(
+            "Plan saved in {}. Only committed HEAD is included; publication is public.",
+            console::style(directory.display()).cyan()
+        ));
+    } else {
+        progress(format!("Network: {}", node.chain().label()));
+        progress(format!(
+            "Public snapshot: {} / HEAD {}",
+            report.snapshot.descriptor.repository_name,
+            hex::encode(&report.snapshot.descriptor.head)
+        ));
+        progress(format!(
+            "{} transactions; exact total fee: {} {unit} ({} base units).",
+            report.transactions,
+            amount(report.total_fee),
+            report.total_fee
+        ));
+        progress(format!(
+            "Selected funding: {} {unit}; value retained after fees: {} {unit}.",
+            amount(funding),
+            amount(funding - report.total_fee)
+        ));
+        progress(format!(
+            "Plan saved in {}. Only committed HEAD is included; publication is public.",
+            directory.display()
+        ));
+    }
     detail(
         1,
         format!("Root: {} / author {}", plan.root_txid, plan.author),
     );
-    progress(format!(
-        "Plan saved in {}. Only committed HEAD is included; publication is public.",
-        directory.display()
-    ));
     Ok(())
 }
 
 pub(crate) fn run(args: PublishArgs) -> Result<Value, Error> {
-    progress(format!(
-        "Publication network: {}",
-        args.node.chain()?.label()
-    ));
+    if is_terminal() {
+        progress(format!(
+            "{} {}",
+            console::style("Publication network:").bold(),
+            console::style(args.node.chain()?.label()).cyan()
+        ));
+    } else {
+        progress(format!(
+            "Publication network: {}",
+            args.node.chain()?.label()
+        ));
+    }
     let (directory, report) = match &args.plan {
         Some(path) => (
             path.clone(),

@@ -6,6 +6,7 @@
 !/urma-*/Cargo.toml
 !/urma-*/src/**/*.rs
 !/urma-*/tests/**/*.rs
+!/urma-cli/tests/git_ui_demo.py
 !/tests/fixtures/sample.jpg
 !/tests/fixtures/tiny-public-test.jpg
 !/tests/vectors/**/*.bin

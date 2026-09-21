@@ -1,4 +1,4 @@
-use crate::{config, detail, node_cli::NodeArgs, progress};
+use crate::{config, detail, git_terminal, is_terminal, node_cli::NodeArgs, progress};
 use clap::{Args, ValueEnum};
 use serde_json::Value;
 use std::{
@@ -12,7 +12,7 @@ use std::{
 };
 use urma_git::workflows;
 use urma_runtime::{
-    error::{Error, ensure},
+    error::Error,
     node::Node,
     publication_progress::{Progress, State, Target},
 };
@@ -102,13 +102,7 @@ fn follow(node: &Node, directory: &Path, mode: Mode<'_>, until: Completion) -> R
     let signal = stopped.clone();
     ctrlc::set_handler(move || signal.store(true, Ordering::Release))
         .map_err(|error| Error::Io(std::io::Error::other(error)))?;
-    let mut display = Display {
-        stopped,
-        plan_id: String::new(),
-        last: String::new(),
-        seen: HashMap::new(),
-        printed: Instant::now(),
-    };
+    let mut display = Display::new(stopped, until);
     loop {
         display.check()?;
         let mut notify = |report: &Progress| display.show(report, false);
@@ -118,27 +112,36 @@ fn follow(node: &Node, directory: &Path, mode: Mode<'_>, until: Completion) -> R
                 workflows::publish_progress(node, directory, approved, &mut notify)
             }
         }
-        .map_err(boundary)?;
-        display.show(&report, true)?;
-        ensure!(
-            report.retryable,
-            "publication needs attention: {}; fee floor above the approved rate requires intervention, never an automatic fee increase",
-            report.report.blocked_reason
-        );
+        .map_err(|err| {
+            display.clear();
+            boundary(err)
+        })?;
+        match display.show(&report, true) {
+            Ok(()) => {}
+            Err(err) => {
+                display.clear();
+                return Err(err);
+            }
+        }
+        if !report.retryable {
+            display.clear();
+            return Err(Error::Invalid(format!(
+                "publication needs attention: {}; fee floor above the approved rate requires intervention, never an automatic fee increase",
+                report.report.blocked_reason
+            )));
+        }
         if report.reached(until.target()) {
-            progress(format!(
-                "Target {:?} reached for all {} transactions. Root: {}",
-                until.target(),
-                report.total,
-                report.report.root_txid
-            ));
+            display.clear();
+            display.complete(&report);
             return Ok(());
         }
-        if let Mode::Publish { persist: false, .. } = mode {
-            ensure!(
-                report.report.blocked_reason != "mempool full; approved fees unchanged",
-                "mempool full; use --persist to wait/retry or resume later; approved bytes and fees unchanged"
-            );
+        if matches!(mode, Mode::Publish { persist: false, .. })
+            && report.report.blocked_reason == "mempool full; approved fees unchanged"
+        {
+            display.clear();
+            return Err(Error::Invalid(
+                "mempool full; use --persist to wait/retry or resume later; approved bytes and fees unchanged".into(),
+            ));
         }
         detail(
             1,
@@ -152,21 +155,82 @@ fn follow(node: &Node, directory: &Path, mode: Mode<'_>, until: Completion) -> R
     }
 }
 
+enum TerminalUi {
+    Interactive(git_terminal::Publication),
+    Plain,
+}
+
 struct Display {
     stopped: Arc<AtomicBool>,
     plan_id: String,
     last: String,
     seen: HashMap<String, State>,
     printed: Instant,
+    started: Instant,
+    ui: TerminalUi,
+    until: Completion,
 }
 
 impl Display {
+    fn new(stopped: Arc<AtomicBool>, until: Completion) -> Self {
+        let ui = if is_terminal() && config::verbosity() == 0 {
+            TerminalUi::Interactive(git_terminal::Publication::new())
+        } else {
+            TerminalUi::Plain
+        };
+        Self {
+            stopped,
+            plan_id: String::new(),
+            last: String::new(),
+            seen: HashMap::new(),
+            printed: Instant::now(),
+            started: Instant::now(),
+            ui,
+            until,
+        }
+    }
+
     fn check(&self) -> Result<(), Error> {
-        ensure!(
-            !self.stopped.load(Ordering::Acquire),
-            "interrupted; target not reached; exact plan remains resumable"
-        );
+        if self.stopped.load(Ordering::Acquire) {
+            self.clear();
+            return Err(Error::Invalid(
+                "interrupted; target not reached; exact plan remains resumable".into(),
+            ));
+        }
         Ok(())
+    }
+
+    fn clear(&self) {
+        match &self.ui {
+            TerminalUi::Interactive(bar) => bar.clear(),
+            TerminalUi::Plain => {}
+        }
+    }
+
+    fn complete(&self, report: &Progress) {
+        match self.ui {
+            TerminalUi::Interactive(_) => progress(format!(
+                "✓ {:?} · {} transactions · {:.1}s\n  Root: {}",
+                self.until.target(),
+                report.total,
+                self.started.elapsed().as_secs_f32(),
+                report.report.root_txid
+            )),
+            TerminalUi::Plain => progress(format!(
+                "Target {:?} reached for all {} transactions. Root: {}",
+                self.until.target(),
+                report.total,
+                report.report.root_txid
+            )),
+        }
+    }
+
+    fn update_bar(&self, observed: &Progress) -> Result<(), Error> {
+        let bar = match &self.ui {
+            TerminalUi::Interactive(bar) => bar,
+            TerminalUi::Plain => return Ok(()),
+        };
+        bar.update(observed, self.until.target())
     }
 
     fn show(&mut self, report: &Progress, final_pass: bool) -> Result<(), Error> {
@@ -174,11 +238,16 @@ impl Display {
         if self.plan_id.is_empty() {
             self.plan_id = report.report.plan_id.clone();
         }
-        ensure!(
-            self.plan_id == report.report.plan_id,
-            "watched plan changed; restart explicitly for the new plan"
-        );
-        if !final_pass && self.printed.elapsed() < Duration::from_secs(5) {
+        if self.plan_id != report.report.plan_id {
+            self.clear();
+            return Err(Error::Invalid(
+                "watched plan changed; restart explicitly for the new plan".into(),
+            ));
+        }
+        if matches!(self.ui, TerminalUi::Plain)
+            && !final_pass
+            && self.printed.elapsed() < Duration::from_secs(5)
+        {
             return Ok(());
         }
         let mut observed = report.clone();
@@ -196,34 +265,46 @@ impl Display {
             }
             self.seen.insert(row.txid.clone(), row.state.clone());
         }
+        self.update_bar(&observed)?;
         let summary = format!("{}; {}", observed.summary(), report.report.blocked_reason);
-        if summary != self.last || config::verbosity() >= 1 {
-            progress(summary.clone());
-            for role in ["commit", "data", "leaf", "root"] {
-                let rows = observed
-                    .observations
-                    .iter()
-                    .filter(|row| row.role == role)
-                    .collect::<Vec<_>>();
-                let confirmed = rows
-                    .iter()
-                    .filter(|row| row.state == State::Confirmed)
-                    .count();
-                let mempool = rows
-                    .iter()
-                    .filter(|row| row.state == State::Mempool)
-                    .count();
-                detail(
-                    2,
-                    format!(
-                        "{role}: {} observed, {confirmed} confirmed, {mempool} mempool",
-                        rows.len()
-                    ),
-                );
+        match &self.ui {
+            TerminalUi::Interactive(_) => {}
+            TerminalUi::Plain => {
+                if summary != self.last || config::verbosity() >= 1 {
+                    progress(summary.clone());
+                    for role in ["commit", "data", "leaf", "root"] {
+                        let rows = observed
+                            .observations
+                            .iter()
+                            .filter(|row| row.role == role)
+                            .collect::<Vec<_>>();
+                        let confirmed = rows
+                            .iter()
+                            .filter(|row| row.state == State::Confirmed)
+                            .count();
+                        let mempool = rows
+                            .iter()
+                            .filter(|row| row.state == State::Mempool)
+                            .count();
+                        detail(
+                            2,
+                            format!(
+                                "{role}: {} observed, {confirmed} confirmed, {mempool} mempool",
+                                rows.len()
+                            ),
+                        );
+                    }
+                    self.last = summary;
+                }
             }
-            self.last = summary;
         }
         self.printed = Instant::now();
         Ok(())
+    }
+}
+
+impl Drop for Display {
+    fn drop(&mut self) {
+        self.clear();
     }
 }

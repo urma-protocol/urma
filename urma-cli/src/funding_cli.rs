@@ -1,4 +1,4 @@
-use crate::{detail, progress, stage};
+use crate::{detail, is_terminal, progress, stage};
 use urma_chain::observation::Chain;
 use urma_identity::identity::IdentitySigner;
 use urma_runtime::error::{Context, Error};
@@ -24,24 +24,88 @@ pub(crate) fn preview(chain: Chain, quote: &Quote, ceiling: u64) {
             quote.payload_bytes, quote.parts, quote.leaves, quote.retained_value
         ),
     );
-    progress(format!(
-        "Multipart: 256 KiB maximum per record; {} records, {} transactions (commit + reveal).",
-        quote.records,
-        u64::from(quote.records) * 2
-    ));
-    progress(format!(
-        "Estimated network fee: {} {unit}.",
-        amount(quote.maximum_fee)
-    ));
-    progress(format!(
-        "Funding required: {} {unit} (includes value returned to your identity, not just fees).",
-        amount(quote.funding)
-    ));
-    if ceiling < quote.maximum_fee {
+    if is_terminal() {
         progress(format!(
-            "Your fee limit is {} {unit}; the estimate exceeds it by {} {unit}.",
-            amount(ceiling),
-            amount(quote.maximum_fee - ceiling)
+            "{} 256 KiB maximum per record; {} records, {} transactions (commit + reveal).",
+            console::style("Multipart:").bold(),
+            console::style(quote.records).cyan(),
+            console::style(u64::from(quote.records) * 2).cyan()
+        ));
+        progress(format!(
+            "{} {}",
+            console::style("Estimated network fee:").bold(),
+            console::style(format!("{} {unit}", amount(quote.maximum_fee)))
+                .yellow()
+                .bold()
+        ));
+        progress(format!(
+            "{} {} {}",
+            console::style("Funding required:").bold(),
+            console::style(format!("{} {unit}", amount(quote.funding)))
+                .green()
+                .bold(),
+            console::style("(includes value returned to your identity, not just fees)").dim()
+        ));
+        if ceiling < quote.maximum_fee {
+            progress(format!(
+                "Your fee limit is {} {unit}; the estimate exceeds it by {} {unit}.",
+                console::style(amount(ceiling)).yellow(),
+                console::style(amount(quote.maximum_fee - ceiling))
+                    .red()
+                    .bold()
+            ));
+        }
+    } else {
+        progress(format!(
+            "Multipart: 256 KiB maximum per record; {} records, {} transactions (commit + reveal).",
+            quote.records,
+            u64::from(quote.records) * 2
+        ));
+        progress(format!(
+            "Estimated network fee: {} {unit}.",
+            amount(quote.maximum_fee)
+        ));
+        progress(format!(
+            "Funding required: {} {unit} (includes value returned to your identity, not just fees).",
+            amount(quote.funding)
+        ));
+        if ceiling < quote.maximum_fee {
+            progress(format!(
+                "Your fee limit is {} {unit}; the estimate exceeds it by {} {unit}.",
+                amount(ceiling),
+                amount(quote.maximum_fee - ceiling)
+            ));
+        }
+    }
+}
+
+fn report_address(label: &str, address: &str) {
+    if is_terminal() {
+        progress(format!(
+            "{} ({}): {}",
+            console::style("Your funding address").bold(),
+            console::style(label).dim(),
+            console::style(address).cyan().bold()
+        ));
+    } else {
+        progress(format!("Your funding address ({label}): {address}"));
+    }
+}
+
+fn report_balance(unit: &str, balance: u64, count: usize) {
+    if is_terminal() {
+        progress(format!(
+            "{} {} across {} payment(s).",
+            console::style("Confirmed spendable balance:").bold(),
+            console::style(format!("{} {unit}", amount(balance)))
+                .green()
+                .bold(),
+            console::style(count).cyan()
+        ));
+    } else {
+        progress(format!(
+            "Confirmed spendable balance: {} {unit} across {count} payment(s).",
+            amount(balance)
         ));
     }
 }
@@ -54,10 +118,7 @@ pub(crate) fn check(
 ) -> Result<(), Error> {
     let unit = currency(node.chain());
     let address = urma_wallet::address::receive_address(signer, node.chain())?;
-    progress(format!(
-        "Your funding address ({}): {address}",
-        node.chain().label()
-    ));
+    report_address(node.chain().label(), &address);
     let outputs = stage("Checking confirmed spendable funds...", || {
         node.available_utxos(signer)
     })?;
@@ -69,11 +130,7 @@ pub(crate) fn check(
             .context("balance overflow")?;
         largest = largest.max(output.value);
     }
-    progress(format!(
-        "Confirmed spendable balance: {} {unit} across {} payment(s).",
-        amount(balance),
-        outputs.len()
-    ));
+    report_balance(unit, balance, outputs.len());
     detail(
         2,
         format!(
@@ -82,10 +139,20 @@ pub(crate) fn check(
         ),
     );
     if balance < quote.funding {
-        progress(format!(
-            "Insufficient funds: you are short by {} {unit}.",
-            amount(quote.funding - balance)
-        ));
+        if is_terminal() {
+            progress(format!(
+                "{} you are short by {}.",
+                console::style("Insufficient funds:").yellow().bold(),
+                console::style(format!("{} {unit}", amount(quote.funding - balance)))
+                    .yellow()
+                    .bold()
+            ));
+        } else {
+            progress(format!(
+                "Insufficient funds: you are short by {} {unit}.",
+                amount(quote.funding - balance)
+            ));
+        }
     }
     if largest < quote.funding {
         if balance >= quote.funding {
@@ -102,7 +169,16 @@ pub(crate) fn check(
     if largest < quote.funding {
         return Err(Error::Missing("funding is not ready; the amounts and receiving address are shown above. Nothing was broadcast".into()));
     }
-    progress("Funding is sufficient for this quote. No broadcast yet.".into());
+    if is_terminal() {
+        progress(format!(
+            "{} No broadcast yet.",
+            console::style("Funding is sufficient for this quote.")
+                .green()
+                .bold()
+        ));
+    } else {
+        progress("Funding is sufficient for this quote. No broadcast yet.".into());
+    }
     Ok(())
 }
 
