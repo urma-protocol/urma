@@ -1,7 +1,7 @@
 use crate::error::{Context, Error, ensure};
 use crate::transaction::decode;
 use crate::{endpoints::PublicEndpoint, esplora};
-use bitcoin::{Amount, Block, BlockHash, Denomination, Txid, consensus::deserialize};
+use bitcoin::{Amount, BlockHash, Denomination, Txid};
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
@@ -9,8 +9,9 @@ use std::{
     time::{Duration, Instant},
 };
 use urma_chain::{
+    decode::{self as chain_decode, DecodeError},
     observation::Chain,
-    validation::{BlockValidationError, validate_block_integrity},
+    validation::BlockValidationError,
 };
 
 pub(crate) struct Source {
@@ -69,7 +70,7 @@ impl Source {
             return Ok(json!(chain.genesis()?.0.to_string()));
         }
         let value = self.request(method, args)?;
-        validate_result(method, args, &value)?;
+        validate_result(&self.endpoint, chain, method, args, &value)?;
         Ok(value)
     }
 
@@ -166,7 +167,13 @@ pub(crate) fn request(request: minreq::Request) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Error> {
+fn validate_result(
+    endpoint: &PublicEndpoint,
+    chain: Chain,
+    method: &str,
+    args: &[Value],
+    value: &Value,
+) -> Result<(), Error> {
     validate_shape(method, value)?;
     if method == "getrawtransaction"
         && args.get(1).context("missing transaction verbosity")? == &json!(true)
@@ -177,7 +184,7 @@ fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Er
         && args.get(1).context("missing transaction verbosity")? == &json!(false)
     {
         let raw = value.as_str().context("missing transaction bytes")?;
-        let transaction = decode(raw, raw.len())?;
+        let transaction = chain_decode::transaction(&hex::decode(raw)?, chain)?;
         ensure!(
             json!(transaction.compute_txid()) == *args.first().context("missing transaction ID")?,
             "public source transaction hash mismatch"
@@ -194,18 +201,21 @@ fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Er
     }
     if method == "getblock" {
         let raw = hex::decode(value.as_str().context("missing block bytes")?)?;
-        let block: Block = deserialize(&raw)?;
         let expected_hash = args
             .first()
             .context("missing block hash")?
             .as_str()
             .context("invalid block hash")?
             .parse()?;
-        validate_block_integrity(&block, expected_hash).map_err(|cause| match cause {
-            BlockValidationError::HashMismatch => {
+        let decoded = match endpoint {
+            PublicEndpoint::Rpc(_) => chain_decode::block(&raw, chain, expected_hash),
+            PublicEndpoint::Esplora(_) => chain_decode::esplora_block(&raw, chain, expected_hash),
+        };
+        decoded.map_err(|cause| match cause {
+            DecodeError::Integrity(BlockValidationError::HashMismatch) => {
                 Error::Invalid("public source block hash mismatch".into())
             }
-            BlockValidationError::MerkleRootMismatch => {
+            DecodeError::Integrity(BlockValidationError::MerkleRootMismatch) => {
                 Error::Invalid("public source block merkle root mismatch".into())
             }
             cause => Error::from(cause),

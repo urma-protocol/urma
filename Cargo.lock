@@ -185,10 +185,16 @@ version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6712f9c6fd6785b3b270884e57c441c403dc5d7e19ca45368c97c7a1de3000ec"
 dependencies = [
- "bitcoin-internals",
+ "bitcoin-internals 0.6.0",
  "hex-conservative 1.2.0",
  "serde",
 ]
+
+[[package]]
+name = "bitcoin-internals"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "30bdbe14aa07b06e6cfeffc529a1f099e5fbe249524f8125358604df99a4bed2"
 
 [[package]]
 name = "bitcoin-internals"
@@ -815,6 +821,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53"
 
 [[package]]
+name = "litecoin"
+version = "0.32.8-rc.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fc68e0c96b1991f1595cb531029829ece409dc806da91e5a4336d777f411691c"
+dependencies = [
+ "base58ck",
+ "bech32",
+ "bitcoin-internals 0.3.0",
+ "bitcoin-io",
+ "bitcoin_hashes",
+ "hex-conservative 0.2.3",
+ "hex_lit",
+ "litecoin-units",
+ "secp256k1",
+]
+
+[[package]]
+name = "litecoin-units"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1adecce1b7a05efeec7d70aece0f8bece80250cef49814d01831ac371c6b6e2e"
+dependencies = [
+ "bitcoin-internals 0.3.0",
+]
+
+[[package]]
 name = "litemap"
 version = "0.8.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1429,6 +1461,7 @@ version = "0.2.0"
 dependencies = [
  "bitcoin",
  "hex",
+ "litecoin",
  "serde",
 ]
 
