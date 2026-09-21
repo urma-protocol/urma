@@ -260,6 +260,80 @@ fn help_separates_target_persistence_and_verbosity_and_watch_has_no_approval() {
         assert!(help.contains("[default: confirmed]"));
         assert!(help.contains("mempool, confirmed"));
         assert_eq!(help.contains("--persist"), verb != "watch");
+        assert_eq!(help.contains("--watch <WATCH>"), verb != "watch");
+        assert_eq!(help.contains("[default: true]"), verb != "watch");
         assert_eq!(help.contains("--yes"), verb != "watch");
     }
+}
+
+fn bounded_output(mut command: Command) -> Output {
+    let mut child = command.spawn().unwrap();
+    let start = Instant::now();
+    while child.try_wait().unwrap().is_none() {
+        if start.elapsed() > Duration::from_secs(10) {
+            child.kill().unwrap();
+            child.wait().unwrap();
+            panic!("single reconciliation unexpectedly waited");
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    child.wait_with_output().unwrap()
+}
+
+#[test]
+fn watch_false_is_one_pass_independent_of_persist_and_rejections_remain_errors() {
+    for verb in ["publish", "resume"] {
+        for persist in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let mock = Mock::new(directory.path());
+            let _plan = fixture(directory.path(), &mock);
+            let mut args = vec!["git", verb, "--yes", "--watch", "false"];
+            if persist {
+                args.push("--persist");
+            }
+            let output = bounded_output(command(&mock, directory.path(), &args));
+            assert!(output.status.success());
+            let text = String::from_utf8(output.stderr).unwrap();
+            assert!(text.contains("Pending/incomplete"), "{text}");
+            assert!(!text.contains("Target Confirmed reached"));
+            assert!(!mock.state.lock().unwrap().submissions.is_empty());
+            mock.state.lock().unwrap().preflight = Some("mempool full".into());
+            mock.confirm_all();
+            let output = bounded_output(command(&mock, directory.path(), &args));
+            assert_eq!(output.status.success(), persist);
+            let text = String::from_utf8(output.stderr).unwrap();
+            assert!(text.contains("mempool full"), "{text}");
+            assert_eq!(text.contains("Pending/incomplete"), persist);
+        }
+    }
+}
+
+#[test]
+fn default_watch_waits_without_persist_but_congestion_exits() {
+    let directory = tempfile::tempdir().unwrap();
+    let mock = Mock::new(directory.path());
+    let _plan = fixture(directory.path(), &mock);
+    let child = command(&mock, directory.path(), &["git", "publish", "--yes"])
+        .spawn()
+        .unwrap();
+    wait_for_reads(&mock);
+    let output = interrupt(child);
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("interrupted")
+    );
+    mock.confirm_all();
+    mock.state.lock().unwrap().preflight = Some("mempool full".into());
+    let output = bounded_output(command(
+        &mock,
+        directory.path(),
+        &["git", "resume", "--yes", "--watch=true"],
+    ));
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8(output.stderr)
+            .unwrap()
+            .contains("mempool full")
+    );
 }

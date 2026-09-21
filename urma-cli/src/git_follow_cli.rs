@@ -34,9 +34,11 @@ impl Completion {
 
 #[derive(Args)]
 pub(crate) struct FollowArgs {
+    #[arg(long, action = clap::ArgAction::Set, default_value = "true", help = "Stay in foreground until the target; false performs one reconciliation only")]
+    pub(crate) watch: bool,
     #[arg(
         long,
-        help = "Retry mempool-full congestion at bounded intervals, using exactly the approved bytes and fees"
+        help = "Retry mempool-full congestion with unchanged bytes/fees while watching; with --watch false, later attempts require resume"
     )]
     pub(crate) persist: bool,
     #[arg(
@@ -69,7 +71,11 @@ fn boundary(error: urma_git::error::Error) -> Error {
 
 enum Mode<'a> {
     Watch,
-    Publish { approved: &'a str, persist: bool },
+    Publish {
+        approved: &'a str,
+        persist: bool,
+        watch: bool,
+    },
 }
 
 pub(crate) fn watch(args: WatchArgs) -> Result<Value, Error> {
@@ -85,13 +91,18 @@ pub(crate) fn publish(
     approved: &str,
     args: &FollowArgs,
 ) -> Result<(), Error> {
-    progress("Publishing approved bytes; waiting for the selected target. Ctrl-C leaves the exact plan resumable.".into());
+    progress(if args.watch {
+        "Publishing approved bytes; waiting for the selected target. Ctrl-C leaves the exact plan resumable."
+    } else {
+        "Publishing approved bytes in one reconciliation; incomplete publication requires resume."
+    }.into());
     follow(
         node,
         directory,
         Mode::Publish {
             approved,
             persist: args.persist,
+            watch: args.watch,
         },
         args.until,
     )
@@ -142,6 +153,14 @@ fn follow(node: &Node, directory: &Path, mode: Mode<'_>, until: Completion) -> R
             return Err(Error::Invalid(
                 "mempool full; use --persist to wait/retry or resume later; approved bytes and fees unchanged".into(),
             ));
+        }
+        if matches!(mode, Mode::Publish { watch: false, .. }) {
+            display.clear();
+            progress(format!(
+                "Pending/incomplete: target not reached; {}. Run git resume for another attempt; no background job is running.",
+                report.report.blocked_reason
+            ));
+            return Ok(());
         }
         detail(
             1,
