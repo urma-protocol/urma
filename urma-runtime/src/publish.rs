@@ -147,7 +147,13 @@ pub fn publish(
             .last()
             .context("transaction observation missing")?
             .presence;
-        if !matches!(presence, Presence::Confirmed { .. }) {
+        if matches!(presence, Presence::Missing) {
+            report.blocked_reason =
+                "transaction missing after submission; resume exact plan".into();
+            store(journal, &report)?;
+            return Ok(report);
+        }
+        if plan.records.len() != 1 && !matches!(presence, Presence::Confirmed { .. }) {
             report.blocked_reason =
                 "awaiting one confirmation before dependent publication or recovery".into();
             store(journal, &report)?;
@@ -159,8 +165,14 @@ pub fn publish(
         node.block_hash(anchor.0)?.to_string() == anchor.1,
         "chain changed during publication reconciliation; resume against the new chain"
     );
-    report.complete = true;
-    report.confirmed = true;
+    report.confirmed = report
+        .transactions
+        .iter()
+        .all(|transaction| matches!(transaction.presence, Presence::Confirmed { .. }));
+    report.complete = report.confirmed;
+    if !report.confirmed {
+        report.blocked_reason = "awaiting confirmations for commit and reveal".into();
+    }
     store(journal, &report)?;
     Ok(report)
 }
