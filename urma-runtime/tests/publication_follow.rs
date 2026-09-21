@@ -126,16 +126,46 @@ fn restart_preserves_bytes_and_dependencies_and_reconciles_disappearances() {
         3
     );
     assert!(!first.report.complete);
+    assert!(
+        first
+            .observations
+            .iter()
+            .filter(|row| row.role != "commit")
+            .all(|row| row.state == State::Prepared)
+    );
     let restarted = DiskPlan::load(&plan_path).unwrap();
     publish(&mock, &restarted, &journal);
     assert_eq!(mock.state.lock().unwrap().submissions.len(), 3);
-    for expected in [4, 5, 6] {
-        mock.confirm_all();
-        let report = publish(&mock, &restarted, &journal);
-        assert_eq!(mock.state.lock().unwrap().submissions.len(), expected);
-        assert_eq!(report.reached(Target::Mempool), expected == 6);
-        assert!(!report.reached(Target::Confirmed));
-    }
+    mock.confirm_all();
+    mock.state
+        .lock()
+        .unwrap()
+        .transactions
+        .insert(txid(&plan.record(0).unwrap().commit), false);
+    let blocked = publish(&mock, &restarted, &journal);
+    assert_eq!(mock.state.lock().unwrap().submissions.len(), 3);
+    assert!(
+        blocked
+            .observations
+            .iter()
+            .filter(|row| row.role != "commit")
+            .all(|row| row.state == State::Prepared)
+    );
+    mock.confirm_all();
+    let report = publish(&mock, &restarted, &journal);
+    assert_eq!(mock.state.lock().unwrap().submissions.len(), 6);
+    assert!(report.reached(Target::Mempool));
+    assert!(!report.reached(Target::Confirmed));
+    assert!(!report.report.complete);
+    let expected_reveals: Vec<_> = (0..plan.record_count)
+        .map(|index| plan.record(index).unwrap().reveal)
+        .collect();
+    assert_eq!(
+        &mock.state.lock().unwrap().submissions[3..],
+        expected_reveals
+    );
+    publish(&mock, &restarted, &journal);
+    assert_eq!(mock.state.lock().unwrap().submissions.len(), 6);
     mock.confirm_all();
     assert!(publish(&mock, &restarted, &journal).report.complete);
     let missing = txid(&plan.record(0).unwrap().reveal);

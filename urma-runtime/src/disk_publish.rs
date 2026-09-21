@@ -192,8 +192,8 @@ impl Session<'_> {
             return Ok(());
         }
         let mut buffer = Buffer::new(&pairs, &self.progress.observations);
-        let mut data_confirmed = true;
-        let mut leaves_confirmed = true;
+        let mut data_available = true;
+        let mut leaves_available = true;
         let mut parent_available = true;
         let mut limited = false;
         for (index, pair) in pairs.iter().enumerate() {
@@ -212,8 +212,8 @@ impl Session<'_> {
             }
             parent_available = matches!(commit, State::Confirmed | State::Mempool);
             let dependencies = match pair.role {
-                "leaf" => data_confirmed,
-                "root" => data_confirmed && leaves_confirmed,
+                "leaf" => data_available,
+                "root" => data_available && leaves_available,
                 _ => true,
             };
             let mut reveal = self.progress.observations[offset + 1].state.clone();
@@ -234,8 +234,8 @@ impl Session<'_> {
                 }
             }
             match pair.role {
-                "data" => data_confirmed &= reveal == State::Confirmed,
-                "leaf" => leaves_confirmed &= reveal == State::Confirmed,
+                "data" => data_available &= matches!(reveal, State::Confirmed | State::Mempool),
+                "leaf" => leaves_available &= matches!(reveal, State::Confirmed | State::Mempool),
                 _ => (),
             }
             notify(&self.progress)?;
