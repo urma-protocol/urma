@@ -1,7 +1,7 @@
 use crate::{capture::Capture, safety};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use urma::error::{Error, ensure};
+use urma_runtime::error::{Error, ensure};
 
 use crate::config::{MAX_CATALOG_BYTES, MAX_COLLECTION_BYTES, MAX_ENTRIES};
 
@@ -95,7 +95,7 @@ impl Catalog {
             "collection exceeds client capacity"
         );
         ensure!(
-            objects.len() < urma::config::Limits::OBJECTS,
+            objects.len() < urma_runtime::config::Limits::OBJECTS,
             "collection exceeds shared recovery object capacity including catalog"
         );
         validate_parents(&entries)?;
@@ -131,7 +131,8 @@ fn validate_content(content: &Content) -> Result<(), Error> {
             safety::validate_id(&object.id)?;
             safety::validate_id(&object.sha256)?;
             ensure!(
-                (1..=u64::try_from(urma::config::Limits::INPUT_BYTES)?).contains(&object.bytes),
+                (1..=u64::try_from(urma_runtime::config::Limits::INPUT_BYTES)?)
+                    .contains(&object.bytes),
                 "file size exceeds client capacity"
             );
             validate_mime(mime)?;

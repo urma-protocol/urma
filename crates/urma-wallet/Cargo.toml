@@ -8,7 +8,6 @@ publish.workspace = true
 [dependencies]
 bitcoin = "0.32"
 serde = { version = "1", features = ["derive"] }
-hex = "0.4"
 urma-core = { path = "../urma-core" }
 urma-chain = { path = "../urma-chain" }
 urma-identity = { path = "../urma-identity" }

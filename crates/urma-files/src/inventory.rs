@@ -2,7 +2,7 @@ use crate::{catalog::Content, config::MAX_ENTRIES, recover, safety};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, path::Path};
-use urma::{
+use urma_runtime::{
     container,
     error::{Error, ensure},
     storage,
@@ -59,7 +59,7 @@ pub fn load_object(directory: &Path, id: &str) -> Result<Vec<Vec<u8>>, Error> {
     safety::validate_id(id)?;
     let bytes = safety::read_regular(
         &directory.join(format!("{id}.urma")),
-        urma::config::Limits::CONTAINER_BYTES,
+        urma_runtime::config::Limits::CONTAINER_BYTES,
     )?;
     let records = container::unpack(&bytes)?;
     ensure!(

@@ -13,11 +13,14 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use urma::{
-    backend,
-    container::{self, RecordMatch},
+use urma_chain::observation::Chain;
+use urma_core::{
     envelope,
     format::{ContentType, PublicRecord, RecordKind, Urma, chunk_count},
+};
+use urma_runtime::{
+    backend,
+    container::{self, RecordMatch},
 };
 
 fn vectors() -> PathBuf {
@@ -83,7 +86,10 @@ fn independent_system_decoder_matches_entire_private_corpus() -> Result<()> {
     let corpus = manifest()?;
     let temp = tempfile::tempdir()?;
     for name in ["root.bin", "wrong-root.bin"] {
-        urma::storage::write_new(&temp.path().join(name), &fs::read(vectors().join(name))?)?;
+        urma_runtime::storage::write_new(
+            &temp.path().join(name),
+            &fs::read(vectors().join(name))?,
+        )?;
     }
     for case in corpus["private"].as_array().unwrap() {
         let name = case["name"].as_str().unwrap();
@@ -358,10 +364,7 @@ fn signatures_require_exact_prevout_transaction_control_and_witness() -> Result<
 #[test]
 fn offline_public_preparation_and_cli_never_imply_broadcast_or_inclusion() -> Result<()> {
     use bitcoin::secp256k1::{Keypair, Secp256k1, SecretKey};
-    use urma::{
-        journal::Funding,
-        publication::{self, Chain},
-    };
+    use urma_wallet::funding::Funding;
     let secret = SecretKey::from_slice(&[3; 32])?;
     let author = Keypair::from_secret_key(&Secp256k1::new(), &secret);
     let mut funding: Transaction = deserialize(&fs::read(vectors().join("proof-post.commit"))?)?;
@@ -377,12 +380,14 @@ fn offline_public_preparation_and_cli_never_imply_broadcast_or_inclusion() -> Re
         Chain::LitecoinTestnet,
     ] {
         let record = PublicRecord::Post("public text".into());
-        let plan = publication::prepare(&record, &author, source.clone(), chain, 1)?;
+        let plan = urma_runtime::publication::prepare(&record, &author, source.clone(), chain, 1)?;
         assert_eq!(plan.version, 0);
-        let (found, proof) =
-            publication::verify(&hex::decode(plan.commit)?, &hex::decode(plan.reveal)?)?;
-        assert_eq!(record, found);
-        assert_eq!(proof.author, author.x_only_public_key().0);
+        let proof = urma_profiles::wire::verify_bytes(
+            &hex::decode(plan.commit)?,
+            &hex::decode(plan.reveal)?,
+        )?;
+        assert_eq!(&record, proof.record());
+        assert_eq!(proof.author().0, author.x_only_public_key().0);
     }
     let temp = tempfile::tempdir()?;
     for name in ["proof-post.commit", "proof-post.reveal"] {
@@ -440,8 +445,8 @@ fn unknown_allocations_and_client_capacity_are_distinct_errors() -> Result<()> {
     let file = temp.path().join("input");
     fs::write(&file, b"123")?;
     assert!(matches!(
-        urma::storage::read_bounded(&file, 2),
-        Err(urma::error::Error::Capacity(_))
+        urma_runtime::storage::read_bounded(&file, 2),
+        Err(urma_runtime::error::Error::Capacity(_))
     ));
     Ok(())
 }

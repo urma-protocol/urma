@@ -5,8 +5,10 @@ use crate::{
 use bitcoin::{Txid, hashes::Hash};
 use sha2::{Digest, Sha256};
 
+mod consistency;
 mod inventory;
 mod proof;
+pub use consistency::MultipartConsistency;
 pub use inventory::ManifestInventory;
 pub use proof::{RecordRequest, VerifiedRecord};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

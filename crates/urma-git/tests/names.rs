@@ -119,3 +119,46 @@ fn names_reject_paths_and_choose_safe_defaults_or_explicit_destination() -> Resu
     ensure!(config::staging_parent(&CloneDestination(Some(lab.path().join("link")))).is_err());
     Ok(())
 }
+
+#[test]
+fn canonical_profiles_preserve_descriptor_bytes_and_locator_format() -> Result<()> {
+    use urma_chain::observation::Chain;
+    use urma_git::proofs::Locator;
+    use urma_profiles::git::GitProfile;
+    for (name, profile, revision) in [("", *b"URMAGIT0", 0), ("news", *b"URMAGIT1", 1)] {
+        let value = descriptor(name);
+        let bytes = payload(&value)?;
+        ensure!(value.profile() == profile);
+        ensure!(GitProfile::for_name(name).identifier() == profile);
+        ensure!(bytes[1] == revision);
+        let mut expected = vec![1, revision];
+        expected.extend_from_slice(&15_u16.to_le_bytes());
+        expected.extend_from_slice(&32_u64.to_le_bytes());
+        expected.extend_from_slice(&[8; 32]);
+        expected.extend_from_slice(&[0; 64]);
+        expected.extend_from_slice(&[7; 20]);
+        expected.extend_from_slice(b"refs/heads/main");
+        if revision == 1 {
+            expected.extend_from_slice(&4_u16.to_le_bytes());
+            expected.extend_from_slice(b"news");
+        }
+        expected.extend_from_slice(&[0; 32]);
+        ensure!(bytes == expected);
+        ensure!(payload(&Descriptor::decode(&mut Cursor::new(bytes))?)? == expected);
+    }
+    let locator = Locator {
+        schema: 1,
+        chain: Chain::BitcoinRegtest,
+        genesis: Chain::BitcoinRegtest.genesis()?.0.to_string(),
+        root: "a84ed0fe81ac9addead54fe04b3909165cdecd3b7f177251eeb416d4bcb4877f".parse()?,
+    };
+    let encoded = serde_json::to_value(&locator)?;
+    ensure!(encoded.as_object().unwrap().len() == 4);
+    let decoded: Locator = serde_json::from_value(encoded)?;
+    ensure!(decoded.snapshot()?.root == locator.root);
+    ensure!(decoded.snapshot()?.chain == Chain::BitcoinRegtest.genesis()?);
+    let mut invalid = decoded;
+    invalid.genesis = "wrong".into();
+    ensure!(invalid.snapshot().is_err());
+    Ok(())
+}

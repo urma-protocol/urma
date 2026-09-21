@@ -1,0 +1,12 @@
+[package]
+name = "urma-io"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+tempfile = "3"
+sha2 = "0.10"
+zeroize = "1"
+libc = "0.2"

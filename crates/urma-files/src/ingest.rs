@@ -11,13 +11,13 @@ use std::{
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
 };
-use urma::{
+use urma_core::format::ContentType;
+use urma_identity::keys::RecoverySecret;
+use urma_runtime::{
     container,
     error::{Context, Error, ensure},
-    format::ContentType,
     storage,
 };
-use urma_identity::keys::RecoverySecret;
 
 pub struct IngestRequest<'a> {
     pub inputs: &'a [PathBuf],
@@ -43,7 +43,7 @@ pub fn ingest(secret: &RecoverySecret, request: IngestRequest<'_>) -> Result<Inv
             .iter()
             .filter(|source| !source.directory && source.bytes != 0)
             .count()
-            < urma::config::Limits::OBJECTS,
+            < urma_runtime::config::Limits::OBJECTS,
         "collection exceeds shared recovery object capacity including catalog"
     );
     ensure!(
@@ -70,7 +70,8 @@ pub fn ingest(secret: &RecoverySecret, request: IngestRequest<'_>) -> Result<Inv
     let mut ids = Vec::new();
     for (source, entry) in sources.iter().zip(catalog.entries.iter_mut()) {
         if !source.directory && source.bytes != 0 {
-            let bytes = safety::read_regular(&source.source, urma::config::Limits::INPUT_BYTES)?;
+            let bytes =
+                safety::read_regular(&source.source, urma_runtime::config::Limits::INPUT_BYTES)?;
             ensure!(
                 u64::try_from(bytes.len())? == source.bytes,
                 "file length changed during intake"
@@ -164,7 +165,7 @@ fn scan(inputs: &[PathBuf]) -> Result<Vec<SourceEntry>, Error> {
             }
         } else {
             ensure!(
-                metadata.len() <= u64::try_from(urma::config::Limits::INPUT_BYTES)?,
+                metadata.len() <= u64::try_from(urma_runtime::config::Limits::INPUT_BYTES)?,
                 "file exceeds client capacity"
             );
             total = total

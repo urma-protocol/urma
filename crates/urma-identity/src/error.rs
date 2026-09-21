@@ -49,7 +49,20 @@ impl fmt::Display for IdentityError {
         f.write_str(message)
     }
 }
-impl std::error::Error for IdentityError {}
+impl std::error::Error for IdentityError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Phrase(cause) => Some(cause),
+            Self::CipherKey(cause) => Some(cause),
+            Self::Integer(cause) => Some(cause),
+            Self::Slice(cause) => Some(cause),
+            Self::Utf8(cause) => Some(cause),
+            Self::Random(cause) => Some(cause),
+            Self::Signing(cause) => Some(cause),
+            _ => None,
+        }
+    }
+}
 impl From<rand::Error> for IdentityError {
     fn from(error: rand::Error) -> Self {
         Self::Random(error)

@@ -4,8 +4,8 @@ use crate::files_cli::{
 use clap::Subcommand;
 use serde_json::Value;
 use std::path::PathBuf;
-use urma::error::{Error, ensure};
 use urma_files::{capture::Capture, safety};
+use urma_runtime::error::{Error, ensure};
 
 #[derive(Subcommand)]
 pub(crate) enum Command {

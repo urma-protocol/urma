@@ -6,8 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+urma-io = { path = "../urma-io" }
 minreq = { version = "2.14", features = ["https-rustls"] }
-bitcoin = { version = "0.32", features = ["serde"] }
+bitcoin = { version = "0.32", features = ["serde", "rand-std"] }
 bitcoincore-rpc = "0.19"
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
@@ -16,8 +17,9 @@ sha2 = "0.10"
 tempfile = "3"
 url = "2"
 tracing = "0.1"
-urma = { path = "../urma" }
 urma-core = { path = "../urma-core" }
 urma-chain = { path = "../urma-chain" }
 urma-identity = { path = "../urma-identity" }
 urma-wallet = { path = "../urma-wallet" }
+rand = "0.8"
+zeroize = "1"

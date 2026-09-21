@@ -1,5 +1,6 @@
-use bitcoin::{OutPoint, Transaction, TxOut, consensus::deserialize};
+use bitcoin::{OutPoint, TxOut};
 use serde::{Deserialize, Serialize};
+use urma_chain::transaction::{TransactionDecodeError, decode_bounded};
 use urma_core::error::{Context, Error, ensure};
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -11,7 +12,7 @@ pub struct Funding {
 
 impl Funding {
     pub fn prevout(&self) -> Result<(OutPoint, TxOut), Error> {
-        let transaction = decode_funding(&self.raw_transaction)?;
+        let transaction = decode_bounded(&self.raw_transaction, 8_000_000).map_err(decode_error)?;
         let output = transaction
             .output
             .get(usize::try_from(self.vout)?)
@@ -35,7 +36,13 @@ impl Funding {
     }
 }
 
-fn decode_funding(raw: &str) -> Result<Transaction, Error> {
-    ensure!(raw.len() <= 8_000_000, "raw transaction exceeds byte limit");
-    deserialize(&hex::decode(raw)?).context("decode transaction")
+fn decode_error(cause: TransactionDecodeError) -> Error {
+    match cause {
+        TransactionDecodeError::LimitExceeded => Error::Invalid(cause.to_string()),
+        TransactionDecodeError::Hex(cause) => Error::Hex(cause),
+        TransactionDecodeError::Consensus(cause) => Error::Context {
+            message: "decode transaction".into(),
+            cause: Box::new(Error::Transaction(cause)),
+        },
+    }
 }

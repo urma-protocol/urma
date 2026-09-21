@@ -1,11 +1,9 @@
-use crate::{approve_publication, config, key_cli::VaultAccess, node_cli::NodeArgs, print_report};
+use crate::common_cli::publish_plan;
+use crate::print_report;
+use crate::{config, key_cli::VaultAccess, node_cli::NodeArgs};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use urma::{
-    error::{Error, ensure},
-    storage,
-};
 use urma_files::{
     capture::Capture,
     ingest::{self, IngestRequest},
@@ -13,6 +11,7 @@ use urma_files::{
     recover::{self, ObjectSource},
 };
 use urma_identity::keys::RecoverySecret;
+use urma_runtime::error::{Error, ensure};
 
 #[derive(Args)]
 pub(crate) struct IngestArgs {
@@ -68,7 +67,9 @@ pub(crate) fn run(command: Command) -> Result<Value, Error> {
 }
 
 pub(crate) fn ingest_collection(args: IngestArgs, capture: Capture) -> Result<Value, Error> {
-    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
+    let secret = RecoverySecret::import(urma_workflows::archive::read_key(
+        &config::require_archive_key()?,
+    )?);
     let inventory = ingest::ingest(
         &secret,
         IngestRequest {
@@ -84,7 +85,9 @@ pub(crate) fn ingest_collection(args: IngestArgs, capture: Capture) -> Result<Va
 }
 
 pub(crate) fn inspect(args: InspectArgs, schema: &str) -> Result<Value, Error> {
-    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
+    let secret = RecoverySecret::import(urma_workflows::archive::read_key(
+        &config::require_archive_key()?,
+    )?);
     let catalog = recover::inspect_bundle(&args.bundle, &secret)?;
     ensure!(
         catalog.schema == schema,
@@ -94,7 +97,9 @@ pub(crate) fn inspect(args: InspectArgs, schema: &str) -> Result<Value, Error> {
 }
 
 pub(crate) fn recover_collection(args: RecoverArgs, schema: &str) -> Result<Value, Error> {
-    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
+    let secret = RecoverySecret::import(urma_workflows::archive::read_key(
+        &config::require_archive_key()?,
+    )?);
     let catalog = recover::inspect_bundle(&args.bundle, &secret)?;
     ensure!(
         catalog.schema == schema,
@@ -160,7 +165,9 @@ pub(crate) struct RecoverChainArgs {
 }
 
 pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
-    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
+    let secret = RecoverySecret::import(urma_workflows::archive::read_key(
+        &config::require_archive_key()?,
+    )?);
     let catalog = recover::inspect_bundle(&args.bundle, &secret)?;
     ensure!(
         catalog.schema == schema,
@@ -196,18 +203,13 @@ pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
 }
 
 pub(crate) fn publish(args: PublishArgs) -> Result<Value, Error> {
-    urma_runtime::publish::ensure_journal_distinct(&args.plan, &args.journal)?;
-    let plan = urma_runtime::plan::PublicationPlan::load(&args.plan)?;
-    let node = args.node.connect()?;
-    let id = plan.id()?;
-    approve_publication("Publish private collection", &id, plan.total_fee, args.yes)?;
-    let report = urma_runtime::publish::publish(&node, &plan, &id, &args.journal)?;
-    print_report(serde_json::to_value(&report)?)?;
-    ensure!(
-        report.complete,
-        "publication paused; inspect report and resume exact plan"
-    );
-    Ok(Value::Null)
+    publish_plan(
+        &args.node,
+        &args.plan,
+        &args.journal,
+        args.yes,
+        "Publish private collection",
+    )
 }
 
 pub(crate) fn recover_chain(args: RecoverChainArgs, schema: &str) -> Result<Value, Error> {
@@ -215,7 +217,9 @@ pub(crate) fn recover_chain(args: RecoverChainArgs, schema: &str) -> Result<Valu
         !args.output.try_exists()?,
         "export requires a new directory"
     );
-    let secret = RecoverySecret::import(storage::read_key(&config::require_archive_key()?)?);
+    let secret = RecoverySecret::import(urma_workflows::archive::read_key(
+        &config::require_archive_key()?,
+    )?);
     let node = args.node.connect()?;
     let scan = urma_files::chain::scan(&node, &secret, args.start_height, args.max_blocks)?;
     let id = select_catalog(&scan, args.catalog, schema)?;

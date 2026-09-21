@@ -1,6 +1,5 @@
 use rand::rngs::OsRng;
-use std::{fs::File, io::Read, os::unix::fs::PermissionsExt, path::Path};
-use urma::{error::Error, storage};
+use std::path::Path;
 use urma_identity::{
     error::IdentityError,
     identity::IdentitySlot,
@@ -8,20 +7,17 @@ use urma_identity::{
     phrase::IdentityPhrase,
     vault::{EncryptedVault, UnlockCredential, UnlockedVault},
 };
+use urma_runtime::{error::Error, storage};
 use zeroize::Zeroizing;
 
 pub fn read_secret(path: &Path) -> Result<Zeroizing<String>, Error> {
-    let file = File::open(path)?;
-    if file.metadata()?.permissions().mode() & 0o077 != 0 {
-        return Err(Error::Invalid(
-            "credential file must have private permissions".into(),
-        ));
-    }
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(1025).read_to_end(&mut bytes)?;
-    if bytes.len() > 1024 {
-        return Err(IdentityError::Capacity.into());
-    }
+    let bytes = urma_io::read_private(path, 1024).map_err(|cause| match cause {
+        urma_io::Error::PrivatePermissions => {
+            Error::Invalid("credential file must have private permissions".into())
+        }
+        urma_io::Error::TooLarge { .. } => IdentityError::Capacity.into(),
+        cause => cause.into(),
+    })?;
     let text = std::str::from_utf8(&bytes).map_err(IdentityError::from)?;
     Ok(Zeroizing::new(text.to_owned()))
 }
@@ -63,7 +59,7 @@ fn new_location(path: &Path) -> Result<std::path::PathBuf, Error> {
     let name = path
         .file_name()
         .ok_or_else(|| Error::Invalid("output requires a filename".into()))?;
-    Ok(urma::config::output_parent(path).canonicalize()?.join(name))
+    Ok(urma_io::output_parent(path).canonicalize()?.join(name))
 }
 
 pub fn recover(path: &Path, phrase: &IdentityPhrase, password: &str) -> Result<(), Error> {

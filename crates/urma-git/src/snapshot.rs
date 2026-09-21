@@ -32,8 +32,7 @@ pub struct ValidatedSnapshot {
 }
 
 pub fn create_private_directory(path: &Path) -> Result<(), Error> {
-    use std::os::unix::fs::DirBuilderExt;
-    std::fs::DirBuilder::new().mode(0o700).create(path)?;
+    urma_io::create_private_directory(path)?;
     Ok(())
 }
 

@@ -5,15 +5,16 @@ use bitcoin::{
 };
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use urma::{
+use urma_chain::observation::Chain;
+use urma_profiles::git::SnapshotLocator;
+use urma_runtime::node::Node;
+use urma_runtime::{
     error::Context,
     multipart::{
         FetchError, MultipartRecord, MultipartSource, RecordRequest, RecoveredObject,
         RecoveryLimits, VerifiedRecord,
     },
 };
-use urma_chain::observation::Chain;
-use urma_runtime::node::Node;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -22,6 +23,24 @@ pub struct Locator {
     pub chain: Chain,
     pub genesis: String,
     pub root: Txid,
+}
+
+impl Locator {
+    pub fn snapshot(&self) -> Result<SnapshotLocator, Error> {
+        let chain = self
+            .chain
+            .genesis()
+            .map_err(urma_runtime::error::Error::from)?;
+        if self.schema != 1 || self.genesis != chain.0.to_string() {
+            return Err(Error::Invalid(
+                "proof export locator schema or chain".into(),
+            ));
+        }
+        Ok(SnapshotLocator {
+            chain,
+            root: self.root,
+        })
+    }
 }
 
 pub fn export(
@@ -54,7 +73,7 @@ pub fn export(
         genesis: node
             .chain()
             .genesis()
-            .map_err(urma::error::Error::from)?
+            .map_err(urma_runtime::error::Error::from)?
             .0
             .to_string(),
         root: recovered.root(),
@@ -63,7 +82,7 @@ pub fn export(
     Ok(locator)
 }
 
-fn entry_request(reference: urma::multipart::ChildReference) -> RecordRequest {
+fn entry_request(reference: urma_runtime::multipart::ChildReference) -> RecordRequest {
     RecordRequest { reference }
 }
 
@@ -85,7 +104,7 @@ fn export_transaction(node: &Node, directory: &Path, txid: Txid) -> Result<Trans
         return Ok(DirectorySource { directory }.transaction(txid)?);
     }
     let transaction = node.transaction(txid)?;
-    urma::storage::write_new(&path, &serialize(&transaction))?;
+    urma_runtime::storage::write_new(&path, &serialize(&transaction))?;
     Ok(transaction)
 }
 
@@ -94,23 +113,23 @@ struct DirectorySource<'a> {
 }
 
 impl DirectorySource<'_> {
-    fn transaction(&self, txid: Txid) -> Result<Transaction, urma::error::Error> {
+    fn transaction(&self, txid: Txid) -> Result<Transaction, urma_runtime::error::Error> {
         let path = self.directory.join("tx").join(format!("{txid}.bin"));
         if !std::fs::symlink_metadata(&path)?.is_file() {
-            return Err(urma::error::Error::Invalid(
+            return Err(urma_runtime::error::Error::Invalid(
                 "proof transaction must be a regular file".into(),
             ));
         }
-        let bytes = urma::storage::read_bounded(&path, 4 * 1024 * 1024)?;
+        let bytes = urma_runtime::storage::read_bounded(&path, 4 * 1024 * 1024)?;
         let transaction: Transaction = deserialize(&bytes)?;
-        urma::ensure!(
+        urma_runtime::ensure!(
             transaction.compute_txid() == txid,
             "proof transaction TXID mismatch"
         );
         Ok(transaction)
     }
 
-    fn record(&self, txid: Txid) -> Result<VerifiedRecord, urma::error::Error> {
+    fn record(&self, txid: Txid) -> Result<VerifiedRecord, urma_runtime::error::Error> {
         let reveal = self.transaction(txid)?;
         let parent = reveal
             .input
@@ -130,7 +149,7 @@ impl MultipartSource for DirectorySource<'_> {
     fn fetch(&mut self, request: &RecordRequest) -> Result<VerifiedRecord, FetchError> {
         self.record(request.reference.txid)
             .map_err(|error| match error {
-                urma::error::Error::Protocol(cause) => FetchError::Rejected(cause),
+                urma_runtime::error::Error::Protocol(cause) => FetchError::Rejected(cause),
                 cause => FetchError::Source(cause),
             })
     }
@@ -145,26 +164,14 @@ pub fn reconstruct(
     if !std::fs::symlink_metadata(directory.join("tx"))?.is_dir() {
         return Err(Error::Invalid("proof transaction directory type".into()));
     }
-    let locator: Locator = serde_json::from_slice(&urma::storage::read_bounded(
+    let locator: Locator = serde_json::from_slice(&urma_runtime::storage::read_bounded(
         &directory.join("locator.json"),
         4096,
     )?)?;
-    if locator.schema != 1
-        || locator.genesis
-            != locator
-                .chain
-                .genesis()
-                .map_err(urma::error::Error::from)?
-                .0
-                .to_string()
-    {
-        return Err(Error::Invalid(
-            "proof export locator schema or chain".into(),
-        ));
-    }
+    let snapshot = locator.snapshot()?;
     let mut source = DirectorySource { directory };
-    let root = source.record(locator.root)?;
-    let object = urma::multipart::reconstruct(&root, &mut source, limits, scratch)
+    let root = source.record(snapshot.root)?;
+    let object = urma_runtime::multipart::reconstruct(&root, &mut source, limits, scratch)
         .map_err(|cause| Error::Io(std::io::Error::other(cause)))?;
     if ![Descriptor::PROFILE, Descriptor::UNNAMED_PROFILE].contains(&object.manifest().profile) {
         return Err(Error::Invalid(

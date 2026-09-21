@@ -4,10 +4,10 @@ use crate::{
     inventory::Limits,
     snapshot,
 };
-use bitcoin::{Transaction, consensus::deserialize};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::{collections::BTreeSet, fs::File, path::Path};
+use urma_chain::transaction::decode_bounded;
 use urma_core::multipart::{MultipartRecord, VerifiedRecord};
 use urma_runtime::disk_plan::DiskPlan;
 
@@ -74,7 +74,7 @@ impl GitPlan {
     }
 
     pub fn load_with_publication(directory: &Path) -> Result<(Self, String, DiskPlan), Error> {
-        let bytes = urma::storage::read_bounded(&directory.join("plan.json"), 1024 * 1024)?;
+        let bytes = urma_runtime::storage::read_bounded(&directory.join("plan.json"), 1024 * 1024)?;
         let plan: Self = serde_json::from_slice(&bytes)?;
         if plan.schema != 2 {
             return Err(Error::Invalid(
@@ -121,10 +121,10 @@ impl GitPlan {
             .checked_sub(1)
             .ok_or_else(|| Error::Invalid("empty publication".into()))?;
         let pair = publication.record(root_index)?;
-        let reveal: Transaction =
-            deserialize(&hex::decode(&pair.reveal)?).map_err(urma::error::Error::from)?;
-        let commit: Transaction =
-            deserialize(&hex::decode(&pair.commit)?).map_err(urma::error::Error::from)?;
+        let reveal = decode_bounded(&pair.reveal, pair.reveal.len())
+            .map_err(urma_runtime::error::Error::from)?;
+        let commit = decode_bounded(&pair.commit, pair.commit.len())
+            .map_err(urma_runtime::error::Error::from)?;
         let root = VerifiedRecord::verify(reveal.compute_txid(), &reveal, &commit)?;
         let MultipartRecord::Root(manifest) = root.decode()? else {
             return Err(Error::Invalid("Git publication root kind".into()));

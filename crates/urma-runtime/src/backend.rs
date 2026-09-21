@@ -1,6 +1,5 @@
 use crate::config::{MAX_DIRECTORY_RECORDS, MAX_OBJECTS};
 use crate::error::{Context, Error, ensure};
-use crate::format::Urma;
 use crate::{
     container::{self, PrivateObject},
     storage,
@@ -10,9 +9,9 @@ use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs,
-    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
 };
+use urma_core::format::Urma;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -182,7 +181,7 @@ pub fn store_directory(path: &Path, records: &[Vec<u8>]) -> Result<Observation, 
     for record in records {
         container::inspect_header(record)?;
     }
-    fs::DirBuilder::new().mode(0o700).create(path)?;
+    urma_io::create_private_directory(path)?;
     let mut stored_bytes = 0;
     for record in records {
         let name = format!("{}.urma-record", hex::encode(Sha256::digest(record)));
@@ -248,7 +247,7 @@ pub fn export(recovery: Recovery, output: &Path) -> Result<ExportReport, Error> 
             }
         };
         if complete == 0 {
-            fs::DirBuilder::new().mode(0o700).create(output)?;
+            urma_io::create_private_directory(output)?;
         }
         storage::write_new(&output.join(format!("{id}.bin")), &bytes)?;
         reports.push(serde_json::json!({"id":id,"status":"complete","bytes":bytes.len(),"content_type":object.content_type.code(),

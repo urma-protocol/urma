@@ -1,7 +1,7 @@
 use crate::{detail, progress, stage};
-use urma::error::{Context, Error};
 use urma_chain::observation::Chain;
 use urma_identity::identity::IdentitySigner;
+use urma_runtime::error::{Context, Error};
 use urma_runtime::{node::Node, quote::Quote};
 
 pub(crate) fn currency(chain: Chain) -> &'static str {

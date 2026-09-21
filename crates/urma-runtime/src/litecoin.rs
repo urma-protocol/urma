@@ -1,31 +1,32 @@
 use crate::commitment::PreparedReveal;
 use crate::config::Limits;
 use crate::config::{
-    LITECOIN_GENESIS, LITECOIN_MAX_FEE_LITOSHIS, LITECOIN_MAX_SCAN_BLOCKS, LITECOIN_MAX_SCAN_BYTES,
-    LITECOIN_NETWORK, LITECOIN_RETURN_LITOSHIS,
+    LITECOIN_MAX_FEE_LITOSHIS, LITECOIN_MAX_SCAN_BLOCKS, LITECOIN_MAX_SCAN_BYTES, LITECOIN_NETWORK,
+    LITECOIN_RETURN_LITOSHIS,
 };
 use crate::config::{RpcScope, ScanEnd, confirmations};
 use crate::error::{Context, Error, bail, ensure};
-use crate::format::RecordKind;
-use crate::format::Urma;
 use crate::journal;
+use crate::transaction::{decode as decode_transaction, transaction};
 use bitcoin::{
-    Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, absolute,
-    consensus::{deserialize, serialize},
+    Amount, OutPoint, ScriptBuf, Transaction, TxOut, Witness,
+    consensus::serialize,
     hashes::Hash,
     secp256k1::{Keypair, Secp256k1, SecretKey},
-    transaction::Version,
 };
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use rand::{CryptoRng, RngCore};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{path::Path, str::FromStr};
+use urma_core::envelope;
+use urma_core::format::RecordKind;
+use urma_core::format::Urma;
+use urma_wallet::funding::Funding;
 
 use crate::{
     backend::{Evidence, Family, Locator, Observation, RecordSource},
-    container, envelope,
-    transport::{self, Funding},
+    container,
 };
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -53,30 +54,18 @@ pub struct Plan {
     pub reveals: Vec<String>,
 }
 
-fn transaction(outpoint: OutPoint, payout: &ScriptBuf) -> Transaction {
-    Transaction {
-        version: Version::TWO,
-        lock_time: absolute::LockTime::ZERO,
-        input: vec![TxIn {
-            previous_output: outpoint,
-            script_sig: ScriptBuf::new(),
-            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-            witness: Witness::new(),
-        }],
-        output: vec![TxOut {
-            value: Amount::from_sat(LITECOIN_RETURN_LITOSHIS),
-            script_pubkey: payout.clone(),
-        }],
-    }
-}
-
 fn decode(raw: &str) -> Result<Transaction, Error> {
     ensure!(
         raw.len() <= 800_000,
         "transparent transaction exceeds limit"
     );
-    deserialize(&hex::decode(raw)?)
-        .context("invalid transparent transaction (MWEB funding is unsupported)")
+    decode_transaction(raw, 800_000).map_err(|cause| match cause {
+        Error::Context { cause, .. } => Error::Context {
+            message: "invalid transparent transaction (MWEB funding is unsupported)".into(),
+            cause,
+        },
+        cause => cause,
+    })
 }
 
 pub fn quote(input_bytes: usize, rate: u64) -> Result<Quote, Error> {
@@ -100,10 +89,22 @@ pub fn quote(input_bytes: usize, rate: u64) -> Result<Quote, Error> {
     sizing_record[60..64].copy_from_slice(&1u32.to_le_bytes());
     let (script, info) = envelope::build(&sizing_record, &signer)?;
     let payout = ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array([0; 20]));
-    let mut reveal = transaction(OutPoint::null(), &payout);
+    let mut reveal = transaction(
+        OutPoint::null(),
+        TxOut {
+            value: Amount::from_sat(LITECOIN_RETURN_LITOSHIS),
+            script_pubkey: payout.clone(),
+        },
+    );
     reveal.input[0].witness = envelope::witness(&[0; 64], &script, &info)?;
     let reveal_fee = u64::try_from(reveal.vsize())? * rate;
-    let mut commit = transaction(OutPoint::null(), &payout);
+    let mut commit = transaction(
+        OutPoint::null(),
+        TxOut {
+            value: Amount::from_sat(LITECOIN_RETURN_LITOSHIS),
+            script_pubkey: payout.clone(),
+        },
+    );
     commit.output = vec![
         TxOut {
             value: Amount::ZERO,
@@ -164,10 +165,16 @@ pub fn prepare<R: RngCore + CryptoRng>(
     );
     let payout = &previous.script_pubkey;
     let mut pending = Vec::new();
-    let mut commit = transaction(outpoint, payout);
+    let mut commit = transaction(
+        outpoint,
+        TxOut {
+            value: Amount::from_sat(LITECOIN_RETURN_LITOSHIS),
+            script_pubkey: payout.clone(),
+        },
+    );
     commit.output.clear();
     for record in records {
-        let prepared = PreparedReveal::new(record, payout, rate, rng)?;
+        let prepared = PreparedReveal::new(record, payout, rate, LITECOIN_RETURN_LITOSHIS, rng)?;
         commit.output.push(prepared.output());
         pending.push(prepared);
     }
@@ -217,7 +224,7 @@ pub fn inspect(plan: &Plan, signed: bool) -> Result<Value, Error> {
         .witness;
     let record = envelope::extract(witness)?.record;
     let header = container::inspect_header(&record)?;
-    let common = transport::Plan {
+    let common = journal::Plan {
         version: plan.version,
         network: LITECOIN_NETWORK.into(),
         object_id: hex::encode(header.id),
@@ -329,7 +336,11 @@ pub fn check_node(rpc: &dyn Rpc, require_ready: bool) -> Result<Value, Error> {
     let info = rpc.call("getblockchaininfo", &[])?;
     ensure!(info["chain"] == "test", "RPC must be Litecoin testnet");
     ensure!(
-        rpc.call("getblockhash", &[json!(0)])? == LITECOIN_GENESIS,
+        rpc.call("getblockhash", &[json!(0)])?
+            == urma_chain::observation::Chain::LitecoinTestnet
+                .genesis()?
+                .0
+                .to_string(),
         "Litecoin testnet genesis mismatch"
     );
     if require_ready {
@@ -686,25 +697,22 @@ fn extract_core_envelope(tx: &Value, witness: &Witness) -> Result<envelope::Pars
     let outputs = tx["vout"]
         .as_array()
         .context("missing transparent outputs")?;
-    ensure!(
-        tx["version"] == 2 && inputs.len() == 1 && outputs.len() == 1,
-        "invalid reveal transaction shape"
-    );
-    ensure!(
+    let version = i32::try_from(
+        tx["version"]
+            .as_i64()
+            .context("invalid reveal transaction shape")?,
+    )?;
+    envelope::validate_reveal_shape(version, inputs.len(), outputs.len())?;
+    let script_sig = ScriptBuf::from_bytes(hex::decode(
         inputs[0]["scriptSig"]["hex"]
             .as_str()
-            .context("missing scriptSig")?
-            .is_empty(),
-        "reveal scriptSig must be empty"
-    );
+            .context("missing scriptSig")?,
+    )?);
     let script = ScriptBuf::from_bytes(hex::decode(
         outputs[0]["scriptPubKey"]["hex"]
             .as_str()
             .context("missing return script")?,
     )?);
-    ensure!(
-        script.is_p2wpkh() || script.is_p2tr(),
-        "invalid reveal return output"
-    );
+    envelope::validate_reveal_scripts(&script_sig, &script)?;
     Ok(envelope::extract(witness)?)
 }

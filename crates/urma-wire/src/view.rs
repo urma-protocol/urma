@@ -1,6 +1,8 @@
-use crate::index::{Entry, Index};
+use crate::{
+    Error, ensure,
+    index::{Entry, Index},
+};
 use serde_json::{Value, json};
-use urma::error::{Error, ensure};
 use urma_core::format::PublicRecord;
 
 pub fn records(index: &Index, limit: usize) -> Result<Vec<Value>, Error> {

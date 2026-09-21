@@ -1,7 +1,7 @@
 use crate::config;
 use clap::Args;
-use urma::error::Error;
 use urma_chain::observation::Chain;
+use urma_runtime::error::Error;
 use urma_runtime::node::Node;
 
 #[derive(Args)]

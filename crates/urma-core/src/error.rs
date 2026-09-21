@@ -73,7 +73,41 @@ impl Display for Error {
         }
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Amount(cause) => Some(cause),
+            Self::Script(cause) => Some(cause),
+            Self::Hex(cause) => Some(cause),
+            Self::Integer(cause) => Some(cause),
+            Self::IntegerText(cause) => Some(cause),
+            Self::Slice(cause) => Some(cause),
+            Self::Utf8(cause) => Some(cause),
+            Self::Text(cause) => Some(cause),
+            Self::Allocation(cause) => Some(cause),
+            Self::Random(cause) => Some(cause),
+            Self::CipherKey(cause) => Some(cause),
+            Self::Mac(cause) => Some(cause),
+            Self::Secp256k1(cause) => Some(cause),
+            Self::Transaction(cause) => Some(cause),
+            Self::Push(cause) => Some(cause),
+            Self::TaprootBuilder(cause) => Some(cause),
+            Self::Taproot(cause) => Some(cause),
+            Self::TaprootSighash(cause) => Some(cause),
+            Self::SegwitSighash(cause) => Some(cause),
+            Self::AddressScript(cause) => Some(cause),
+            Self::AddressParse(cause) => Some(cause),
+            Self::AddressNetwork(cause) => Some(cause),
+            Self::PublicKey(cause) => Some(cause),
+            Self::UncompressedKey(cause) => Some(cause),
+            Self::Ecdsa(cause) => Some(cause),
+            Self::Hash(cause) => Some(cause),
+            Self::ProofOfWork(cause) => Some(cause),
+            Self::Context { cause, .. } => Some(cause.as_ref()),
+            _ => None,
+        }
+    }
+}
 impl From<hex::FromHexError> for Error {
     fn from(error: hex::FromHexError) -> Self {
         Self::Hex(error)

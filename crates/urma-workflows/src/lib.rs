@@ -6,5 +6,4 @@
     unused_assignments
 )]
 pub mod archive;
-pub mod publication;
 pub mod vault;

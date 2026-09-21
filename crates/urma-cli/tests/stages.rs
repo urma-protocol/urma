@@ -1,12 +1,23 @@
-pub use urma::{config, container, envelope, error, format, storage};
+pub mod reveal {
+    include!("../../urma-runtime/src/reveal.rs");
+}
+pub mod http {
+    include!("../../urma-runtime/src/http.rs");
+}
+pub mod transaction {
+    include!("../../urma-runtime/src/transaction.rs");
+}
+pub use transport as bitcoin_rpc;
+pub use urma_core::{envelope, format};
+pub use urma_runtime::{config, container, error, storage};
 pub mod journal {
-    include!("../../urma/src/journal.rs");
+    include!("../../urma-runtime/src/journal.rs");
 }
 pub mod commitment {
-    include!("../../urma/src/commitment.rs");
+    include!("../../urma-runtime/src/commitment.rs");
 }
 pub mod source {
-    include!("../../urma/src/source.rs");
+    include!("../../urma-runtime/src/source.rs");
     #[cfg(test)]
     mod checks {
 
@@ -17,7 +28,8 @@ pub mod source {
             net::TcpListener,
             thread,
         };
-        use urma::{container, envelope};
+        use urma_core::envelope;
+        use urma_runtime::container;
 
         fn mock(responses: Vec<(String, Vec<u8>)>) -> (String, thread::JoinHandle<()>) {
             mock_http(
@@ -275,12 +287,17 @@ pub mod source {
             let secp = bitcoin::secp256k1::Secp256k1::new();
             let signer = bitcoin::secp256k1::Keypair::from_seckey_slice(&secp, &[3; 32]).unwrap();
             let (script, info) = envelope::build(record, &signer).unwrap();
-            let mut tx = crate::commitment::transaction(
+            let mut tx = crate::transaction::transaction(
                 bitcoin::OutPoint {
                     txid: commit.compute_txid(),
                     vout: 0,
                 },
-                &bitcoin::ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array([9; 20])),
+                bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(crate::config::BITCOIN_RETURN_SATS),
+                    script_pubkey: bitcoin::ScriptBuf::new_p2wpkh(
+                        &bitcoin::WPubkeyHash::from_byte_array([9; 20]),
+                    ),
+                },
             );
             let hash = bitcoin::sighash::SighashCache::new(&tx)
                 .taproot_script_spend_signature_hash(
@@ -328,15 +345,15 @@ pub mod source {
         #[test]
         fn source_scan_recovers_authentic_object_despite_forged_candidate() {
             let key = [8; 32];
-            let original = vec![42; urma::format::Urma::CHUNK_BYTES + 19];
+            let original = vec![42; urma_core::format::Urma::CHUNK_BYTES + 19];
             let mut records =
-                container::seal(&key, &original, urma::format::ContentType::Opaque).unwrap();
+                container::seal(&key, &original, urma_core::format::ContentType::Opaque).unwrap();
             let mut forged = records[0].clone();
-            forged[urma::format::Urma::PRIVATE_HEADER_BYTES + 23] ^= 1;
+            forged[urma_core::format::Urma::PRIVATE_HEADER_BYTES + 23] ^= 1;
             records.insert(0, forged);
             let block = block_with_records(&records);
             let hash = block.block_hash();
-            transport::validate_block_for_network(&block, hash, Network::Regtest).unwrap();
+            crate::bitcoin_rpc::validate_block_for_network(&block, hash, Network::Regtest).unwrap();
             let genesis =
                 bitcoin::blockdata::constants::genesis_block(Network::Regtest).block_hash();
             let (url, task) = mock(vec![
@@ -373,7 +390,7 @@ pub mod source {
             let key = [29; 32];
             let original = include_bytes!("../../../tests/fixtures/sample.jpg");
             let mut records =
-                container::seal(&key, original, urma::format::ContentType::Opaque).unwrap();
+                container::seal(&key, original, urma_core::format::ContentType::Opaque).unwrap();
             records.reverse();
             let block = block_with_records(&records);
             let genesis =
@@ -419,10 +436,10 @@ pub mod source {
             let mut records = container::seal(
                 &key,
                 b"authentication is required",
-                urma::format::ContentType::Opaque,
+                urma_core::format::ContentType::Opaque,
             )
             .unwrap();
-            records[0][urma::format::Urma::BODY_OFFSET] ^= 1;
+            records[0][urma_core::format::Urma::BODY_OFFSET] ^= 1;
             let block = block_with_records(&records);
             let tx = &block.txdata[1];
             let id = tx.compute_txid();
@@ -474,7 +491,7 @@ pub mod source {
             );
             assert!(
                 source
-                    .transaction_bundle(&[id; urma::config::Limits::RECORDS + 1])
+                    .transaction_bundle(&[id; urma_runtime::config::Limits::RECORDS + 1])
                     .unwrap_err()
                     .to_string()
                     .contains("1..=512")
@@ -487,7 +504,7 @@ pub mod source {
                 bitcoin::blockdata::constants::genesis_block(Network::Testnet4).block_hash();
             let block = bitcoin::blockdata::constants::genesis_block(Network::Regtest);
             let hash = block.block_hash();
-            transport::validate_block(&block, hash).unwrap();
+            crate::bitcoin_rpc::validate_block(&block, hash).unwrap();
             let (url, task) = mock(vec![
                 (
                     "/block-height/0".into(),
@@ -505,7 +522,7 @@ pub mod source {
             let record = container::seal(
                 &[9; 32],
                 b"private authentic bytes",
-                urma::format::ContentType::Text,
+                urma_core::format::ContentType::Text,
             )
             .unwrap()
             .remove(0);
@@ -542,7 +559,7 @@ pub mod source {
 }
 
 pub mod relay {
-    include!("../../urma/src/relay.rs");
+    include!("../../urma-runtime/src/relay.rs");
     #[cfg(test)]
     mod checks {
 
@@ -645,7 +662,7 @@ pub mod relay {
 }
 
 pub mod transport {
-    include!("../../urma/src/transport.rs");
+    include!("../../urma-runtime/src/bitcoin_rpc.rs");
     #[cfg(test)]
     mod checks {
 
@@ -677,10 +694,11 @@ pub mod transport {
         #[test]
         fn copied_public_header_cannot_poison_authenticated_recovery() {
             let key = [7; 32];
-            let bytes = vec![42; urma::format::Urma::CHUNK_BYTES + 1];
-            let records = container::seal(&key, &bytes, urma::format::ContentType::Opaque).unwrap();
+            let bytes = vec![42; urma_core::format::Urma::CHUNK_BYTES + 1];
+            let records =
+                container::seal(&key, &bytes, urma_core::format::ContentType::Opaque).unwrap();
             let mut forged = records[0].clone();
-            forged[urma::format::Urma::PRIVATE_HEADER_BYTES] ^= 1;
+            forged[urma_core::format::Urma::PRIVATE_HEADER_BYTES] ^= 1;
             assert!(container::open(&key, &[forged.clone()]).is_err());
 
             // Ingestion happens after block validation; construct just its relevant witness data.
@@ -690,7 +708,12 @@ pub mod transport {
                 let (script, info) = envelope::build(record, &attacker_or_sender).unwrap();
                 let mut transaction = transaction(
                     OutPoint::null(),
-                    &ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array([9; 20])),
+                    bitcoin::TxOut {
+                        value: bitcoin::Amount::from_sat(crate::config::BITCOIN_RETURN_SATS),
+                        script_pubkey: ScriptBuf::new_p2wpkh(
+                            &bitcoin::WPubkeyHash::from_byte_array([9; 20]),
+                        ),
+                    },
                 );
                 transaction.input[0].witness = envelope::witness(&[0; 64], &script, &info).unwrap();
                 transaction
@@ -732,7 +755,12 @@ pub mod transport {
             block.txdata[0].input[0].witness = Witness::from_slice(&[[0u8; 32]]);
             let mut tx = transaction(
                 OutPoint::null(),
-                &ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array([9; 20])),
+                bitcoin::TxOut {
+                    value: bitcoin::Amount::from_sat(crate::config::BITCOIN_RETURN_SATS),
+                    script_pubkey: ScriptBuf::new_p2wpkh(&bitcoin::WPubkeyHash::from_byte_array(
+                        [9; 20],
+                    )),
+                },
             );
             tx.input[0].previous_output.vout = 0;
             tx.input[0].witness = Witness::from_slice(&[b"authentic witness".as_slice()]);
@@ -768,7 +796,7 @@ pub mod transport {
 }
 
 pub mod backend {
-    include!("../../urma/src/backend.rs");
+    include!("../../urma-runtime/src/backend.rs");
     #[cfg(test)]
     mod checks {
 
@@ -789,13 +817,14 @@ pub mod backend {
             let work = tempfile::tempdir().unwrap();
             let key = [42; 32];
             let bytes = include_bytes!("../../../tests/fixtures/sample.jpg");
-            let records = container::seal(&key, bytes, urma::format::ContentType::Opaque).unwrap();
+            let records =
+                container::seal(&key, bytes, urma_core::format::ContentType::Opaque).unwrap();
             let first = work.path().join("first");
             let second = work.path().join("independent");
             store_directory(&first, &records).unwrap();
             store_directory(&second, &records).unwrap();
             let mut fake = records[0].clone();
-            fake[urma::format::Urma::BODY_OFFSET] ^= 1;
+            fake[urma_core::format::Urma::BODY_OFFSET] ^= 1;
             storage::write_new(&second.join("forged.urma-record"), &fake).unwrap();
             let result = recover(&DirectorySource { path: &second }, &key).unwrap();
             assert_eq!(result.rejected_records, 1);

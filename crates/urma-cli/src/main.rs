@@ -7,6 +7,7 @@
 )]
 mod archive_cli;
 mod capture_cli;
+mod common_cli;
 mod config;
 mod files_cli;
 mod funding_cli;
@@ -20,7 +21,7 @@ mod wallet_cli;
 mod wire_live_cli;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
-use urma::error::Error;
+use urma_runtime::error::Error;
 
 #[derive(Parser)]
 #[command(
@@ -169,7 +170,7 @@ pub(crate) fn approve_publication(label: &str, id: &str, fee: u64, yes: bool) ->
     if yes {
         return Ok(());
     }
-    urma::error::ensure!(
+    urma_runtime::error::ensure!(
         std::io::stdin().is_terminal(),
         "publication needs approval; review the plan, then run this command with --yes"
     );
@@ -177,7 +178,7 @@ pub(crate) fn approve_publication(label: &str, id: &str, fee: u64, yes: bool) ->
     std::io::stderr().flush()?;
     let mut answer = String::new();
     std::io::stdin().read_line(&mut answer)?;
-    urma::error::ensure!(
+    urma_runtime::error::ensure!(
         matches!(answer.trim(), "y" | "Y" | "yes"),
         "publication cancelled; nothing submitted"
     );

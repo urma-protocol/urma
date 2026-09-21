@@ -1,11 +1,13 @@
 use crate::config::Limits;
 use crate::config::RELAY_MAX_BUDGET_SATS;
 use crate::error::{Context, Error, bail, ensure};
+use crate::http;
+use crate::transaction::decode;
 use crate::{
+    journal::{self, Plan},
     source::Source,
-    transport::{self, Plan},
 };
-use bitcoin::{Network, Transaction, Txid, consensus::deserialize};
+use bitcoin::{Network, Txid};
 use serde_json::{Value, json};
 use std::str::FromStr;
 
@@ -94,7 +96,7 @@ pub fn broadcast_plan(
     allow_unconfirmed_commit: bool,
 ) -> Result<Value, Error> {
     authorize(network, plan.fee_sats, budget, accept_provider_trust)?;
-    transport::validate_plan(plan)?;
+    journal::validate_plan(plan)?;
     ensure!(
         plan.network == network.to_string(),
         "relay network differs from journal"
@@ -110,7 +112,7 @@ pub fn broadcast_plan(
             "commit_submitted"
         }
         Step::Reveals(indices) => {
-            let commit: Transaction = deserialize(&hex::decode(&plan.commit)?)?;
+            let commit = decode(&plan.commit, plan.commit.len())?;
             for index in indices {
                 ensure!(
                     index < plan.reveals.len(),
@@ -137,7 +139,7 @@ fn post_transaction(endpoint: &str, raw: &str) -> Result<String, Error> {
         raw.len() <= 8_000_000,
         "transaction exceeds relay byte limit"
     );
-    let tx: Transaction = deserialize(&hex::decode(raw)?)?;
+    let tx = decode(raw, 8_000_000)?;
     let expected = tx.compute_txid();
     let response = minreq::post(format!("{endpoint}/tx"))
         .with_timeout(20)
@@ -149,10 +151,7 @@ fn post_transaction(endpoint: &str, raw: &str) -> Result<String, Error> {
         .send_lazy()
         .context("relay POST failed; submission may be uncertain, check status before retry")?;
     let status = response.status_code;
-    let mut body = Vec::new();
-    for byte in response.take(1025) {
-        body.push(byte?.0);
-    }
+    let body = http::body(response, 1024)?;
     ensure!(
         body.len() <= 1024,
         "relay response exceeds byte limit; check transaction status"

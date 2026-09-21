@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::PathBuf;
-use urma::error::{Context, Error, ensure};
 use urma_chain::observation::Chain;
+use urma_runtime::error::{Context, Error, ensure};
 use urma_runtime::node::NodeConfig;
 
 #[derive(Default, Deserialize)]
@@ -27,9 +27,9 @@ pub(crate) fn load() -> Result<Settings, Error> {
     if !path.try_exists()? {
         return Ok(Settings::default());
     }
-    Ok(serde_json::from_slice(&urma::storage::read_bounded(
-        &path, 16_384,
-    )?)?)
+    Ok(serde_json::from_slice(
+        &urma_runtime::storage::read_bounded(&path, 16_384)?,
+    )?)
 }
 
 pub(crate) fn chain(testnet: bool) -> Result<Chain, Error> {
@@ -122,10 +122,9 @@ fn path_setting(name: &str, setting: Option<PathBuf>, default: &str) -> Result<P
 
 pub(crate) fn git_limits() -> Result<urma_git::inventory::Limits, Error> {
     match std::env::var_os("URMA_GIT_LIMITS") {
-        Some(path) => Ok(serde_json::from_slice(&urma::storage::read_bounded(
-            &PathBuf::from(path),
-            4096,
-        )?)?),
+        Some(path) => Ok(serde_json::from_slice(
+            &urma_runtime::storage::read_bounded(&PathBuf::from(path), 4096)?,
+        )?),
         None => Ok(urma_git::inventory::Limits::default()),
     }
 }

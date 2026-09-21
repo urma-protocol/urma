@@ -1,7 +1,7 @@
 use crate::catalog::Content;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
-use urma::error::{Error, ensure};
+use urma_runtime::error::{Error, ensure};
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]

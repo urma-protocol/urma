@@ -56,6 +56,9 @@ pub enum ChainUpdate {
 }
 
 impl Chain {
+    pub const LITECOIN_TESTNET_GENESIS: &str =
+        "4966625a4b2851d9fdee139e56211a0d88575f59ed816ff5e6a63deb4e3e29a0";
+
     pub fn label(self) -> &'static str {
         match self {
             Self::LitecoinMainnet => "Litecoin mainnet",
@@ -77,9 +80,7 @@ impl Chain {
             Self::LitecoinMainnet => {
                 "12a765e31ffd4059bada1e25190f6e98c99d9714d334efa41a195a7e7e04bfe2".parse()?
             }
-            Self::LitecoinTestnet => {
-                "4966625a4b2851d9fdee139e56211a0d88575f59ed816ff5e6a63deb4e3e29a0".parse()?
-            }
+            Self::LitecoinTestnet => Self::LITECOIN_TESTNET_GENESIS.parse()?,
         };
         Ok(ChainId(genesis))
     }

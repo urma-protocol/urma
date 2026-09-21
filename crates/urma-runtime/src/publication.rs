@@ -1,23 +1,21 @@
+use crate::config;
 use crate::error::{Context, Error, ensure};
-use crate::{
-    config, envelope,
+use crate::reveal;
+use crate::transaction::{decode, transaction};
+use bitcoin::{Amount, OutPoint, ScriptBuf, TxOut, Witness, consensus::serialize};
+use serde::{Deserialize, Serialize};
+use urma_core::{
+    envelope,
     format::{PublicRecord, Urma},
     multipart::MultipartRecord,
-    transport::Funding,
 };
-use bitcoin::{
-    Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Witness, absolute,
-    consensus::{deserialize, serialize},
-    hashes::Hash,
-    secp256k1::Message,
-    sighash::{Prevouts, SighashCache, TapSighashType},
-    taproot::{LeafVersion, TapLeafHash},
-    transaction::Version,
-};
-use serde::{Deserialize, Serialize};
 use urma_identity::identity::IdentitySigner;
 
-pub use urma_chain::observation::Chain;
+use urma_chain::observation::Chain;
+use urma_wallet::{
+    funding::Funding,
+    wallet::{FeeBudget, SpendRequest, WalletError},
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -28,20 +26,6 @@ pub struct PublicPlan {
     pub commit: String,
     pub reveal: String,
     pub fee_rate: u64,
-}
-
-fn transaction(outpoint: OutPoint, output: TxOut) -> Transaction {
-    Transaction {
-        version: Version::TWO,
-        lock_time: absolute::LockTime::ZERO,
-        input: vec![TxIn {
-            previous_output: outpoint,
-            script_sig: ScriptBuf::new(),
-            sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
-            witness: Witness::new(),
-        }],
-        output: vec![output],
-    }
 }
 
 pub fn prepare(
@@ -83,15 +67,8 @@ pub fn prepare_bytes(
         value: Amount::from_sat(retained),
         script_pubkey: previous.script_pubkey.clone(),
     };
-    let mut reveal = transaction(OutPoint::null(), return_output.clone());
-    reveal.input[0].witness = envelope::witness(&[0; 64], &script, &info)?;
-    ensure!(
-        reveal.weight().to_wu() <= config::STANDARD_TX_WEIGHT,
-        "reveal exceeds standard transaction weight"
-    );
-    let reveal_fee = u64::try_from(reveal.vsize())?
-        .checked_mul(fee_rate)
-        .context("fee overflow")?;
+    let mut reveal = reveal::preview(return_output.clone(), &script, &info)?;
+    let reveal_fee = reveal::fee(&reveal, fee_rate)?;
     let publication_output = TxOut {
         value: Amount::from_sat(retained + reveal_fee),
         script_pubkey: ScriptBuf::new_p2tr_tweaked(info.output_key()),
@@ -119,13 +96,7 @@ pub fn prepare_bytes(
         txid: commit.compute_txid(),
         vout: 0,
     };
-    let hash = SighashCache::new(&reveal).taproot_script_spend_signature_hash(
-        0,
-        &Prevouts::All(std::slice::from_ref(&publication_output)),
-        TapLeafHash::from_script(&script, LeafVersion::TapScript),
-        TapSighashType::Default,
-    )?;
-    let signature = author.sign_author(Message::from_digest(hash.to_byte_array()))?;
+    let signature = author.sign_author(reveal::digest(&reveal, &publication_output, &script)?)?;
     reveal.input[0].witness = envelope::witness(signature.as_ref(), &script, &info)?;
     envelope::verify_reveal(&reveal, &commit)?;
     Ok(PublicPlan {
@@ -136,16 +107,6 @@ pub fn prepare_bytes(
         reveal: hex::encode(serialize(&reveal)),
         fee_rate,
     })
-}
-
-pub fn verify(
-    commit: &[u8],
-    reveal: &[u8],
-) -> Result<(PublicRecord, envelope::ParsedEnvelope), Error> {
-    let commit: Transaction = deserialize(commit)?;
-    let reveal: Transaction = deserialize(reveal)?;
-    let verified = envelope::verify_reveal(&reveal, &commit)?;
-    Ok((PublicRecord::decode(&verified.record)?, verified))
 }
 
 pub fn quote_record(
@@ -161,8 +122,7 @@ pub fn quote_record(
         value: Amount::from_sat(1000),
         script_pubkey: return_script.clone(),
     };
-    let mut reveal = transaction(OutPoint::null(), output.clone());
-    reveal.input[0].witness = envelope::witness(&[0; 64], &script, &info)?;
+    let reveal = reveal::preview(output.clone(), &script, &info)?;
     let mut commit = transaction(
         OutPoint::null(),
         TxOut {
@@ -175,4 +135,58 @@ pub fn quote_record(
     u64::try_from(commit.vsize() + reveal.vsize())?
         .checked_mul(fee_rate)
         .context("quote fee overflow")
+}
+
+pub struct SignedPublicPair {
+    pub plan: PublicPlan,
+    pub fee: u64,
+}
+
+pub fn prepare_signed_bytes(
+    record: &[u8],
+    signer: &impl IdentitySigner,
+    funding: Funding,
+    chain: Chain,
+    budget: FeeBudget,
+) -> Result<SignedPublicPair, Error> {
+    ensure!(
+        budget.chain == chain.genesis()?,
+        "funding budget chain mismatch"
+    );
+    let (_, previous) = funding.prevout()?;
+    if previous.script_pubkey != urma_wallet::signing::script(signer)? {
+        return Err(WalletError::WrongIdentity.into());
+    }
+    let mut plan = prepare_bytes(record, signer, funding, chain, budget.rate.0.get())?;
+    let commit = decode(
+        &plan.commit,
+        usize::try_from(config::STANDARD_TX_WEIGHT)? * 2,
+    )?;
+    let signed = urma_wallet::signing::sign(
+        signer,
+        &SpendRequest {
+            transaction: &commit,
+            prevouts: std::slice::from_ref(&previous),
+            budget,
+        },
+    )?;
+    let reveal = decode(
+        &plan.reveal,
+        usize::try_from(config::STANDARD_TX_WEIGHT)? * 2,
+    )?;
+    let outputs = signed.output[1]
+        .value
+        .to_sat()
+        .checked_add(reveal.output[0].value.to_sat())
+        .ok_or(WalletError::Overflow)?;
+    let fee = previous
+        .value
+        .to_sat()
+        .checked_sub(outputs)
+        .ok_or(WalletError::InsufficientFunds)?;
+    if fee > budget.maximum_base_units {
+        return Err(WalletError::BudgetExceeded.into());
+    }
+    plan.commit = hex::encode(serialize(&signed));
+    Ok(SignedPublicPair { plan, fee })
 }

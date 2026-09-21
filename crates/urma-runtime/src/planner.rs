@@ -1,22 +1,18 @@
+use crate::config;
+use crate::error::{Context, Error, ensure};
+use crate::publication::{PublicPlan, prepare_signed_bytes};
+use crate::transaction::decode;
 use crate::{
     node::Node,
     plan::{PlanLimits, PublicationPlan},
 };
-use bitcoin::{
-    Transaction,
-    consensus::{deserialize, serialize},
-};
 use sha2::{Digest, Sha256};
 use std::num::NonZeroU64;
-use urma::{
-    error::{Context, Error, ensure},
-    publication::PublicPlan,
-};
 use urma_core::multipart::ChildReference;
 use urma_identity::identity::IdentitySigner;
 use urma_wallet::{
     funding::Funding,
-    wallet::{FeeBudget, FeeRate, SpendRequest},
+    wallet::{FeeBudget, FeeRate},
 };
 
 pub(crate) struct Planner<'a, S> {
@@ -56,7 +52,7 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
         );
         let minimum = limits
             .max_fee
-            .checked_add((u64::from(records) + 1) * urma::config::publication_return(node.chain()))
+            .checked_add((u64::from(records) + 1) * config::publication_return(node.chain()))
             .context("funding budget overflow")?;
         let funding = node.select_funding(signer, minimum)?;
         Ok(Self {
@@ -85,49 +81,34 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
         &mut self,
         record: &[u8],
     ) -> Result<(ChildReference, PublicPlan), Error> {
-        let previous = self.funding.prevout()?.1;
-        let mut pair = urma::publication::prepare_bytes(
-            record,
-            self.signer,
-            self.funding.clone(),
-            self.plan.chain,
-            self.limits.fee_rate,
-        )?;
-        let commit: Transaction = deserialize(&hex::decode(&pair.commit)?)?;
         let budget = FeeBudget {
             chain: self.plan.chain.genesis()?,
             rate: FeeRate(NonZeroU64::new(self.limits.fee_rate).context("zero fee rate")?),
             maximum_base_units: self.limits.max_fee,
         };
-        let signed = urma_wallet::signing::sign(
+        let prepared = prepare_signed_bytes(
+            record,
             self.signer,
-            &SpendRequest {
-                transaction: &commit,
-                prevouts: std::slice::from_ref(&previous),
-                budget,
-            },
+            self.funding.clone(),
+            self.plan.chain,
+            budget,
         )?;
-        pair.commit = hex::encode(serialize(&signed));
-        let reveal: Transaction = deserialize(&hex::decode(&pair.reveal)?)?;
-        let outputs = signed.output[1]
-            .value
-            .to_sat()
-            .checked_add(reveal.output[0].value.to_sat())
-            .context("output sum overflow")?;
-        let fee = previous
-            .value
-            .to_sat()
-            .checked_sub(outputs)
-            .context("publication value overflow")?;
-        self.plan.total_fee = self
+        let pair = prepared.plan;
+        let fee = prepared.fee;
+        let reveal = decode(
+            &pair.reveal,
+            usize::try_from(config::STANDARD_TX_WEIGHT)? * 2,
+        )?;
+        let total_fee = self
             .plan
             .total_fee
             .checked_add(fee)
             .context("fee sum overflow")?;
         ensure!(
-            self.plan.total_fee <= self.limits.max_fee,
+            total_fee <= self.limits.max_fee,
             "publication exceeds approved maximum fee"
         );
+        self.plan.total_fee = total_fee;
         self.funding = Funding {
             raw_transaction: pair.commit.clone(),
             vout: 1,

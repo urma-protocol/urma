@@ -5,14 +5,15 @@
     unused_variables,
     unused_assignments
 )]
+use crate::common_cli::export_recovery;
 use crate::{config as cli_config, print_report as print};
 use clap::{Args, Subcommand};
 use rand::rngs::OsRng;
 use serde_json::json;
 use std::path::{Path, PathBuf};
-use urma::config;
-use urma::error::{Context, Error, ensure};
-use urma::{
+use urma_runtime::config;
+use urma_runtime::error::{Context, Error, ensure};
+use urma_runtime::{
     backend, container,
     litecoin::{self, Core, Plan},
     storage,
@@ -48,16 +49,6 @@ fn read_plan(path: &Path) -> Result<Plan, Error> {
     )?)
     .context("invalid Litecoin journal")
 }
-fn export(recovery: backend::Recovery, output: &Path) -> Result<(), Error> {
-    let exported = backend::export(recovery, output)?;
-    print(exported.report)?;
-    ensure!(
-        exported.complete,
-        "recovery incomplete or invalid objects; see JSON report"
-    );
-    Ok(())
-}
-
 pub(crate) fn run(command: Command) -> Result<(), Error> {
     match command {
         Command::Quote(args) => quote(args),
@@ -194,7 +185,7 @@ fn prepare(args: PrepareArgs) -> Result<(), Error> {
     ensure!(!journal.try_exists()?, "journal already exists");
     let records = container::unpack(&storage::read_bounded(
         &bundle,
-        urma::config::Limits::CONTAINER_BYTES,
+        urma_runtime::config::Limits::CONTAINER_BYTES,
     )?)?;
     let funding = serde_json::from_slice(&storage::read_bounded(&funding, 1_000_000)?)?;
     let plan = litecoin::prepare(
@@ -269,9 +260,9 @@ fn recover(args: RecoverArgs) -> Result<(), Error> {
     } = args;
 
     ensure!(!output_dir.try_exists()?, "output directory already exists");
-    let key = storage::read_key(&key)?;
+    let key = urma_workflows::archive::read_key(&key)?;
     let node = rpc.core(None)?;
-    export(
+    export_recovery(
         backend::recover(
             &litecoin::LitecoinRecords {
                 rpc: &node,

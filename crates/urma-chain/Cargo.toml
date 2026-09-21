@@ -8,3 +8,4 @@ publish.workspace = true
 [dependencies]
 bitcoin = "0.32"
 serde = { version = "1", features = ["derive"] }
+hex = "0.4"

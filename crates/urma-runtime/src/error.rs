@@ -1,4 +1,5 @@
 use std::fmt::{Display, Formatter};
+use urma_chain::validation::BlockValidationError;
 
 #[derive(Debug)]
 pub enum Error {
@@ -89,7 +90,49 @@ impl Display for Error {
         }
     }
 }
-impl std::error::Error for Error {}
+impl std::error::Error for Error {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Identity(cause) => Some(cause),
+            Self::Wallet(cause) => Some(cause),
+            Self::Protocol(cause) => Some(cause),
+            Self::Amount(cause) => Some(cause),
+            Self::Script(cause) => Some(cause),
+            Self::Io(cause) => Some(cause),
+            Self::Json(cause) => Some(cause),
+            Self::Hex(cause) => Some(cause),
+            Self::Url(cause) => Some(cause),
+            Self::Integer(cause) => Some(cause),
+            Self::IntegerText(cause) => Some(cause),
+            Self::Slice(cause) => Some(cause),
+            Self::Utf8(cause) => Some(cause),
+            Self::Text(cause) => Some(cause),
+            Self::Allocation(cause) => Some(cause),
+            Self::Random(cause) => Some(cause),
+            Self::Secp256k1(cause) => Some(cause),
+            Self::Transaction(cause) => Some(cause),
+            Self::Push(cause) => Some(cause),
+            Self::TaprootBuilder(cause) => Some(cause),
+            Self::Taproot(cause) => Some(cause),
+            Self::TaprootSighash(cause) => Some(cause),
+            Self::SegwitSighash(cause) => Some(cause),
+            Self::AddressScript(cause) => Some(cause),
+            Self::AddressParse(cause) => Some(cause),
+            Self::AddressNetwork(cause) => Some(cause),
+            Self::PublicKey(cause) => Some(cause),
+            Self::UncompressedKey(cause) => Some(cause),
+            Self::Ecdsa(cause) => Some(cause),
+            Self::Hash(cause) => Some(cause),
+            Self::ProofOfWork(cause) => Some(cause),
+            Self::Rpc(cause) => Some(cause),
+            Self::Http(cause) => Some(cause),
+            Self::Persist(cause) => Some(cause),
+            Self::Ip(cause) => Some(cause),
+            Self::Context { cause, .. } => Some(cause.as_ref()),
+            _ => None,
+        }
+    }
+}
 impl From<std::io::Error> for Error {
     fn from(error: std::io::Error) -> Self {
         Self::Io(error)
@@ -310,5 +353,52 @@ impl From<urma_wallet::wallet::WalletError> for Error {
 impl From<urma_identity::error::IdentityError> for Error {
     fn from(cause: urma_identity::error::IdentityError) -> Self {
         Self::Identity(cause)
+    }
+}
+
+impl From<urma_io::Error> for Error {
+    fn from(cause: urma_io::Error) -> Self {
+        match cause {
+            urma_io::Error::Io(cause) => Self::Io(cause),
+            urma_io::Error::PrivatePermissions => {
+                Self::Invalid("file must have private permissions".into())
+            }
+            urma_io::Error::Integer(cause) => Self::Integer(cause),
+            urma_io::Error::LimitOverflow => Self::Missing("file read limit overflow".into()),
+            urma_io::Error::TooLarge { limit } => {
+                Self::Capacity(format!("file exceeds {limit} byte client capacity"))
+            }
+            urma_io::Error::Persist(cause) => Self::Persist(cause),
+            urma_io::Error::Context { message, cause } => Self::Context {
+                message,
+                cause: Box::new((*cause).into()),
+            },
+        }
+    }
+}
+
+impl From<BlockValidationError> for Error {
+    fn from(error: BlockValidationError) -> Self {
+        match error {
+            BlockValidationError::ProofOfWork(cause) => Self::Context {
+                message: "block proof of work".into(),
+                cause: Box::new(Self::ProofOfWork(cause)),
+            },
+            cause => Self::Invalid(cause.to_string()),
+        }
+    }
+}
+
+impl From<urma_chain::transaction::TransactionDecodeError> for Error {
+    fn from(cause: urma_chain::transaction::TransactionDecodeError) -> Self {
+        use urma_chain::transaction::TransactionDecodeError;
+        match cause {
+            TransactionDecodeError::LimitExceeded => Self::Invalid(cause.to_string()),
+            TransactionDecodeError::Hex(cause) => Self::Hex(cause),
+            TransactionDecodeError::Consensus(cause) => Self::Context {
+                message: "decode transaction".into(),
+                cause: Box::new(Self::Transaction(cause)),
+            },
+        }
     }
 }

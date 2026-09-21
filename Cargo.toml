@@ -1,7 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
-    "crates/urma",
+    "crates/urma-io",
     "crates/urma-core",
     "crates/urma-chain",
     "crates/urma-identity",
@@ -14,7 +14,6 @@ members = [
     "crates/urma-files",
     "crates/urma-git",
 ]
-exclude = ["android/jni", "wire"]
 
 [workspace.package]
 version = "0.1.0"

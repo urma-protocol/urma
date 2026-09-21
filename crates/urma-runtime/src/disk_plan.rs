@@ -1,3 +1,6 @@
+use crate::error::{Context, Error, ensure};
+use crate::publication::PublicPlan;
+use crate::storage;
 use crate::{disk_order::Order, disk_writer::DiskWriter};
 use crate::{
     node::Node,
@@ -11,10 +14,6 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom},
     path::{Path, PathBuf},
-};
-use urma::{
-    error::{Context, Error, ensure},
-    publication::PublicPlan,
 };
 use urma_chain::observation::Chain;
 use urma_core::multipart::Geometry;
@@ -81,10 +80,8 @@ impl DiskPlan {
     }
 
     pub fn load(directory: &Path) -> Result<Self, Error> {
-        let mut plan: Self = serde_json::from_slice(&urma::storage::read_bounded(
-            &directory.join("plan.json"),
-            16384,
-        )?)?;
+        let mut plan: Self =
+            serde_json::from_slice(&storage::read_bounded(&directory.join("plan.json"), 16384)?)?;
         plan.directory = directory.to_owned();
         plan.validate()?;
         Ok(plan)
@@ -169,15 +166,7 @@ fn read_pair(reader: &mut impl Read, length: u32) -> Result<PublicPlan, Error> {
 }
 
 fn digest(file: &mut File) -> Result<String, Error> {
-    let mut hash = Sha256::new();
-    let mut buffer = [0u8; 65536];
-    loop {
-        let count = file.read(&mut buffer)?;
-        if count == 0 {
-            break;
-        }
-        hash.update(&buffer[..count]);
-    }
+    let hash = urma_io::digest(file)?;
     file.rewind()?;
-    Ok(hex::encode(hash.finalize()))
+    Ok(hex::encode(hash))
 }

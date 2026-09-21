@@ -118,7 +118,7 @@ fn litecoin_standard_full_record_and_dust() {
         index: 0,
         payload: vec![0xa5; Geometry::DATA_BYTES],
     });
-    let small = urma::publication::prepare_multipart(
+    let small = urma_runtime::publication::prepare_multipart(
         &MultipartRecord::Data(DataPart {
             index: 0,
             payload: vec![],
@@ -150,9 +150,14 @@ fn litecoin_standard_full_record_and_dust() {
         )
         .unwrap();
     assert_eq!(small_accept[0]["allowed"], true, "{small_accept}");
-    let pair =
-        urma::publication::prepare_multipart(&record, &signer, funding, Chain::LitecoinTestnet, 1)
-            .unwrap();
+    let pair = urma_runtime::publication::prepare_multipart(
+        &record,
+        &signer,
+        funding,
+        Chain::LitecoinTestnet,
+        1,
+    )
+    .unwrap();
     let commit: Transaction = deserialize(&hex::decode(&pair.commit).unwrap()).unwrap();
     let signed = urma_wallet::signing::sign(
         &signer,

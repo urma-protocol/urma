@@ -2,13 +2,13 @@ use crate::{archive_cli, config};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use urma::error::Error;
 use urma_chain::observation::Chain;
 use urma_identity::{
     identity::{IdentitySigner, IdentitySlot},
     phrase::IdentityPhrase,
     vault::{UnlockCredential, UnlockedVault},
 };
+use urma_runtime::error::Error;
 use urma_workflows::vault::{self, VaultChange};
 
 #[derive(Args)]

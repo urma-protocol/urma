@@ -1,4 +1,4 @@
-use crate::format::Urma;
+use urma_core::format::Urma;
 pub struct Limits;
 impl Limits {
     pub const INPUT_BYTES: usize = 16 * 1024 * 1024;
@@ -9,22 +9,11 @@ impl Limits {
 
 use crate::error::{Context, Error};
 use serde_json::Value;
-use std::path::Path;
 
 pub fn confirmations(value: &Value) -> Result<i64, Error> {
     match value.get("confirmations") {
         Some(number) => number.as_i64().context("invalid confirmations"),
         None => Ok(0),
-    }
-}
-
-pub fn output_parent(path: &Path) -> &Path {
-    match path
-        .parent()
-        .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        Some(parent) => parent,
-        None => Path::new("."),
     }
 }
 
@@ -89,8 +78,7 @@ impl From<Option<usize>> for RevealSelection {
 pub const MAX_OBJECTS: usize = Limits::OBJECTS;
 pub const MAX_DIRECTORY_RECORDS: usize = MAX_OBJECTS * Limits::RECORDS;
 pub const LITECOIN_NETWORK: &str = "litecoin-testnet";
-pub const LITECOIN_GENESIS: &str =
-    "4966625a4b2851d9fdee139e56211a0d88575f59ed816ff5e6a63deb4e3e29a0";
+pub const LITECOIN_GENESIS: &str = urma_chain::observation::Chain::LITECOIN_TESTNET_GENESIS;
 pub const LITECOIN_RPC_PORT: u16 = 19332;
 pub const LITECOIN_RETURN_LITOSHIS: u64 = 1_000;
 pub const LITECOIN_MAX_FEE_LITOSHIS: u64 = 500_000;

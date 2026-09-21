@@ -14,8 +14,10 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
-use urma::storage;
-use urma::transport::{Funding, Plan, validate_plan};
+use urma_chain::observation::Chain;
+use urma_runtime::journal::{Plan, validate_plan};
+use urma_runtime::storage;
+use urma_wallet::funding::Funding;
 
 struct Daemon {
     child: Option<Child>,
@@ -217,7 +219,7 @@ fn independent_recovery_interruption_restart_and_reorg() -> Result<()> {
 
     let jpeg = include_bytes!("../../../tests/fixtures/sample.jpg");
     ensure!(
-        jpeg.len() > urma::format::Urma::CHUNK_BYTES,
+        jpeg.len() > urma_core::format::Urma::CHUNK_BYTES,
         "JPEG fixture must exercise multiple chunks"
     );
     storage::write_new(&workdir.join("photo.jpg"), jpeg)?;
@@ -600,10 +602,7 @@ fn public_kinds_are_accepted_and_verified_on_a_separate_node() -> Result<()> {
         hashes::Hash,
         secp256k1::{Keypair, Secp256k1},
     };
-    use urma::{
-        format::PublicRecord,
-        publication::{self, Chain},
-    };
+    use urma_core::format::PublicRecord;
     let root = tempfile::Builder::new()
         .prefix("urma-public-regtest-")
         .tempdir()?;
@@ -647,7 +646,7 @@ fn public_kinds_are_accepted_and_verified_on_a_separate_node() -> Result<()> {
                 .position(|out| out.script_pubkey == parsed.script_pubkey())
                 .context("funding output")?,
         )?;
-        let plan = publication::prepare(
+        let plan = urma_runtime::publication::prepare(
             &record,
             &author,
             Funding {
@@ -667,7 +666,7 @@ fn public_kinds_are_accepted_and_verified_on_a_separate_node() -> Result<()> {
         sync(&sender, &receiver)?;
         let fetched = receiver.call("getblock", &[mined[0].clone(), json!(0)])?;
         let block: bitcoin::Block = deserialize(&hex::decode(fetched.as_str().context("block")?)?)?;
-        urma::transport::validate_block_for_network(
+        urma_runtime::bitcoin_rpc::validate_block_for_network(
             &block,
             block.block_hash(),
             bitcoin::Network::Regtest,
@@ -677,13 +676,13 @@ fn public_kinds_are_accepted_and_verified_on_a_separate_node() -> Result<()> {
             .iter()
             .find(|tx| json!(tx.compute_txid().to_string()) == reveal_id)
             .context("reveal absent from independent block")?;
-        let (found, proof) = publication::verify(&commit_raw, &serialize(reveal))?;
+        let proof = urma_profiles::wire::verify_bytes(&commit_raw, &serialize(reveal))?;
         ensure!(
-            found == record && proof.author == author.x_only_public_key().0,
+            proof.record() == &record && proof.author().0 == author.x_only_public_key().0,
             "public recovery mismatch"
         );
         reports.push(json!({"kind":record.kind().byte(),"record_bytes":record.encode()?.len(),"commit":commit_id,
-            "reveal":reveal_id,"block":block.block_hash().to_string(),"author":proof.author.to_string()}));
+            "reveal":reveal_id,"block":block.block_hash().to_string(),"author":proof.author().0.to_string()}));
     }
     println!(
         "{}",
@@ -701,12 +700,9 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
     };
     use sha2::{Digest, Sha256};
     use std::{collections::HashMap, io::Read};
-    use urma::{
-        multipart::{
-            DataPart, FetchError, Geometry, LeafManifest, MultipartRecord, MultipartSource,
-            RecordRequest, RecoveryLimits, RootManifest, VerifiedRecord, reconstruct,
-        },
-        publication::{self, Chain},
+    use urma_runtime::multipart::{
+        DataPart, FetchError, Geometry, LeafManifest, MultipartRecord, MultipartSource,
+        RecordRequest, RecoveryLimits, RootManifest, VerifiedRecord, reconstruct,
     };
     let temp = tempfile::tempdir()?;
     let mut sender = Daemon::start(temp.path().join("sender"), None)?;
@@ -738,7 +734,7 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
                 .position(|o| o.script_pubkey == parsed.script_pubkey())
                 .context("funding output")?,
         )?;
-        let plan = publication::prepare_multipart(
+        let plan = urma_runtime::publication::prepare_multipart(
             &record,
             &author,
             Funding {
@@ -806,7 +802,7 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
         let hash = receiver.call("getblockhash", &[json!(height)])?;
         let raw = receiver.call("getblock", &[hash, json!(0)])?;
         let block: bitcoin::Block = deserialize(&hex::decode(raw.as_str().unwrap())?)?;
-        urma::transport::validate_block_for_network(
+        urma_runtime::bitcoin_rpc::validate_block_for_network(
             &block,
             block.block_hash(),
             bitcoin::Network::Regtest,

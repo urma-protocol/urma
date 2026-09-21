@@ -1205,32 +1205,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "urma"
-version = "0.1.0"
-dependencies = [
- "bitcoin",
- "bitcoincore-rpc",
- "hex",
- "minreq",
- "rand",
- "serde",
- "serde_json",
- "sha2",
- "tempfile",
- "tracing",
- "url",
- "urma-chain",
- "urma-core",
- "urma-identity",
- "urma-wallet",
- "zeroize",
-]
-
-[[package]]
 name = "urma-chain"
 version = "0.1.0"
 dependencies = [
  "bitcoin",
+ "hex",
  "serde",
 ]
 
@@ -1256,12 +1235,12 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "url",
- "urma",
  "urma-chain",
  "urma-core",
  "urma-files",
  "urma-git",
  "urma-identity",
+ "urma-io",
  "urma-profiles",
  "urma-runtime",
  "urma-wallet",
@@ -1291,15 +1270,15 @@ version = "0.1.0"
 dependencies = [
  "bitcoin",
  "hex",
- "libc",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tracing",
  "unicode-normalization",
- "urma",
+ "urma-core",
  "urma-identity",
+ "urma-io",
  "urma-runtime",
  "zeroize",
 ]
@@ -1318,10 +1297,11 @@ dependencies = [
  "sha2",
  "tempfile",
  "tracing",
- "urma",
  "urma-chain",
  "urma-core",
  "urma-identity",
+ "urma-io",
+ "urma-profiles",
  "urma-runtime",
 ]
 
@@ -1345,6 +1325,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "urma-io"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "sha2",
+ "tempfile",
+ "zeroize",
+]
+
+[[package]]
 name = "urma-profiles"
 version = "0.1.0"
 dependencies = [
@@ -1363,17 +1353,19 @@ dependencies = [
  "bitcoincore-rpc",
  "hex",
  "minreq",
+ "rand",
  "serde",
  "serde_json",
  "sha2",
  "tempfile",
  "tracing",
  "url",
- "urma",
  "urma-chain",
  "urma-core",
  "urma-identity",
+ "urma-io",
  "urma-wallet",
+ "zeroize",
 ]
 
 [[package]]
@@ -1382,7 +1374,6 @@ version = "0.1.0"
 dependencies = [
  "bech32",
  "bitcoin",
- "hex",
  "serde",
  "urma-chain",
  "urma-core",
@@ -1399,22 +1390,21 @@ dependencies = [
  "serde_json",
  "tempfile",
  "tracing",
- "urma",
+ "urma-chain",
  "urma-core",
+ "urma-io",
+ "urma-profiles",
 ]
 
 [[package]]
 name = "urma-workflows"
 version = "0.1.0"
 dependencies = [
- "bitcoin",
- "hex",
  "rand",
- "urma",
- "urma-chain",
  "urma-core",
  "urma-identity",
- "urma-wallet",
+ "urma-io",
+ "urma-runtime",
  "zeroize",
 ]
 

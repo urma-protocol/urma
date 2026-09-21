@@ -44,7 +44,7 @@ fn install_staged(
     if destination.try_exists()? {
         return Err(Error::Invalid("clone destination already exists".into()));
     }
-    let parent = urma::config::output_parent(destination);
+    let parent = urma_io::output_parent(destination);
     let stage = tempfile::Builder::new()
         .prefix(".urma-clone-")
         .tempdir_in(parent)?;

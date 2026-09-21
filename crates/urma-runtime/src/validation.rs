@@ -1,17 +1,16 @@
+use crate::config;
+use crate::error::{Context, Error, ensure};
 use crate::plan::PublicationPlan;
-use bitcoin::{
-    Transaction,
-    consensus::deserialize,
-    hashes::Hash,
-    secp256k1::{Message, Secp256k1},
-    sighash::SighashCache,
-};
-use urma::error::{Context, Error, ensure};
-use urma::publication::PublicPlan;
+use crate::publication::PublicPlan;
+use crate::transaction::decode;
+use bitcoin::Transaction;
 use urma_chain::observation::Chain;
 
 fn transaction(raw: &str) -> Result<Transaction, Error> {
-    Ok(deserialize(&hex::decode(raw)?)?)
+    decode(raw, usize::MAX).map_err(|cause| match cause {
+        Error::Context { cause, .. } => *cause,
+        cause => cause,
+    })
 }
 
 fn verify_commit(
@@ -43,21 +42,17 @@ fn verify_commit(
         "author and funding identities differ"
     );
     let compressed = bitcoin::CompressedPublicKey::try_from(public)?;
-    ensure!(
-        previous.script_pubkey == bitcoin::ScriptBuf::new_p2wpkh(&compressed.wpubkey_hash()),
-        "funding public key mismatch"
-    );
-    let hash = SighashCache::new(commit).p2wpkh_signature_hash(
-        0,
-        &previous.script_pubkey,
-        previous.value,
-        signature.sighash_type,
-    )?;
-    Secp256k1::verification_only().verify_ecdsa(
-        &Message::from_digest(hash.to_byte_array()),
-        &signature.signature,
-        &public.inner,
-    )?;
+    urma_wallet::signing::verify_p2wpkh_signature(commit, 0, previous, &signature, &compressed)
+        .map_err(|cause| match cause {
+            urma_wallet::signing::FundingSignatureError::SighashType => {
+                Error::Invalid("funding signature must commit all outputs".into())
+            }
+            urma_wallet::signing::FundingSignatureError::PublicKeyMismatch => {
+                Error::Invalid("funding public key mismatch".into())
+            }
+            urma_wallet::signing::FundingSignatureError::Sighash(cause) => cause.into(),
+            urma_wallet::signing::FundingSignatureError::Signature(cause) => cause.into(),
+        })?;
     Ok(())
 }
 
@@ -177,11 +172,11 @@ impl Validation {
 
 fn verify_policy(commit: &Transaction, reveal: &Transaction, chain: Chain) -> Result<(), Error> {
     ensure!(
-        commit.weight().to_wu() <= urma::config::STANDARD_TX_WEIGHT
-            && reveal.weight().to_wu() <= urma::config::STANDARD_TX_WEIGHT,
+        commit.weight().to_wu() <= config::STANDARD_TX_WEIGHT
+            && reveal.weight().to_wu() <= config::STANDARD_TX_WEIGHT,
         "publication exceeds standard transaction weight"
     );
-    let retained = urma::config::publication_return(chain);
+    let retained = config::publication_return(chain);
     ensure!(
         commit.output[0].value.to_sat() >= retained
             && commit.output[1].value.to_sat() >= retained

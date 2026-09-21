@@ -20,4 +20,21 @@ mod esplora;
 mod remote;
 mod transport;
 
+pub mod publication;
 pub mod quote;
+
+pub mod backend;
+pub mod bitcoin_rpc;
+mod commitment;
+pub mod config;
+pub mod container;
+pub mod error;
+mod http;
+pub mod journal;
+pub mod litecoin;
+pub mod multipart;
+pub mod relay;
+mod reveal;
+pub mod source;
+pub mod storage;
+mod transaction;

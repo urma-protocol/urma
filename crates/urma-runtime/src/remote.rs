@@ -1,13 +1,17 @@
+use crate::error::{Context, Error, ensure};
+use crate::transaction::decode;
 use crate::{endpoints::PublicEndpoint, esplora};
-use bitcoin::{Amount, Block, BlockHash, Denomination, Transaction, Txid, consensus::deserialize};
+use bitcoin::{Amount, Block, BlockHash, Denomination, Txid, consensus::deserialize};
 use serde_json::{Value, json};
 use std::{
     cell::Cell,
     io::Read,
     time::{Duration, Instant},
 };
-use urma::error::{Context, Error, ensure};
-use urma_chain::observation::Chain;
+use urma_chain::{
+    observation::Chain,
+    validation::{BlockValidationError, validate_block_integrity},
+};
 
 pub(crate) struct Source {
     endpoint: PublicEndpoint,
@@ -172,8 +176,8 @@ fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Er
     if method == "getrawtransaction"
         && args.get(1).context("missing transaction verbosity")? == &json!(false)
     {
-        let raw = hex::decode(value.as_str().context("missing transaction bytes")?)?;
-        let transaction: Transaction = deserialize(&raw)?;
+        let raw = value.as_str().context("missing transaction bytes")?;
+        let transaction = decode(raw, raw.len())?;
         ensure!(
             json!(transaction.compute_txid()) == *args.first().context("missing transaction ID")?,
             "public source transaction hash mismatch"
@@ -181,9 +185,8 @@ fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Er
     }
     if method == "sendrawtransaction" {
         let raw = args.first().context("missing broadcast transaction")?;
-        let transaction: Transaction = deserialize(&hex::decode(
-            raw.as_str().context("invalid broadcast transaction")?,
-        )?)?;
+        let raw = raw.as_str().context("invalid broadcast transaction")?;
+        let transaction = decode(raw, raw.len())?;
         ensure!(
             value == &json!(transaction.compute_txid()),
             "broadcast transaction ID mismatch"
@@ -192,14 +195,21 @@ fn validate_result(method: &str, args: &[Value], value: &Value) -> Result<(), Er
     if method == "getblock" {
         let raw = hex::decode(value.as_str().context("missing block bytes")?)?;
         let block: Block = deserialize(&raw)?;
-        ensure!(
-            json!(block.block_hash()) == *args.first().context("missing block hash")?,
-            "public source block hash mismatch"
-        );
-        ensure!(
-            block.check_merkle_root(),
-            "public source block merkle root mismatch"
-        );
+        let expected_hash = args
+            .first()
+            .context("missing block hash")?
+            .as_str()
+            .context("invalid block hash")?
+            .parse()?;
+        validate_block_integrity(&block, expected_hash).map_err(|cause| match cause {
+            BlockValidationError::HashMismatch => {
+                Error::Invalid("public source block hash mismatch".into())
+            }
+            BlockValidationError::MerkleRootMismatch => {
+                Error::Invalid("public source block merkle root mismatch".into())
+            }
+            cause => Error::from(cause),
+        })?;
     }
     Ok(())
 }

@@ -1,4 +1,4 @@
-use urma::error::{Error, ensure};
+use crate::error::{Error, ensure};
 use urma_chain::observation::Chain;
 
 #[derive(Clone, Debug)]

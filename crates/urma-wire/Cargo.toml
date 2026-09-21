@@ -6,7 +6,9 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
-urma = { path = "../urma" }
+urma-chain = { path = "../urma-chain" }
+urma-profiles = { path = "../urma-profiles" }
+urma-io = { path = "../urma-io" }
 urma-core = { path = "../urma-core" }
 bitcoin = "0.32"
 serde = { version = "1", features = ["derive"] }

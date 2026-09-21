@@ -10,12 +10,12 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::Path,
 };
-use urma::{
+use urma_identity::keys::RecoverySecret;
+use urma_runtime::{
     container,
     error::{Error, ensure},
     storage,
 };
-use urma_identity::keys::RecoverySecret;
 use zeroize::Zeroizing;
 
 #[derive(Clone, Copy)]
@@ -61,7 +61,7 @@ impl ObjectSource<'_> {
             }
             Self::Recovered { directory } => safety::read_regular(
                 &directory.join(format!("{id}.bin")),
-                urma::config::Limits::INPUT_BYTES,
+                urma_runtime::config::Limits::INPUT_BYTES,
             ),
         }
     }

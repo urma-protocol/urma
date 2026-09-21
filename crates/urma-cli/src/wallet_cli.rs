@@ -2,7 +2,7 @@ use crate::{key_cli::VaultAccess, node_cli::NodeArgs};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
-use urma::error::Error;
+use urma_runtime::error::Error;
 use urma_wallet::wallet::{FeeBudget, FeeRate};
 
 #[derive(Subcommand)]

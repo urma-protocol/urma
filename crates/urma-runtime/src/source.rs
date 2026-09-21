@@ -4,10 +4,12 @@ use crate::config::{
     SOURCE_MAX_UTXOS,
 };
 use crate::error::{Context, Error, bail, ensure};
+use crate::http;
+use crate::journal::{self, Plan};
 use crate::{
     backend::{self, Evidence, Family, Locator, Observation, RecordSource},
-    container, envelope,
-    transport::{self, Funding, Plan, Scan},
+    bitcoin_rpc::{self, Scan},
+    container,
 };
 use bitcoin::{
     Address, Block, BlockHash, Network, Transaction, Txid, consensus::deserialize, hashes::Hash,
@@ -15,6 +17,8 @@ use bitcoin::{
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::str::FromStr;
+use urma_core::envelope;
+use urma_wallet::funding::Funding;
 
 pub struct Source {
     url: String,
@@ -129,10 +133,7 @@ impl Source {
                 "source response exceeds byte limit"
             );
         }
-        let mut bytes = Vec::new();
-        for byte in response.take(limit + 1) {
-            bytes.push(byte?.0);
-        }
+        let bytes = http::body(response, limit)?;
         ensure!(bytes.len() <= limit, "source response exceeds byte limit");
         Ok(Some(bytes))
     }
@@ -164,7 +165,7 @@ impl Source {
     fn block(&self, hash: BlockHash) -> Result<(Block, usize), Error> {
         let bytes = self.get(&format!("/block/{hash}/raw"), SOURCE_MAX_BLOCK_BYTES)?;
         let block: Block = deserialize(&bytes).context("invalid source raw block")?;
-        transport::validate_block_for_network(&block, hash, self.network)?;
+        bitcoin_rpc::validate_block_for_network(&block, hash, self.network)?;
         Ok((block, bytes.len()))
     }
 
@@ -468,7 +469,7 @@ impl Source {
     }
 
     pub fn status_plan(&self, plan: &Plan) -> Result<Value, Error> {
-        let mut report = transport::validate_plan(plan)?;
+        let mut report = journal::validate_plan(plan)?;
         ensure!(
             plan.network == self.network.to_string(),
             "source network differs from plan network"

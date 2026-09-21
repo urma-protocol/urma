@@ -1,9 +1,9 @@
 [package]
 name = "urma-core"
-version = "0.1.0"
-edition = "2024"
-publish = false
-license = "0BSD"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
 description = "Canonical URMA V0 codecs, crypto and proof validation without I/O"
 
 [dependencies]

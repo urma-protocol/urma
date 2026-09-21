@@ -15,19 +15,18 @@ use std::{
     path::{Path, PathBuf},
     process::Command,
 };
-use urma::{
+use urma_chain::observation::Chain;
+use urma_core::{envelope, format::PublicRecord};
+use urma_runtime::{
     container::{self, RecordMatch},
-    envelope,
     error::Error,
-    format::PublicRecord,
-    journal::Funding,
     multipart::{
         ChildReference, DataPart, FetchError, Geometry, LeafManifest, MultipartRecord,
         MultipartSource, RecordRequest, RecoveryError, RecoveryLimits, RootManifest,
         VerifiedRecord, reconstruct,
     },
-    publication::{self, Chain},
 };
+use urma_wallet::funding::Funding;
 
 fn vectors() -> PathBuf {
     Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../..")).join("tests/vectors/multipart")
@@ -145,7 +144,9 @@ fn limits() -> RecoveryLimits {
         max_nodes: 4096,
     }
 }
-fn outcome(result: &Result<urma::multipart::RecoveredObject, RecoveryError>) -> &'static str {
+fn outcome(
+    result: &Result<urma_runtime::multipart::RecoveredObject, RecoveryError>,
+) -> &'static str {
     match result {
         Ok(_) => "complete",
         Err(RecoveryError::InvalidObject(_)) => "invalid_object",
@@ -233,7 +234,7 @@ fn signed(
             script_pubkey: ScriptBuf::from_bytes([vec![0, 20], vec![4; 20]].concat()),
         }],
     };
-    let plan = publication::prepare_multipart(
+    let plan = urma_runtime::publication::prepare_multipart(
         &record,
         &key(author)?,
         Funding {
@@ -670,7 +671,7 @@ fn constructors_refuse_out_of_range_data_and_manifest_fields() -> Result<()> {
 
 #[test]
 fn detached_plan_inventory_rejects_cycles_before_io_and_does_not_claim_proofs() -> Result<()> {
-    use urma::multipart::ManifestInventory;
+    use urma_runtime::multipart::ManifestInventory;
     let root_id = Txid::from_byte_array([1; 32]);
     let leaf_id = Txid::from_byte_array([2; 32]);
     let data_id = Txid::from_byte_array([3; 32]);
@@ -704,7 +705,7 @@ fn detached_plan_inventory_rejects_cycles_before_io_and_does_not_claim_proofs() 
 
 #[test]
 fn multipart_256k_boundary_keeps_atomic_public_cap() -> Result<()> {
-    use urma::format::Urma;
+    use urma_core::format::Urma;
     assert_eq!(Geometry::RECORD_BYTES, 262144);
     assert_eq!(Geometry::DATA_BYTES, 262132);
     assert_eq!(Urma::MAX_PUBLIC_BYTES, 32768);
@@ -728,7 +729,7 @@ fn multipart_256k_boundary_keeps_atomic_public_cap() -> Result<()> {
     let mut oversized = record.record_bytes().to_vec();
     oversized.push(0);
     assert!(MultipartRecord::decode(&oversized).is_err());
-    let mut atomic = urma::format::RecordKind::Post.prefix().to_vec();
+    let mut atomic = urma_core::format::RecordKind::Post.prefix().to_vec();
     atomic.resize(32768, b'x');
     assert!(PublicRecord::decode(&atomic).is_ok());
     atomic.push(b'x');

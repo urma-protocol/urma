@@ -1,11 +1,10 @@
+use crate::error::{Error, ensure};
+use crate::publication::PublicPlan;
+use crate::storage;
 use crate::{node::Node, planner::Planner, validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::Path;
-use urma::{
-    error::{Error, ensure},
-    publication::PublicPlan,
-};
 use urma_chain::observation::Chain;
 use urma_core::{
     format::PublicRecord,
@@ -53,12 +52,11 @@ impl PublicationPlan {
             bytes.len() <= Self::MAX_BYTES,
             "plan exceeds client byte capacity"
         );
-        urma::storage::write_new(path, &bytes)
+        storage::write_new(path, &bytes)
     }
 
     pub fn load(path: &Path) -> Result<Self, Error> {
-        let plan: Self =
-            serde_json::from_slice(&urma::storage::read_bounded(path, Self::MAX_BYTES)?)?;
+        let plan: Self = serde_json::from_slice(&storage::read_bounded(path, Self::MAX_BYTES)?)?;
         plan.validate()?;
         Ok(plan)
     }

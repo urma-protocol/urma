@@ -1,7 +1,7 @@
 use crate::error::Error;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::io::{Read, Seek, SeekFrom, Write};
+use urma_profiles::git::GitProfile;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -17,16 +17,12 @@ pub struct Descriptor {
 }
 
 impl Descriptor {
-    pub const PROFILE: [u8; 8] = *b"URMAGIT1";
-    pub const UNNAMED_PROFILE: [u8; 8] = *b"URMAGIT0";
+    pub const PROFILE: [u8; 8] = GitProfile::NAMED_IDENTIFIER;
+    pub const UNNAMED_PROFILE: [u8; 8] = GitProfile::UNNAMED_IDENTIFIER;
     pub const MAX_PREFIX_BYTES: u64 = 65_777;
 
     pub fn profile(&self) -> [u8; 8] {
-        if self.repository_name.is_empty() {
-            Self::UNNAMED_PROFILE
-        } else {
-            Self::PROFILE
-        }
+        GitProfile::for_name(&self.repository_name).identifier()
     }
 
     pub fn require_profile(&self, profile: [u8; 8]) -> Result<(), Error> {
@@ -49,7 +45,7 @@ impl Descriptor {
         self.validate()?;
         output.write_all(&[
             self.object_format,
-            u8::from(!self.repository_name.is_empty()),
+            GitProfile::for_name(&self.repository_name).revision(),
         ])?;
         output.write_all(&u16::try_from(self.branch.len())?.to_le_bytes())?;
         output.write_all(&self.pack_length.to_le_bytes())?;
@@ -73,9 +69,7 @@ impl Descriptor {
             2 => 32,
             other => return Err(Error::Invalid(format!("object format {other}"))),
         };
-        if prefix[1] > 1 {
-            return Err(Error::Invalid("descriptor revision".into()));
-        }
+        GitProfile::from_revision(prefix[1])?;
         let branch_length = usize::from(u16::from_le_bytes([prefix[2], prefix[3]]));
         let mut head = vec![0; head_length];
         let mut branch = vec![0; branch_length];
@@ -138,16 +132,7 @@ impl Descriptor {
 }
 
 pub fn digest(input: &mut impl Read) -> Result<[u8; 32], Error> {
-    let mut hash = Sha256::new();
-    let mut buffer = [0_u8; 65536];
-    loop {
-        let length = input.read(&mut buffer)?;
-        if length == 0 {
-            break;
-        }
-        hash.update(&buffer[..length]);
-    }
-    Ok(hash.finalize().into())
+    Ok(urma_io::digest(input)?)
 }
 
 fn read_name(input: &mut impl Read, revision: u8) -> Result<String, Error> {

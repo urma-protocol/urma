@@ -5,15 +5,14 @@ use crate::{
 };
 use bitcoin::{Block, Transaction};
 use std::collections::BTreeMap;
-use urma::{
-    backend,
-    container::PrivateObject,
-    envelope,
-    error::{Context, Error, ensure},
-    format::RecordKind,
-};
+use urma_core::{envelope, format::RecordKind};
 use urma_identity::keys::RecoverySecret;
 use urma_runtime::node::Node;
+use urma_runtime::{
+    backend,
+    container::PrivateObject,
+    error::{Context, Error, ensure},
+};
 
 pub struct ChainRecovery {
     pub objects: BTreeMap<[u8; 32], PrivateObject>,
@@ -53,10 +52,6 @@ pub fn scan(
     };
     for height in start_height..=tip_height {
         let block = node.block(height)?;
-        ensure!(
-            block.check_witness_commitment(),
-            "block witness commitment mismatch"
-        );
         let rejected = collect_block(node, &block, secret, &mut recovery.objects)?;
         recovery.rejected_records = recovery
             .rejected_records

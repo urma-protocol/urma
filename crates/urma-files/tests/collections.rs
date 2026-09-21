@@ -1,6 +1,5 @@
 use std::{collections::BTreeMap, fs, os::unix::fs::symlink};
 use tempfile::tempdir;
-use urma::{backend, container};
 use urma_files::{
     capture::{Capture, Derivative, SessionState},
     catalog::Content,
@@ -10,6 +9,7 @@ use urma_files::{
     safety,
 };
 use urma_identity::keys::RecoverySecret;
+use urma_runtime::{backend, container};
 use zeroize::Zeroizing;
 
 #[test]

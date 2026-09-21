@@ -1,3 +1,4 @@
+use crate::error::{Error, ensure};
 use crate::{endpoints::PublicEndpoint, remote::Source};
 use serde_json::Value;
 use std::sync::{
@@ -5,7 +6,6 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     mpsc::{self, SyncSender, TrySendError},
 };
-use urma::error::{Error, ensure};
 use urma_chain::observation::Chain;
 
 pub(crate) struct Pool {

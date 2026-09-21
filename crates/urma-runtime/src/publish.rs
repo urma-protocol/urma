@@ -1,12 +1,15 @@
+use crate::config;
+use crate::error::{Context, Error, ensure};
+use crate::storage;
+use crate::transaction::decode;
 use crate::{
     node::{Node, Presence},
     plan::PublicationPlan,
 };
-use bitcoin::{Transaction, consensus::deserialize};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{fs::File, io::Write, path::Path};
-use urma::error::{Context, Error, ensure};
+use std::path::Path;
+use urma_chain::observation::Chain;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -27,13 +30,7 @@ pub struct PublishReport {
 }
 
 pub(crate) fn store(path: &Path, report: &PublishReport) -> Result<(), Error> {
-    let parent = urma::config::output_parent(path);
-    let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
-    temporary.write_all(&serde_json::to_vec_pretty(report)?)?;
-    temporary.as_file().sync_all()?;
-    temporary.persist(path)?;
-    File::open(parent)?.sync_all()?;
-    Ok(())
+    urma_io::write_replace(path, &serde_json::to_vec_pretty(report)?).map_err(Error::from)
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -44,9 +41,9 @@ pub enum MempoolCheck {
 }
 
 pub fn test_accept(node: &Node, raw: &str) -> Result<MempoolCheck, Error> {
-    let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
+    let transaction = decode(raw, usize::try_from(config::STANDARD_TX_WEIGHT)? * 2)?;
     ensure!(
-        transaction.weight().to_wu() <= urma::config::STANDARD_TX_WEIGHT,
+        transaction.weight().to_wu() <= config::STANDARD_TX_WEIGHT,
         "transaction exceeds standard weight"
     );
     let acceptance = match node.call("testmempoolaccept", &[json!([raw])]) {
@@ -89,7 +86,7 @@ fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
             tracing::debug!(target: "urma_progress", "Endpoint does not provide testmempoolaccept; acceptance is unverified until submission.");
         }
     }
-    let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
+    let transaction = decode(raw, usize::try_from(config::STANDARD_TX_WEIGHT)? * 2)?;
     let txid = transaction.compute_txid();
     match node.call("sendrawtransaction", &[json!(raw)]) {
         Ok(result) => ensure!(
@@ -113,32 +110,14 @@ pub fn publish(
     approved_id: &str,
     journal: &Path,
 ) -> Result<PublishReport, Error> {
-    let id = plan.id()?;
-    ensure!(
-        approved_id == id,
-        "approval does not match exact immutable signed plan"
-    );
-    node.verify_network()?;
-    node.require_txindex()?;
-    let anchor = node.tip()?;
-    ensure!(
-        node.chain().genesis()? == plan.chain.genesis()?,
-        "publication network mismatch"
-    );
-    if journal.try_exists()? {
-        let old: PublishReport =
-            serde_json::from_slice(&urma::storage::read_bounded(journal, 1024 * 1024)?)?;
-        ensure!(old.plan_id == id, "journal belongs to another plan");
-    }
-    let mut report = PublishReport {
-        plan_id: id,
-        root_txid: plan.root_txid.clone(),
-        complete: false,
-        confirmed: false,
-        blocked_reason: String::new(),
-        transactions: Vec::new(),
-    };
-    store(journal, &report)?;
+    let (mut report, anchor) = start(
+        node,
+        plan.id()?,
+        &plan.root_txid,
+        plan.chain,
+        approved_id,
+        journal,
+    )?;
     let mut raw_transactions = Vec::new();
     for pair in &plan.records {
         raw_transactions.push(&pair.commit);
@@ -173,7 +152,7 @@ pub fn publish(
 }
 
 pub(crate) fn advance(node: &Node, raw: &str, report: &mut PublishReport) -> Result<bool, Error> {
-    let transaction: Transaction = deserialize(&hex::decode(raw)?)?;
+    let transaction = decode(raw, usize::try_from(config::STANDARD_TX_WEIGHT)? * 2)?;
     let txid = transaction.compute_txid();
     let mut presence = node.presence(txid)?;
     if matches!(presence, Presence::Missing) {
@@ -211,7 +190,7 @@ pub fn ensure_journal_distinct(plan_path: &Path, journal_path: &Path) -> Result<
             "journal must not be a hard link to immutable plan input"
         );
     } else {
-        let parent = std::fs::canonicalize(urma::config::output_parent(journal_path))?;
+        let parent = std::fs::canonicalize(urma_io::output_parent(journal_path))?;
         let name = journal_path
             .file_name()
             .context("journal filename missing")?;
@@ -221,4 +200,40 @@ pub fn ensure_journal_distinct(plan_path: &Path, journal_path: &Path) -> Result<
         );
     }
     Ok(())
+}
+
+pub(crate) fn start(
+    node: &Node,
+    id: String,
+    root_txid: &str,
+    chain: Chain,
+    approved_id: &str,
+    journal: &Path,
+) -> Result<(PublishReport, (u64, String)), Error> {
+    ensure!(
+        approved_id == id,
+        "approval does not match exact immutable signed plan"
+    );
+    node.verify_network()?;
+    node.require_txindex()?;
+    let anchor = node.tip()?;
+    ensure!(
+        node.chain().genesis()? == chain.genesis()?,
+        "publication network mismatch"
+    );
+    if journal.try_exists()? {
+        let old: PublishReport =
+            serde_json::from_slice(&storage::read_bounded(journal, 1024 * 1024)?)?;
+        ensure!(old.plan_id == id, "journal belongs to another plan");
+    }
+    let report = PublishReport {
+        plan_id: id,
+        root_txid: root_txid.to_owned(),
+        complete: false,
+        confirmed: false,
+        blocked_reason: String::new(),
+        transactions: Vec::new(),
+    };
+    store(journal, &report)?;
+    Ok((report, anchor))
 }

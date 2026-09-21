@@ -5,12 +5,10 @@ use clap::{Subcommand, ValueEnum};
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
 use std::path::PathBuf;
-use urma::error::{Context, Error, bail};
-use urma::{
-    format::{PublicRecord, Urma},
-    publication::{self, Chain},
-    storage,
-};
+use urma_chain::observation::Chain;
+use urma_core::format::{PublicRecord, Urma};
+use urma_runtime::error::{Context, Error, bail};
+use urma_runtime::storage;
 use urma_wallet::wallet::{FeeBudget, FeeRate};
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -165,9 +163,14 @@ fn tools(command: PublicTools) -> Result<Value, Error> {
                 rate: FeeRate(NonZeroU64::new(fee_rate).context("fee rate must be positive")?),
                 maximum_base_units: max_fee,
             };
-            let plan = urma_workflows::publication::prepare_public(
-                &record, &signer, funding, chain, budget,
-            )?;
+            let plan = urma_runtime::publication::prepare_signed_bytes(
+                &record.encode()?,
+                &signer,
+                funding,
+                chain,
+                budget,
+            )?
+            .plan;
             storage::write_new(&output, &serde_json::to_vec_pretty(&plan)?)?;
             Ok(json!({"status":"prepared","commit_signed":true,"broadcast":false,"plan":plan}))
         }
@@ -178,11 +181,11 @@ fn tools(command: PublicTools) -> Result<Value, Error> {
             let reveal = hex::decode(
                 std::str::from_utf8(&storage::read_bounded(&reveal, 8_000_000)?)?.trim(),
             )?;
-            let (record, verified) = publication::verify(&commit, &reveal)?;
+            let verified = urma_profiles::wire::verify_bytes(&commit, &reveal)?;
             let transaction: bitcoin::Transaction = deserialize(&reveal)?;
             Ok(
-                json!({"status":"valid","author":verified.author.to_string(),"txid":transaction.compute_txid().to_string(),
-                "kind":record.kind().byte(),"record_hex":hex::encode(verified.record),"chain_inclusion_checked":false}),
+                json!({"status":"valid","author":verified.author().0.to_string(),"txid":transaction.compute_txid().to_string(),
+                "kind":verified.record().kind().byte(),"record_hex":hex::encode(verified.raw_record()),"chain_inclusion_checked":false}),
             )
         }
     }

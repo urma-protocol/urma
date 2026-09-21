@@ -5,19 +5,21 @@
     unused_variables,
     unused_assignments
 )]
+use crate::common_cli::export_recovery;
 use crate::{config, files_cli, litecoin_cli, print_report};
 use bitcoin::{Network, Txid};
 use clap::{Args, Subcommand, ValueEnum};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
-use urma::error::{Context, Error, bail, ensure};
-use urma::{
+use urma_runtime::error::{Context, Error, bail, ensure};
+use urma_runtime::journal::{self, Plan};
+use urma_runtime::{
     backend::{self, DirectorySource, Family},
+    bitcoin_rpc::{self as transport, Node},
     container,
     source::Source,
     storage,
-    transport::{self, Node, Plan},
 };
 use zeroize::Zeroizing;
 
@@ -95,9 +97,9 @@ pub(crate) enum Command {
 fn read_plan(path: &std::path::Path) -> Result<Plan, Error> {
     let plan = serde_json::from_slice(&storage::read_bounded(
         path,
-        12 * urma::config::Limits::CONTAINER_BYTES,
+        12 * urma_runtime::config::Limits::CONTAINER_BYTES,
     )?)?;
-    transport::validate_plan(&plan)?;
+    journal::validate_plan(&plan)?;
     Ok(plan)
 }
 
@@ -130,16 +132,6 @@ pub(crate) fn run(command: Command) -> Result<(), Error> {
     Ok(())
 }
 
-fn print_recovery(scan: backend::Recovery, output: &std::path::Path) -> Result<(), Error> {
-    let exported = backend::export(scan, output)?;
-    print_report(exported.report)?;
-    ensure!(
-        exported.complete,
-        "recovery incomplete or invalid objects; see JSON report"
-    );
-    Ok(())
-}
-
 #[derive(Clone, Copy, ValueEnum)]
 enum PrivateType {
     Opaque,
@@ -148,7 +140,7 @@ enum PrivateType {
     Audio,
     Video,
 }
-impl From<PrivateType> for urma::format::ContentType {
+impl From<PrivateType> for urma_core::format::ContentType {
     fn from(value: PrivateType) -> Self {
         match value {
             PrivateType::Opaque => Self::Opaque,
@@ -383,7 +375,7 @@ fn broadcast_source(args: BroadcastSourceArgs) -> Result<(), Error> {
         allow_unconfirmed_commit,
     } = args;
 
-    print_report(urma::relay::broadcast_plan(
+    print_report(urma_runtime::relay::broadcast_plan(
         &source,
         network.into(),
         &read_plan(&journal)?,
@@ -418,7 +410,7 @@ fn store_local(args: StoreLocalArgs) -> Result<(), Error> {
 
     let records = container::unpack(&storage::read_bounded(
         &input,
-        urma::config::Limits::CONTAINER_BYTES,
+        urma_runtime::config::Limits::CONTAINER_BYTES,
     )?)?;
     print_report(
         json!({"status": "stored", "observation": backend::store_directory(&directory, &records)?}),
@@ -438,8 +430,8 @@ fn recover_local(args: RecoverLocalArgs) -> Result<(), Error> {
         !output_dir.try_exists()?,
         "recovery requires a new output directory"
     );
-    let key = storage::read_key(&key)?;
-    print_recovery(
+    let key = urma_workflows::archive::read_key(&key)?;
+    export_recovery(
         backend::recover(&DirectorySource { path: &directory }, &key)?,
         &output_dir,
     )?;
@@ -453,7 +445,7 @@ pub(crate) fn keygen(args: KeygenArgs) -> Result<(), Error> {
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(urma::config::output_parent(&key))?;
+        .create(urma_io::output_parent(&key))?;
     storage::write_new(&key, container::random_secret()?.as_ref())?;
     print_report(json!({"status": "created", "key_file": key}))?;
 
@@ -468,10 +460,10 @@ fn seal(args: SealArgs) -> Result<(), Error> {
         content_type,
     } = args;
 
-    let key = storage::read_key(&key)?;
+    let key = urma_workflows::archive::read_key(&key)?;
     let bytes = Zeroizing::new(storage::read_bounded(
         &input,
-        urma::config::Limits::INPUT_BYTES,
+        urma_runtime::config::Limits::INPUT_BYTES,
     )?);
     let secret = urma_identity::keys::RecoverySecret::import(key);
     let records = urma_profiles::private::seal_file(
@@ -491,10 +483,10 @@ fn seal(args: SealArgs) -> Result<(), Error> {
 fn open(args: OpenArgs) -> Result<(), Error> {
     let OpenArgs { key, input, output } = args;
 
-    let key = storage::read_key(&key)?;
+    let key = urma_workflows::archive::read_key(&key)?;
     let records = container::unpack(&storage::read_bounded(
         &input,
-        urma::config::Limits::CONTAINER_BYTES,
+        urma_runtime::config::Limits::CONTAINER_BYTES,
     )?)?;
     let bytes = container::open(&key, &records)?;
     storage::write_new(&output, &bytes)?;
@@ -525,10 +517,10 @@ fn prepare(args: PrepareArgs) -> Result<(), Error> {
         "journal already exists; inspect or broadcast it"
     );
     let node = rpc.node(Some(&wallet))?;
-    let key = storage::read_key(&key)?;
+    let key = urma_workflows::archive::read_key(&key)?;
     let bytes = Zeroizing::new(storage::read_bounded(
         &input,
-        urma::config::Limits::INPUT_BYTES,
+        urma_runtime::config::Limits::INPUT_BYTES,
     )?);
     let secret = urma_identity::keys::RecoverySecret::import(key);
     let records = urma_profiles::private::seal_file(
@@ -556,7 +548,7 @@ fn prepare(args: PrepareArgs) -> Result<(), Error> {
         plan.network == Network::from(rpc.network).to_string(),
         "prepared network mismatch"
     );
-    let details = transport::validate_plan(&plan)?;
+    let details = journal::validate_plan(&plan)?;
     for report in source_report.iter() {
         let mut sidecar = journal.as_os_str().to_os_string();
         sidecar.push(".funding.json");
@@ -576,7 +568,7 @@ fn prepare(args: PrepareArgs) -> Result<(), Error> {
 fn inspect(args: InspectArgs) -> Result<(), Error> {
     let InspectArgs { journal } = args;
 
-    print_report(transport::validate_plan(&read_plan(&journal)?)?)?;
+    print_report(journal::validate_plan(&read_plan(&journal)?)?)?;
 
     Ok(())
 }
@@ -592,7 +584,7 @@ fn broadcast(args: BroadcastArgs) -> Result<(), Error> {
     print_report(transport::broadcast_plan(
         &node,
         &read_plan(&journal)?,
-        urma::config::RevealSelection::All,
+        urma_runtime::config::RevealSelection::All,
     )?)?;
 
     Ok(())
@@ -637,10 +629,10 @@ fn publish(args: PublishArgs) -> Result<(), Error> {
     );
     ensure!(!journal.try_exists()?, "journal already exists; use resume");
     let node = publisher.rpc.node(Some(&publisher.wallet))?;
-    let key = storage::read_key(&key)?;
+    let key = urma_workflows::archive::read_key(&key)?;
     let bytes = Zeroizing::new(storage::read_bounded(
         &input,
-        urma::config::Limits::INPUT_BYTES,
+        urma_runtime::config::Limits::INPUT_BYTES,
     )?);
     let secret = urma_identity::keys::RecoverySecret::import(key);
     let records = urma_profiles::private::seal_file(
@@ -698,12 +690,12 @@ fn recover(args: RecoverArgs) -> Result<(), Error> {
         !output_dir.try_exists()?,
         "recovery requires a new output directory"
     );
-    let key = storage::read_key(&key)?;
+    let key = urma_workflows::archive::read_key(&key)?;
     let recovered = match source {
         Some(url) => {
             let source = Source::connect(&url, &rpc.network.into())?;
             backend::recover(
-                &urma::source::ExplorerRecords {
+                &urma_runtime::source::ExplorerRecords {
                     source: &source,
                     start_height,
                 },
@@ -718,7 +710,7 @@ fn recover(args: RecoverArgs) -> Result<(), Error> {
             &key,
         )?,
     };
-    print_recovery(recovered, &output_dir)?;
+    export_recovery(recovered, &output_dir)?;
 
     Ok(())
 }

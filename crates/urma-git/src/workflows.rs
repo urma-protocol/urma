@@ -15,8 +15,8 @@ use std::{
     io::Seek,
     path::{Path, PathBuf},
 };
-use urma::multipart::RecoveryLimits;
 use urma_identity::identity::IdentitySigner;
+use urma_runtime::multipart::RecoveryLimits;
 use urma_runtime::{
     disk_plan::DiskPlan, disk_publish, node::Node, plan::PlanLimits, publish, recovery,
 };
@@ -81,8 +81,14 @@ pub fn prepare_snapshot(
         let (_, _, existing) = GitPlan::load_with_publication(directory)?;
         let first = existing.record(0)?;
         let (outpoint, _) = first.funding.prevout()?;
-        if existing.chain.genesis().map_err(urma::error::Error::from)?
-            == node.chain().genesis().map_err(urma::error::Error::from)?
+        if existing
+            .chain
+            .genesis()
+            .map_err(urma_runtime::error::Error::from)?
+            == node
+                .chain()
+                .genesis()
+                .map_err(urma_runtime::error::Error::from)?
             && existing.author == signer.public_key().inner.x_only_public_key().0.to_string()
             && first.fee_rate == budget.fee_rate
             && existing.maximum_fee <= budget.max_fee
@@ -97,7 +103,7 @@ pub fn prepare_snapshot(
     }
     let staging = tempfile::Builder::new()
         .prefix(".urma-sign-")
-        .tempdir_in(urma::config::output_parent(directory))?;
+        .tempdir_in(urma_io::output_parent(directory))?;
     let fresh = staging.path().join("plan");
     workspace::copy_snapshot(directory, &fresh)?;
     let report = sign_snapshot(node, signer, &fresh, limits, budget)?;
@@ -405,6 +411,6 @@ pub fn parse_root(node: &Node, text: &str) -> Result<Txid, Error> {
         }
     };
     txid.parse()
-        .map_err(urma::error::Error::from)
+        .map_err(urma_runtime::error::Error::from)
         .map_err(Error::from)
 }

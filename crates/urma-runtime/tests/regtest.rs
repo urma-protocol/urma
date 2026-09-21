@@ -140,7 +140,7 @@ fn signed_publication_restart_reorg_and_recovery() {
     let mut recovered = recover(
         &fresh,
         root_txid,
-        urma::multipart::RecoveryLimits {
+        urma_runtime::multipart::RecoveryLimits {
             max_payload_bytes: payload.len() as u64,
             max_nodes: 10,
         },
@@ -158,7 +158,7 @@ fn signed_publication_restart_reorg_and_recovery() {
         recover(
             &fresh,
             root_txid,
-            urma::multipart::RecoveryLimits {
+            urma_runtime::multipart::RecoveryLimits {
                 max_payload_bytes: payload.len() as u64,
                 max_nodes: 10
             },

@@ -1,3 +1,5 @@
+use crate::error::{Context, Error, ensure};
+use crate::storage;
 use crate::{disk_plan::DiskPlan, planner::Planner};
 use bitcoin::{Txid, hashes::Hash};
 use sha2::{Digest, Sha256};
@@ -6,7 +8,6 @@ use std::{
     io::{Read, Seek, Write},
     path::Path,
 };
-use urma::error::{Context, Error, ensure};
 use urma_core::multipart::{
     ChildReference, DataPart, Geometry, LeafManifest, MultipartRecord, RootManifest,
 };
@@ -25,8 +26,8 @@ pub(crate) struct DiskWriter<'a, S> {
 
 impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
     pub(crate) fn new(directory: &'a Path, planner: Planner<'a, S>) -> Result<Self, Error> {
-        use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
-        std::fs::DirBuilder::new().mode(0o700).create(directory)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        urma_io::create_private_directory(directory)?;
         let records = OpenOptions::new()
             .write(true)
             .create_new(true)
@@ -146,7 +147,7 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
             hex::encode(self.index_hash.finalize()),
             self.directory,
         );
-        urma::storage::write_new(
+        storage::write_new(
             &self.directory.join("plan.json"),
             &serde_json::to_vec_pretty(&plan)?,
         )?;

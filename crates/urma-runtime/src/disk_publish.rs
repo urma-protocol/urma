@@ -1,15 +1,14 @@
+use crate::config;
 use crate::disk_journal;
+use crate::error::{Context, Error, ensure};
+use crate::publication::PublicPlan;
+use crate::transaction::decode;
 use crate::{
     disk_plan::DiskPlan,
     node::{Node, Presence},
-    publish::{PublishReport, advance, store},
+    publish::{PublishReport, advance, start, store},
 };
-use bitcoin::{Transaction, consensus::deserialize};
 use std::path::Path;
-use urma::{
-    error::{Context, Error, ensure},
-    publication::PublicPlan,
-};
 use urma_core::multipart::{MultipartRecord, VerifiedRecord};
 
 pub fn publish(
@@ -20,32 +19,14 @@ pub fn publish(
 ) -> Result<PublishReport, Error> {
     plan.validate()?;
     disk_journal::guard(plan, journal)?;
-    let id = plan.id()?;
-    ensure!(
-        approved_id == id,
-        "approval does not match exact immutable signed plan"
-    );
-    node.verify_network()?;
-    node.require_txindex()?;
-    let anchor = node.tip()?;
-    ensure!(
-        node.chain().genesis()? == plan.chain.genesis()?,
-        "publication network mismatch"
-    );
-    if journal.try_exists()? {
-        let old: PublishReport =
-            serde_json::from_slice(&urma::storage::read_bounded(journal, 1024 * 1024)?)?;
-        ensure!(old.plan_id == id, "journal belongs to another plan");
-    }
-    let mut report = PublishReport {
-        plan_id: id,
-        root_txid: plan.root_txid.clone(),
-        complete: false,
-        confirmed: false,
-        blocked_reason: String::new(),
-        transactions: Vec::new(),
-    };
-    store(journal, &report)?;
+    let (mut report, anchor) = start(
+        node,
+        plan.id()?,
+        &plan.root_txid,
+        plan.chain,
+        approved_id,
+        journal,
+    )?;
     reconcile(node, plan, journal, &mut report)?;
     ensure!(
         node.block_hash(anchor.0)?.to_string() == anchor.1,
@@ -137,8 +118,14 @@ fn known(report: &PublishReport) -> Result<bool, Error> {
 }
 
 fn record(pair: &PublicPlan) -> Result<MultipartRecord, Error> {
-    let commit: Transaction = deserialize(&hex::decode(&pair.commit)?)?;
-    let reveal: Transaction = deserialize(&hex::decode(&pair.reveal)?)?;
+    let commit = decode(
+        &pair.commit,
+        usize::try_from(config::STANDARD_TX_WEIGHT)? * 2,
+    )?;
+    let reveal = decode(
+        &pair.reveal,
+        usize::try_from(config::STANDARD_TX_WEIGHT)? * 2,
+    )?;
     let record = VerifiedRecord::verify(reveal.compute_txid(), &reveal, &commit)?;
     Ok(record.decode()?)
 }

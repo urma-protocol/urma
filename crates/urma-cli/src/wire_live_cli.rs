@@ -1,15 +1,13 @@
-use crate::{approve_publication, key_cli::VaultAccess, node_cli::NodeArgs, print_report};
+use crate::common_cli::publish_plan;
+use crate::{key_cli::VaultAccess, node_cli::NodeArgs};
 use bitcoin::{Block, BlockHash, Transaction, Txid, XOnlyPublicKey};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use urma::error::Error;
 use urma_core::format::PublicRecord;
-use urma_runtime::{
-    node::Node,
-    plan::{PlanLimits, PublicationPlan},
-};
-use urma_wire::{index::Index, reader::Reader};
+use urma_runtime::error::Error;
+use urma_runtime::{node::Node, plan::PlanLimits};
+use urma_wire::{Error as WireError, SyncError as WireSyncError, index::Index, reader::Reader};
 
 #[derive(Args)]
 pub(crate) struct PlanArgs {
@@ -89,45 +87,77 @@ pub(crate) fn plan(args: PlanArgs) -> Result<Value, Error> {
     )
 }
 pub(crate) fn publish(args: PublishArgs) -> Result<Value, Error> {
-    urma_runtime::publish::ensure_journal_distinct(&args.plan, &args.journal)?;
-    let plan = PublicationPlan::load(&args.plan)?;
-    let node = args.node.connect()?;
-    let id = plan.id()?;
-    approve_publication("Publish public Wire text", &id, plan.total_fee, args.yes)?;
-    let report = urma_runtime::publish::publish(&node, &plan, &id, &args.journal)?;
-    print_report(serde_json::to_value(&report)?)?;
-    urma::error::ensure!(
-        report.complete,
-        "publication paused; inspect report and resume exact plan"
-    );
-    Ok(Value::Null)
+    publish_plan(
+        &args.node,
+        &args.plan,
+        &args.journal,
+        args.yes,
+        "Publish public Wire text",
+    )
 }
+
 pub(crate) fn index(args: IndexArgs) -> Result<Value, Error> {
     let reader = NodeReader(args.node.connect()?);
-    Ok(serde_json::to_value(urma_wire::index::sync(
-        &reader,
-        &args.index,
-        args.start_height,
-        args.max_blocks,
+    Ok(serde_json::to_value(wire_sync_result(
+        urma_wire::index::sync(&reader, &args.index, args.start_height, args.max_blocks),
     )?)?)
 }
 pub(crate) fn read(command: ReadCommand) -> Result<Value, Error> {
     match command {
         ReadCommand::Feed { index, limit } => {
-            let index = Index::load(&index)?;
+            let index = wire_result(Index::load(&index))?;
             Ok(
-                json!({"genesis":index.genesis,"records":urma_wire::view::records(&index, limit)?,"start_height":index.start,"locally_cached":true}),
+                json!({"genesis":index.genesis,"records":wire_result(urma_wire::view::records(&index, limit))?,"start_height":index.start,"locally_cached":true}),
             )
         }
-        ReadCommand::Record { index, txid } => urma_wire::view::record(&Index::load(&index)?, txid),
-        ReadCommand::Identity { index, author } => {
-            urma_wire::view::identity(&Index::load(&index)?, author)
-        }
+        ReadCommand::Record { index, txid } => wire_result(urma_wire::view::record(
+            &wire_result(Index::load(&index))?,
+            txid,
+        )),
+        ReadCommand::Identity { index, author } => wire_result(urma_wire::view::identity(
+            &wire_result(Index::load(&index))?,
+            author,
+        )),
+    }
+}
+
+fn wire_result<T>(result: Result<T, WireError>) -> Result<T, Error> {
+    result.map_err(wire_error)
+}
+
+fn wire_error(cause: WireError) -> Error {
+    match cause {
+        WireError::Invalid(message) => Error::Invalid(message),
+        WireError::Capacity(message) => Error::Capacity(message),
+        WireError::Missing(message) => Error::Missing(message),
+        WireError::Protocol(cause) => Error::Protocol(cause),
+        WireError::Block(cause) => Error::from(cause),
+        WireError::Io(cause) => Error::Io(cause),
+        WireError::Json(cause) => Error::Json(cause),
+        WireError::Hex(cause) => Error::Hex(cause),
+        WireError::Integer(cause) => Error::Integer(cause),
+        WireError::Hash(cause) => Error::Hash(cause),
+        WireError::Secp256k1(cause) => Error::Secp256k1(cause),
+        WireError::Persist(cause) => Error::Persist(cause),
+        WireError::Context { message, cause } => Error::Context {
+            message,
+            cause: Box::new(wire_error(*cause)),
+        },
+    }
+}
+
+fn wire_sync_result<T>(result: Result<T, WireSyncError<Error>>) -> Result<T, Error> {
+    match result {
+        Ok(value) => Ok(value),
+        Err(WireSyncError::Wire(cause)) => wire_result(Err(cause)),
+        Err(WireSyncError::Source(cause)) => Err(cause),
     }
 }
 
 struct NodeReader(Node);
 impl Reader for NodeReader {
+    type Error = Error;
+
     fn genesis(&self) -> Result<BlockHash, Error> {
         Ok(self.0.chain().genesis()?.0)
     }

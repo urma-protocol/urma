@@ -1,3 +1,5 @@
+use crate::error::{Context, Error, ensure};
+use crate::{config, transaction::decode};
 use crate::{
     endpoints::{self, PublicEndpoint},
     transport::Pool,
@@ -7,8 +9,10 @@ use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::path::PathBuf;
-use urma::error::{Context, Error, ensure};
-use urma_chain::observation::Chain;
+use urma_chain::{
+    observation::Chain,
+    validation::{BlockValidationError, validate_block_integrity},
+};
 use urma_identity::identity::IdentitySigner;
 use urma_wallet::funding::Funding;
 
@@ -121,8 +125,13 @@ impl Node {
         let block: bitcoin::Block = deserialize(&hex::decode(
             value.as_str().context("missing block bytes")?,
         )?)?;
-        ensure!(block.block_hash() == hash, "RPC block hash mismatch");
-        ensure!(block.check_merkle_root(), "RPC block merkle root mismatch");
+        validate_block_integrity(&block, hash).map_err(|cause| match cause {
+            BlockValidationError::HashMismatch => Error::Invalid("RPC block hash mismatch".into()),
+            BlockValidationError::MerkleRootMismatch => {
+                Error::Invalid("RPC block merkle root mismatch".into())
+            }
+            cause => Error::from(cause),
+        })?;
         Ok(block)
     }
 
@@ -180,9 +189,8 @@ impl Node {
 
     pub fn transaction(&self, txid: Txid) -> Result<Transaction, Error> {
         let raw = self.call("getrawtransaction", &[json!(txid), json!(false)])?;
-        let transaction: Transaction = deserialize(&hex::decode(
-            raw.as_str().context("missing raw transaction")?,
-        )?)?;
+        let raw = raw.as_str().context("missing raw transaction")?;
+        let transaction = decode(raw, raw.len())?;
         ensure!(
             transaction.compute_txid() == txid,
             "RPC transaction hash mismatch"
@@ -206,7 +214,7 @@ impl Node {
             }
             Err(error) => return Err(error),
         };
-        if urma::config::confirmations(&value)? <= 0 {
+        if config::confirmations(&value)? <= 0 {
             let mempool = self.call("getrawmempool", &[])?;
             return Ok(
                 if mempool
@@ -304,7 +312,7 @@ impl Node {
             if unspent.is_null() {
                 continue;
             }
-            let confirmations = urma::config::confirmations(&unspent)?;
+            let confirmations = config::confirmations(&unspent)?;
             if confirmations < 1 || (unspent["coinbase"] == true && confirmations < 100) {
                 continue;
             }

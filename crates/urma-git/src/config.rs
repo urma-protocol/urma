@@ -34,7 +34,7 @@ pub fn staging_parent(requested: &CloneDestination) -> Result<PathBuf, Error> {
                     "clone destination already exists; choose another directory".into(),
                 ));
             }
-            Ok(urma::config::output_parent(path).to_path_buf())
+            Ok(urma_io::output_parent(path).to_path_buf())
         }
         None => Ok(std::env::current_dir()?),
     }

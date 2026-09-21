@@ -1,20 +1,18 @@
+use crate::bitcoin_rpc::supported_network;
 use crate::config::{BITCOIN_MAX_FEE_RATE, BITCOIN_MAX_FEE_SATS, BITCOIN_RETURN_SATS, Limits};
+use crate::container;
 use crate::error::{Context, Error, ensure};
-use crate::format::Urma;
-use crate::transport::supported_network;
-use crate::{container, envelope};
+use crate::transaction::decode;
 use bitcoin::{
     Address, OutPoint, ScriptBuf, Sequence, Transaction, TxOut, Witness, absolute,
-    consensus::deserialize,
-    hashes::Hash,
-    secp256k1::{Message, Secp256k1},
-    sighash::{EcdsaSighashType, SighashCache},
-    transaction::Version,
+    sighash::EcdsaSighashType, transaction::Version,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{collections::BTreeSet, str::FromStr};
-pub use urma_wallet::funding::Funding;
+use urma_core::envelope;
+use urma_core::format::Urma;
+use urma_wallet::funding::Funding;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -35,8 +33,7 @@ pub struct Plan {
 }
 
 pub(crate) fn decode_transaction(raw: &str) -> Result<Transaction, Error> {
-    ensure!(raw.len() <= 8_000_000, "raw transaction exceeds byte limit");
-    deserialize(&hex::decode(raw)?).context("decode transaction")
+    decode(raw, 8_000_000)
 }
 
 fn validate_shape(tx: &Transaction) -> Result<(), Error> {
@@ -191,7 +188,6 @@ fn verify_funding_signature(
     previous: &TxOut,
     require_signed_commit: bool,
 ) -> Result<(), Error> {
-    let secp = Secp256k1::verification_only();
     if require_signed_commit {
         let funding_witness: Vec<_> = commit.input[0].witness.iter().collect();
         ensure!(
@@ -204,22 +200,21 @@ fn verify_funding_signature(
             "commit must sign all outputs"
         );
         let public = bitcoin::PublicKey::from_slice(funding_witness[1])?;
-        ensure!(
-            ScriptBuf::new_p2wpkh(&public.wpubkey_hash()?) == previous.script_pubkey,
-            "funding key does not match previous output"
-        );
-        let sighash = SighashCache::new(commit).p2wpkh_signature_hash(
-            0,
-            &previous.script_pubkey,
-            previous.value,
-            EcdsaSighashType::All,
-        )?;
-        secp.verify_ecdsa(
-            &Message::from_digest(sighash.to_byte_array()),
-            &signature.signature,
-            &public.inner,
-        )
-        .context("invalid commit signature")?;
+        let compressed = bitcoin::CompressedPublicKey::try_from(public)?;
+        urma_wallet::signing::verify_p2wpkh_signature(commit, 0, previous, &signature, &compressed)
+            .map_err(|cause| match cause {
+                urma_wallet::signing::FundingSignatureError::SighashType => {
+                    Error::Invalid("commit must sign all outputs".into())
+                }
+                urma_wallet::signing::FundingSignatureError::PublicKeyMismatch => {
+                    Error::Invalid("funding key does not match previous output".into())
+                }
+                urma_wallet::signing::FundingSignatureError::Sighash(cause) => cause.into(),
+                urma_wallet::signing::FundingSignatureError::Signature(cause) => Error::Context {
+                    message: "invalid commit signature".into(),
+                    cause: Box::new(cause.into()),
+                },
+            })?;
     } else {
         ensure!(
             commit.input[0].witness.is_empty(),

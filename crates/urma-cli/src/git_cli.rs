@@ -5,8 +5,8 @@ use crate::{
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::{Path, PathBuf};
-use urma::error::Error;
 use urma_git::{inventory::Limits, workflows};
+use urma_runtime::error::Error;
 use urma_runtime::plan::PlanLimits;
 
 #[derive(Args)]

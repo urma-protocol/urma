@@ -1,12 +1,11 @@
-use bitcoin::{BlockHash, Txid, hashes::Hash};
+use bitcoin::{BlockHash, hashes::Hash};
 use rand::{SeedableRng, rngs::StdRng};
 use std::{num::NonZeroU64, process::Command};
-use urma_chain::observation::{BlockRef, ChainId, InclusionTrust, Observation, Placement};
+use urma_chain::observation::ChainId;
 use urma_core::{container, format::ContentType};
 use urma_identity::keys::RecoverySecret;
 use urma_profiles::private::{CapturedOriginal, FileOriginal, seal_capture, seal_file};
 use urma_wallet::wallet::{FeeBudget, FeeRate, WalletError};
-use urma_workflows::publication::{JournalError, ResumeAction, reconcile};
 use zeroize::Zeroizing;
 
 #[test]
@@ -45,7 +44,7 @@ fn private_adapters_share_the_canonical_codec_with_injected_entropy() {
 }
 
 #[test]
-fn budgets_and_reorg_observations_cannot_imply_success() {
+fn budgets_enforce_fee_ceiling_and_checked_arithmetic() {
     let chain = ChainId(BlockHash::from_byte_array([1; 32]));
     let budget = FeeBudget {
         chain,
@@ -55,32 +54,6 @@ fn budgets_and_reorg_observations_cannot_imply_success() {
     assert_eq!(budget.quote(50).unwrap(), 100);
     assert!(matches!(budget.quote(51), Err(WalletError::BudgetExceeded)));
     assert!(matches!(budget.quote(u64::MAX), Err(WalletError::Overflow)));
-    let block = BlockRef {
-        height: 5,
-        hash: BlockHash::from_byte_array([2; 32]),
-    };
-    let txid = Txid::from_byte_array([3; 32]);
-    let mut observation = Observation {
-        chain,
-        txid,
-        tip: block,
-        placement: Placement::Orphaned(block),
-        trust: InclusionTrust::ProviderClaim,
-    };
-    assert_eq!(
-        reconcile(chain, txid, &observation).unwrap(),
-        ResumeAction::ReconcileReorg
-    );
-    observation.placement = Placement::Unknown;
-    assert_eq!(
-        reconcile(chain, txid, &observation).unwrap(),
-        ResumeAction::RecheckMissing
-    );
-    let other = ChainId(BlockHash::from_byte_array([4; 32]));
-    assert!(matches!(
-        reconcile(other, txid, &observation),
-        Err(JournalError::ObservationMismatch)
-    ));
 }
 
 #[test]

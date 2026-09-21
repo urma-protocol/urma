@@ -1,16 +1,15 @@
-use crate::commitment::{PreparedReveal, transaction};
+use crate::commitment::PreparedReveal;
 use crate::config::Limits;
 use crate::config::MempoolPresence;
 use crate::config::{BITCOIN_MAX_FEE_RATE, BITCOIN_MAX_FEE_SATS, BITCOIN_RETURN_SATS};
 use crate::config::{RevealSelection, RpcScope, TxPresence};
 use crate::error::{Context, Error, bail, ensure};
-use crate::format::Urma;
 use crate::journal::decode_transaction;
-pub use crate::journal::{Funding, Plan, validate_plan};
+use crate::journal::{Plan, validate_plan};
+use crate::transaction::{decode, transaction};
 use crate::{
     backend::{self, Evidence, Family, Locator, Observation, RecordSource},
     container::{self, PrivateObject},
-    envelope,
 };
 use bitcoin::{
     Address, Amount, Block, BlockHash, Network, OutPoint, Transaction, TxOut, Txid, Witness,
@@ -21,6 +20,10 @@ use bitcoincore_rpc::{Auth, Client, RpcApi};
 use rand::rngs::OsRng;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, path::Path, str::FromStr};
+use urma_chain::validation;
+use urma_core::envelope;
+use urma_core::format::Urma;
+use urma_wallet::funding::Funding;
 
 pub struct Node {
     rpc: Client,
@@ -123,7 +126,7 @@ impl Node {
     }
 
     fn submit(&self, raw: &str) -> Result<Txid, Error> {
-        let tx: Transaction = deserialize(&hex::decode(raw)?)?;
+        let tx = decode(raw, raw.len())?;
         let txid = tx.compute_txid();
         match self.confirmations(txid)? {
             TxPresence::Observed(n) if n < 0 => {
@@ -240,6 +243,7 @@ pub fn prepare_with_funding(
             record,
             &return_address.script_pubkey(),
             fee_rate,
+            BITCOIN_RETURN_SATS,
             &mut OsRng,
         )?);
     }
@@ -466,20 +470,7 @@ pub fn publish_plan(
 }
 
 pub fn validate_block(block: &Block, expected_hash: BlockHash) -> Result<(), Error> {
-    ensure!(block.block_hash() == expected_hash, "block hash mismatch");
-    ensure!(
-        block.check_merkle_root(),
-        "transaction Merkle root mismatch"
-    );
-    ensure!(
-        block.check_witness_commitment(),
-        "witness commitment mismatch"
-    );
-    block
-        .header
-        .validate_pow(block.header.target())
-        .context("block proof of work")?;
-    Ok(())
+    validation::validate_block(block, expected_hash).map_err(Error::from)
 }
 
 pub fn validate_block_for_network(
@@ -487,15 +478,7 @@ pub fn validate_block_for_network(
     expected_hash: BlockHash,
     network: Network,
 ) -> Result<(), Error> {
-    ensure!(
-        matches!(network, Network::Regtest | Network::Testnet4),
-        "only regtest and testnet4 are supported"
-    );
-    ensure!(
-        block.header.target() <= network.params().max_attainable_target,
-        "block target exceeds network proof-of-work limit"
-    );
-    validate_block(block, expected_hash)
+    validation::validate_block_for_network(block, expected_hash, network).map_err(Error::from)
 }
 
 pub fn collect_records(
@@ -670,7 +653,7 @@ fn sign_commit(
         .as_str()
         .context("missing signed commit")?
         .to_owned();
-    let commit_tx: Transaction = deserialize(&hex::decode(&commit)?)?;
+    let commit_tx = decode(&commit, commit.len())?;
     Ok(commit_tx)
 }
 fn validate_preparation(
@@ -712,7 +695,13 @@ fn fund_commit(
     fee_rate: u64,
     reveal_fee_sats: u64,
 ) -> Result<(Transaction, u64), Error> {
-    let mut commit_tx = transaction(funding_outpoint, &return_address.script_pubkey());
+    let mut commit_tx = transaction(
+        funding_outpoint,
+        TxOut {
+            value: Amount::from_sat(BITCOIN_RETURN_SATS),
+            script_pubkey: return_address.script_pubkey(),
+        },
+    );
     commit_tx.output = outputs.clone();
     commit_tx.output.push(TxOut {
         value: Amount::ZERO,

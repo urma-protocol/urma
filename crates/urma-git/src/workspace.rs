@@ -121,7 +121,7 @@ pub fn snapshot(
             }
         }
     }
-    let parent = urma::config::output_parent(directory);
+    let parent = urma_io::output_parent(directory);
     let staging = tempfile::Builder::new()
         .prefix(".urma-prepare-")
         .tempdir_in(parent)?;
@@ -173,7 +173,7 @@ pub fn replace(fresh: &Path, directory: &Path) -> Result<(), Error> {
     };
     rustix::fs::renameat_with(rustix::fs::CWD, fresh, rustix::fs::CWD, directory, flags)
         .map_err(std::io::Error::from)?;
-    File::open(urma::config::output_parent(directory))?.sync_all()?;
+    File::open(urma_io::output_parent(directory))?.sync_all()?;
     Ok(())
 }
 

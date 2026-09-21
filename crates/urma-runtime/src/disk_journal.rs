@@ -1,3 +1,4 @@
+use crate::error::{Error, ensure};
 use crate::{
     disk_plan::DiskPlan,
     node::Node,
@@ -8,7 +9,6 @@ use std::{
     io::Write,
     path::Path,
 };
-use urma::error::{Error, ensure};
 
 pub(crate) fn guard(plan: &DiskPlan, journal: &Path) -> Result<(), Error> {
     let observations = journal.with_extension("observations.jsonl");
@@ -50,6 +50,6 @@ pub(crate) fn observe(node: &Node, journal: &Path, report: &PublishReport) -> Re
     bytes.push(b'\n');
     file.write_all(&bytes)?;
     file.sync_all()?;
-    File::open(urma::config::output_parent(&path))?.sync_all()?;
+    File::open(urma_io::output_parent(&path))?.sync_all()?;
     Ok(())
 }

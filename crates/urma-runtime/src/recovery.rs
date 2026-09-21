@@ -1,13 +1,15 @@
+use crate::multipart;
 use crate::node::{Node, Presence};
-use bitcoin::{Transaction, Txid, consensus::serialize};
-use std::{collections::BTreeMap, fs::File, io::Write, os::unix::fs::DirBuilderExt, path::Path};
-use urma::{
+use crate::storage;
+use crate::{
     error::{Context, Error, ensure},
     multipart::{
         FetchError, MultipartSource, RecordRequest, RecoveredObject, RecoveryError, RecoveryLimits,
         VerifiedRecord,
     },
 };
+use bitcoin::{Transaction, Txid, consensus::serialize};
+use std::{collections::BTreeMap, fs::File, io::Write, path::Path};
 
 #[derive(Clone, Copy)]
 enum Retention<'a> {
@@ -45,7 +47,7 @@ fn retain_transaction(directory: &Path, path: &Path, bytes: &[u8]) -> Result<(),
                 "proof transaction must be a regular file"
             );
             ensure!(
-                urma::storage::read_bounded(path, 4 * 1024 * 1024)? == bytes,
+                storage::read_bounded(path, 4 * 1024 * 1024)? == bytes,
                 "retained transaction bytes disagree"
             );
         }
@@ -151,8 +153,8 @@ fn recover_from(
     let tip = source.node.tip()?;
     let verified = retained_record(source.node, root, source.retention)?;
     let result =
-        urma::multipart::reconstruct(&verified, source, limits, scratch).map_err(|cause| {
-            match cause {
+        multipart::reconstruct(&verified, source, limits, scratch).map_err(
+            |cause| match cause {
                 RecoveryError::InvalidObject(error)
                 | RecoveryError::InvalidCandidate { cause: error, .. } => Error::Protocol(error),
                 RecoveryError::Source { cause, .. } => cause,
@@ -161,8 +163,8 @@ fn recover_from(
                     Error::Missing(format!("multipart record unavailable: {txid}"))
                 }
                 RecoveryError::Capacity(message) => Error::Capacity(message),
-            }
-        })?;
+            },
+        )?;
     ensure!(
         source.node.block_hash(tip.0)?.to_string() == tip.1,
         "chain changed during reconstruction; retry recovery"
@@ -195,9 +197,7 @@ pub fn recover_retained(
     scratch: &Path,
     proof_directory: &Path,
 ) -> Result<RecoveredObject, Error> {
-    std::fs::DirBuilder::new()
-        .mode(0o700)
-        .create(proof_directory.join("tx"))?;
+    urma_io::create_private_directory(&proof_directory.join("tx"))?;
     recover_from(
         &mut Source {
             node,

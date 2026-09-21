@@ -5,7 +5,7 @@ use crate::{
     multipart::{Geometry, MultipartRecord},
 };
 use bitcoin::{
-    ScriptBuf, Transaction, TxOut, Witness, XOnlyPublicKey,
+    Script, ScriptBuf, Transaction, TxOut, Witness, XOnlyPublicKey,
     hashes::Hash,
     opcodes::all::{OP_CHECKSIG, OP_ENDIF, OP_IF},
     script::{Builder, Instruction, PushBytesBuf},
@@ -240,17 +240,24 @@ pub fn extract_reveal(reveal: &Transaction) -> Result<ParsedEnvelope, Error> {
 }
 
 fn extract_reveal_envelope(reveal: &Transaction) -> Result<ParsedEnvelope, Error> {
+    validate_reveal_shape(reveal.version.0, reveal.input.len(), reveal.output.len())?;
+    validate_reveal_scripts(&reveal.input[0].script_sig, &reveal.output[0].script_pubkey)?;
+    extract_envelope(&reveal.input[0].witness)
+}
+
+pub fn validate_reveal_shape(version: i32, inputs: usize, outputs: usize) -> Result<(), Error> {
     ensure!(
-        reveal.version == Version::TWO && reveal.input.len() == 1 && reveal.output.len() == 1,
+        version == Version::TWO.0 && inputs == 1 && outputs == 1,
         "invalid reveal transaction shape"
     );
+    Ok(())
+}
+
+pub fn validate_reveal_scripts(script_sig: &Script, return_script: &Script) -> Result<(), Error> {
+    ensure!(script_sig.is_empty(), "reveal scriptSig must be empty");
     ensure!(
-        reveal.input[0].script_sig.is_empty(),
-        "reveal scriptSig must be empty"
-    );
-    ensure!(
-        reveal.output[0].script_pubkey.is_p2wpkh() || reveal.output[0].script_pubkey.is_p2tr(),
+        return_script.is_p2wpkh() || return_script.is_p2tr(),
         "invalid reveal return output"
     );
-    extract_envelope(&reveal.input[0].witness)
+    Ok(())
 }

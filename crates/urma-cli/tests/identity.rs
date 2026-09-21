@@ -39,14 +39,15 @@ fn publication_verifies_same_author_and_funder_and_fee_bound() {
         maximum_base_units: 2_000,
     };
     let record = urma_core::format::PublicRecord::Post("shared identity".into());
-    let plan = urma_workflows::publication::prepare_public(
-        &record,
+    let plan = urma_runtime::publication::prepare_signed_bytes(
+        &record.encode().unwrap(),
         &signer,
         funding.clone(),
         Chain::BitcoinRegtest,
         budget,
     )
-    .unwrap();
+    .unwrap()
+    .plan;
     let commit: Transaction = deserialize(&hex::decode(&plan.commit).unwrap()).unwrap();
     let reveal: Transaction = deserialize(&hex::decode(&plan.reveal).unwrap()).unwrap();
     let proof = urma_core::envelope::verify_reveal(&reveal, &commit).unwrap();
@@ -76,8 +77,8 @@ fn publication_verifies_same_author_and_funder_and_fee_bound() {
         .identity(urma_identity::identity::IdentitySlot::new(1).unwrap())
         .unwrap();
     assert!(
-        urma_workflows::publication::prepare_public(
-            &record,
+        urma_runtime::publication::prepare_signed_bytes(
+            &record.encode().unwrap(),
             &other,
             funding.clone(),
             Chain::BitcoinRegtest,
@@ -86,8 +87,8 @@ fn publication_verifies_same_author_and_funder_and_fee_bound() {
         .is_err()
     );
     assert!(
-        urma_workflows::publication::prepare_public(
-            &record,
+        urma_runtime::publication::prepare_signed_bytes(
+            &record.encode().unwrap(),
             &signer,
             funding.clone(),
             Chain::LitecoinTestnet,
@@ -96,8 +97,8 @@ fn publication_verifies_same_author_and_funder_and_fee_bound() {
         .is_err()
     );
     assert!(
-        urma_workflows::publication::prepare_public(
-            &record,
+        urma_runtime::publication::prepare_signed_bytes(
+            &record.encode().unwrap(),
             &signer,
             funding,
             Chain::BitcoinRegtest,

@@ -1,6 +1,6 @@
+use crate::error::{Context, Error, ensure};
 use crate::remote::request;
 use serde_json::{Value, json};
-use urma::error::{Context, Error, ensure};
 
 fn text(base: &str, path: &str) -> Result<String, Error> {
     Ok(String::from_utf8(request(minreq::get(format!(

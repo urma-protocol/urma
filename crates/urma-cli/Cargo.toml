@@ -10,6 +10,7 @@ name = "urma"
 path = "src/main.rs"
 
 [dependencies]
+urma-io = { path = "../urma-io" }
 bitcoin = { version = "0.32", features = ["rand-std"] }
 bitcoincore-rpc = "0.19"
 aes = "0.8"
@@ -29,7 +30,6 @@ zeroize = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
 
-urma = { path = "../urma" }
 urma-core = { path = "../urma-core" }
 urma-profiles = { path = "../urma-profiles" }
 urma-identity = { path = "../urma-identity" }

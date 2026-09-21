@@ -10,7 +10,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Output},
 };
-use urma::{container, storage};
+use urma_runtime::{container, storage};
 
 struct Lab {
     work: tempfile::TempDir,
@@ -83,7 +83,7 @@ fn real_jpeg_roundtrip_in_sh_dash_and_busybox_without_our_binary() {
     let lab = Lab::new();
     let key = [42; 32];
     let jpeg = include_bytes!("../../../tests/fixtures/sample.jpg");
-    let records = container::seal(&key, jpeg, urma::format::ContentType::Opaque).unwrap();
+    let records = container::seal(&key, jpeg, urma_core::format::ContentType::Opaque).unwrap();
     let bundle = container::pack(&records).unwrap();
     assert_eq!(records.len(), 3);
     assert_eq!(records.iter().map(Vec::len).sum::<usize>(), 98_784);
@@ -122,9 +122,10 @@ fn boundaries_shuffle_and_identical_duplicates() {
     let key = [0; 32];
     for length in [1, 32767, 32768, 32769, 65536, 1_048_577] {
         let bytes: Vec<u8> = (0..length).map(|i| (i % 251) as u8).collect();
-        let mut records = container::seal(&key, &bytes, urma::format::ContentType::Opaque).unwrap();
+        let mut records =
+            container::seal(&key, &bytes, urma_core::format::ContentType::Opaque).unwrap();
         records.reverse();
-        if records.len() < urma::config::Limits::RECORDS {
+        if records.len() < urma_runtime::config::Limits::RECORDS {
             records.push(records[0].clone());
         }
         let (result, output) = lab.decode(
@@ -146,7 +147,8 @@ fn boundaries_shuffle_and_identical_duplicates() {
 fn malformed_and_forged_inputs_never_export_plaintext() {
     let lab = Lab::new();
     let key = [7; 32];
-    let records = container::seal(&key, &[9; 32769], urma::format::ContentType::Opaque).unwrap();
+    let records =
+        container::seal(&key, &[9; 32769], urma_core::format::ContentType::Opaque).unwrap();
     let bundle = container::pack(&records).unwrap();
     for offset in [
         0, 4, 8, 12, 16, 48, 64, 68, 72, 87, 88, 120, 128, 528, 32895, 32927,
@@ -195,9 +197,9 @@ fn malformed_and_forged_inputs_never_export_plaintext() {
         "repeated-as-missing",
     );
     must_fail(result, &output);
-    let other = container::seal(&key, &[9; 32769], urma::format::ContentType::Opaque).unwrap();
+    let other = container::seal(&key, &[9; 32769], urma_core::format::ContentType::Opaque).unwrap();
     let mut mixed = container::pack(&records).unwrap();
-    let second_offset = 12 + 4 + urma::format::Urma::PRIVATE_RECORD_BYTES + 4;
+    let second_offset = 12 + 4 + urma_core::format::Urma::PRIVATE_RECORD_BYTES + 4;
     mixed[second_offset..].copy_from_slice(&other[1]);
     assert!(container::unpack(&mixed).is_err());
     let (result, output) = lab.decode("/bin/sh", &key, &mixed, "mixed");
@@ -228,7 +230,8 @@ fn rewrite_record(key: &[u8; 32], record: &mut Vec<u8>, edit: impl FnOnce(&mut [
 fn authenticated_but_inconsistent_metadata_is_rejected() {
     let lab = Lab::new();
     let key = [8; 32];
-    let records = container::seal(&key, &[1; 32769], urma::format::ContentType::Opaque).unwrap();
+    let records =
+        container::seal(&key, &[1; 32769], urma_core::format::ContentType::Opaque).unwrap();
     for total in [0u64, 32768, 1048577, u64::MAX] {
         let mut changed = records.clone();
         rewrite_record(&key, &mut changed[0], |body| {
@@ -270,11 +273,11 @@ fn a_forged_record_never_reaches_openssl_decryption() {
     let mut records = container::seal(
         &key,
         b"MAC must be checked first",
-        urma::format::ContentType::Opaque,
+        urma_core::format::ContentType::Opaque,
     )
     .unwrap();
     let original = container::pack(&records).unwrap();
-    records[0][urma::format::Urma::BODY_OFFSET + 43] ^= 1;
+    records[0][urma_core::format::Urma::BODY_OFFSET + 43] ^= 1;
     let (result, output) = lab.decode(
         "/bin/sh",
         &key,
@@ -294,7 +297,7 @@ fn existing_output_and_symlinks_are_never_overwritten() {
     let lab = Lab::new();
     let key = [9; 32];
     let bundle = container::pack(
-        &container::seal(&key, b"test", urma::format::ContentType::Opaque).unwrap(),
+        &container::seal(&key, b"test", urma_core::format::ContentType::Opaque).unwrap(),
     )
     .unwrap();
     let base = lab.work.path();

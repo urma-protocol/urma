@@ -2,7 +2,7 @@ use std::{fmt, io, num::ParseIntError, string::FromUtf8Error};
 
 #[derive(Debug)]
 pub enum Error {
-    Native(urma::error::Error),
+    Native(urma_runtime::error::Error),
     Protocol(urma_core::error::Error),
     Io(io::Error),
     Json(serde_json::Error),
@@ -75,8 +75,8 @@ impl From<std::num::TryFromIntError> for Error {
     }
 }
 
-impl From<urma::error::Error> for Error {
-    fn from(error: urma::error::Error) -> Self {
+impl From<urma_runtime::error::Error> for Error {
+    fn from(error: urma_runtime::error::Error) -> Self {
         Self::Native(error)
     }
 }

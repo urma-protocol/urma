@@ -1,11 +1,6 @@
-use std::{
-    fs::{File, OpenOptions},
-    io::Read,
-    os::unix::fs::{DirBuilderExt, OpenOptionsExt},
-    path::Path,
-};
+use std::{fs::File, path::Path};
 use unicode_normalization::UnicodeNormalization;
-use urma::error::{Error, ensure};
+use urma_runtime::error::{Error, ensure};
 use zeroize::Zeroizing;
 
 pub fn validate_id(id: &str) -> Result<(), Error> {
@@ -78,23 +73,17 @@ pub fn validate_path(path: &str) -> Result<(), Error> {
 }
 
 pub fn read_regular(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
-    let file = OpenOptions::new()
-        .read(true)
-        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-        .open(path)?;
-    ensure!(
-        file.metadata()?.is_file(),
-        "only regular input files are supported"
-    );
-    let mut bytes = Zeroizing::new(Vec::new());
-    file.take(u64::try_from(limit)? + 1)
-        .read_to_end(&mut bytes)?;
-    ensure!(bytes.len() <= limit, "input exceeds client capacity");
-    Ok(bytes)
+    urma_io::read_regular(path, limit).map_err(|cause| match cause {
+        urma_io::Error::TooLarge { .. } => Error::Invalid("input exceeds client capacity".into()),
+        urma_io::Error::Io(cause) if cause.kind() == std::io::ErrorKind::InvalidInput => {
+            Error::Invalid(cause.to_string())
+        }
+        cause => cause.into(),
+    })
 }
 
 pub fn new_directory(path: &Path) -> Result<(), Error> {
-    std::fs::DirBuilder::new().mode(0o700).create(path)?;
+    urma_io::create_private_directory(path)?;
     File::open(path)?.sync_all()?;
     Ok(())
 }

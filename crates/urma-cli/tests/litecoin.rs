@@ -15,14 +15,15 @@ use rand::{SeedableRng, rngs::StdRng};
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{cell::RefCell, collections::BTreeMap};
-use urma::config;
-use urma::error::{Error, bail};
-use urma::{
+use urma_core::envelope;
+use urma_runtime::config;
+use urma_runtime::error::{Error, bail};
+use urma_runtime::{
     backend::{self, RecordSource},
-    container, envelope,
+    container,
     litecoin::{self, Plan, Rpc},
-    transport::Funding,
 };
+use urma_wallet::funding::Funding;
 
 const ROOT: [u8; 32] = [42; 32];
 const BLOCK1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -42,15 +43,15 @@ fn records(bytes: &[u8]) -> Vec<Vec<u8>> {
     hkdf.expand(b"URMA/V0/private/discovery", &mut discovery)
         .unwrap();
     bytes
-        .chunks(urma::format::Urma::CHUNK_BYTES)
+        .chunks(urma_core::format::Urma::CHUNK_BYTES)
         .enumerate()
         .map(|(i, chunk)| {
-            let mut record = urma::format::RecordKind::Private.prefix().to_vec();
+            let mut record = urma_core::format::RecordKind::Private.prefix().to_vec();
             record.extend(id);
             record.extend(discovery);
             record.extend((i as u32).to_le_bytes());
             record.extend(
-                (bytes.len().div_ceil(urma::format::Urma::CHUNK_BYTES) as u32).to_le_bytes(),
+                (bytes.len().div_ceil(urma_core::format::Urma::CHUNK_BYTES) as u32).to_le_bytes(),
             );
             let mut iv = [0; 16];
             iv[..8].copy_from_slice(&(i as u64).to_be_bytes());
@@ -59,7 +60,7 @@ fn records(bytes: &[u8]) -> Vec<Vec<u8>> {
             body.extend((bytes.len() as u64).to_le_bytes());
             body.extend([0; 8]);
             body.extend(chunk);
-            body.resize(48 + urma::format::Urma::CHUNK_BYTES, 0); // Deterministic padding, test vectors only.
+            body.resize(48 + urma_core::format::Urma::CHUNK_BYTES, 0); // Deterministic padding, test vectors only.
             ctr::Ctr128BE::<aes::Aes256>::new(&content.into(), &iv.into())
                 .apply_keystream(&mut body);
             record.extend(body);
@@ -225,7 +226,7 @@ impl Rpc for Mock {
                 .values()
                 .find(|b| b["hash"] == args[0])
                 .cloned()
-                .ok_or_else(|| urma::error::Error::Missing("block unavailable".into()))?,
+                .ok_or_else(|| urma_runtime::error::Error::Missing("block unavailable".into()))?,
             "signrawtransactionwithwallet" => {
                 assert_eq!(args[2], "ALL");
                 json!({"complete":true,"hex":sign_commit(args[0].as_str().unwrap(), &self.previous)})
@@ -310,8 +311,8 @@ fn deterministic_offline_plans_and_exact_funding_at_boundaries() {
         (0, 1),
         (1, 0),
         (1, 101),
-        (urma::config::Limits::INPUT_BYTES + 1, 1),
-        (urma::config::Limits::INPUT_BYTES, 100),
+        (urma_runtime::config::Limits::INPUT_BYTES + 1, 1),
+        (urma_runtime::config::Limits::INPUT_BYTES, 100),
     ] {
         assert!(litecoin::quote(len, rate).is_err());
     }
@@ -592,7 +593,7 @@ fn source_bounds_and_wrong_witness_status_are_rejected() {
 fn bitcoin_validator_still_rejects_litecoin_network_and_unsigned_commits() {
     let p = fixture(b"test");
     let costs = litecoin::quote(p.input_bytes, 1).unwrap();
-    let common = urma::transport::Plan {
+    let common = urma_runtime::journal::Plan {
         network: config::LITECOIN_NETWORK.into(),
         version: p.version,
         object_id: "07".repeat(32),
@@ -607,7 +608,7 @@ fn bitcoin_validator_still_rejects_litecoin_network_and_unsigned_commits() {
         reveals: p.reveals,
         mining_address: String::new(),
     };
-    assert!(urma::transport::validate_plan(&common).is_err());
+    assert!(urma_runtime::journal::validate_plan(&common).is_err());
 }
 
 #[test]
@@ -624,7 +625,7 @@ fn local_rpc_origin_validation_never_reads_credentials_for_remote_urls() {
             litecoin::Core::connect(
                 endpoint,
                 std::path::Path::new("/nonexistent-cookie"),
-                urma::config::RpcScope::Node
+                urma_runtime::config::RpcScope::Node
             )
             .is_err()
         );
@@ -763,7 +764,7 @@ fn ambiguous_partial_reveal_resumes_identical_bytes_without_duplicate_sends() {
 
 #[test]
 fn bounded_reader_respects_end_height_and_cancels_before_next_block() {
-    use urma::litecoin::LitecoinRecords;
+    use urma_runtime::litecoin::LitecoinRecords;
     let draft = fixture(&vec![9; 32769]);
     let mut node = Mock::new(&draft);
     node.scan_blocks(&draft);
@@ -775,7 +776,7 @@ fn bounded_reader_respects_end_height_and_cancels_before_next_block() {
     let mut records = 0;
     let observation = reader
         .read_range(
-            urma::config::ScanEnd::Height(2),
+            urma_runtime::config::ScanEnd::Height(2),
             &mut |h| {
                 visited.push(h);
                 Ok(())
@@ -790,13 +791,13 @@ fn bounded_reader_respects_end_height_and_cancels_before_next_block() {
     assert_eq!(records, 1);
     assert!(matches!(
         observation.locator,
-        urma::backend::Locator::BlockRange { tip_height: 2, .. }
+        urma_runtime::backend::Locator::BlockRange { tip_height: 2, .. }
     ));
     let mut visits = 0;
     assert!(
         reader
             .read_range(
-                urma::config::ScanEnd::Height(3),
+                urma_runtime::config::ScanEnd::Height(3),
                 &mut |_| {
                     visits += 1;
                     if visits == 2 {

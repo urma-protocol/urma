@@ -1,5 +1,7 @@
+use crate::config;
+use crate::error::{Context, Error};
+use crate::publication::quote_record;
 use bitcoin::{Txid, hashes::Hash};
-use urma::error::{Context, Error};
 use urma_core::multipart::{
     ChildReference, DataPart, Geometry, LeafManifest, MultipartRecord, RootManifest,
 };
@@ -31,7 +33,7 @@ pub fn multipart(
         let fee = match fees.get(&record.len()) {
             Some(fee) => *fee,
             None => {
-                let fee = urma::publication::quote_record(&record, public, &script, rate)?;
+                let fee = quote_record(&record, public, &script, rate)?;
                 fees.insert(record.len(), fee);
                 fee
             }
@@ -39,14 +41,14 @@ pub fn multipart(
         total = total.checked_add(fee).context("quote overflow")?;
     }
     let funding = total
-        .checked_add((u64::from(geometry.nodes()) + 1) * urma::config::publication_return(chain))
+        .checked_add((u64::from(geometry.nodes()) + 1) * config::publication_return(chain))
         .context("quote funding overflow")?;
     Ok(Quote {
         records: geometry.nodes(),
         payload_bytes: length,
         parts: geometry.parts(),
         leaves: geometry.leaves(),
-        retained_value: urma::config::publication_return(chain),
+        retained_value: config::publication_return(chain),
         maximum_fee: total,
         funding,
     })
