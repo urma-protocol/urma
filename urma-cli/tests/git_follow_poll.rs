@@ -1,3 +1,13 @@
+//! Explicit slow gate (workspace root):
+//! ```sh
+//! cargo test -p urma-cli --test git_follow_poll persist_retries_after_bounded_poll_and_independent_watch_observes_completion -- --ignored --exact
+//! ```
+//! Uses Git and CLI persist/watch subprocesses with a local mock RPC server.
+//! The real 30–60 second polling wait is excluded from the default suite;
+//! run this gate explicitly when changing polling/retry behavior. No real node
+//! or live transactions are required. The independent Python multipart reader
+//! does not exercise or replace this gate.
+
 #[path = "../../urma-runtime/tests/support/publication_node.rs"]
 mod publication_node;
 use publication_node::{Mock, txid};
@@ -9,6 +19,7 @@ use urma_git::{inventory::Limits, workflows};
 use urma_runtime::{disk_plan::DiskPlan, plan::PlanLimits};
 
 #[test]
+#[ignore = "slow real polling (30–60 seconds); run explicitly with --ignored --exact (see module docs)"]
 fn persist_retries_after_bounded_poll_and_independent_watch_observes_completion() {
     let directory = tempfile::tempdir().unwrap();
     let mock = Mock::new(directory.path());

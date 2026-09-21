@@ -1,3 +1,16 @@
+//! Explicit slow gate (workspace root):
+//! ```sh
+//! cargo test -p urma-cli --test multipart multiple_leaves_stream_exact_bytes_and_reject_order_duplicates_and_missing -- --ignored --exact
+//! ```
+//! This ~47 second gate constructs 512 data parts (~128 MiB) across two leaves,
+//! checks Rust recovery/rejections, and internally invokes Python 3 with
+//! scripts/read-multipart.py on exported transactions for independent proof
+//! validation and exact recovery. Python is not scheduled separately.
+//! Default tests exclude this volume; run the gate explicitly when changing
+//! multi-leaf recovery/proofs. Python 3 must be on PATH; no real node is needed.
+//! Use this exact selector, not workspace-wide --ignored (which includes
+//! unrelated daemon/network tests). All other cases retain default behavior.
+
 use anyhow::{Context, Result};
 use bitcoin::{
     Amount, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness, absolute,
@@ -334,6 +347,7 @@ fn export_pair(path: &Path, reveal: &Transaction, commit: &Transaction) -> Resul
 }
 
 #[test]
+#[ignore = "slow ~128 MiB multi-leaf and independent Python proof gate; run explicitly with --ignored --exact (see module docs)"]
 fn multiple_leaves_stream_exact_bytes_and_reject_order_duplicates_and_missing() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let export = tempfile::tempdir()?;
