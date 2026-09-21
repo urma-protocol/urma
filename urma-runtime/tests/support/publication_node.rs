@@ -28,6 +28,7 @@ pub struct State {
     pub preflight: Option<String>,
     pub send_rejection: Option<String>,
     pub send_response_lost: bool,
+    pub drop_after_send: bool,
     pub unavailable: bool,
     pub auto_confirm: bool,
     pub reorg: bool,
@@ -212,6 +213,9 @@ fn respond(
             let id = txid(raw);
             state.submissions.push(raw.into());
             state.transactions.insert(id.clone(), state.auto_confirm);
+            if state.drop_after_send {
+                state.transactions.remove(&id);
+            }
             if state.send_response_lost {
                 state.unavailable = true;
                 return Err((-28, "fixture response lost after acceptance".into()));
