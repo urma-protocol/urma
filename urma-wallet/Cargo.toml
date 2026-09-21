@@ -12,7 +12,7 @@ description = "URMA wallet funding, addresses and transaction signing"
 [dependencies]
 bitcoin = "0.32"
 serde = { version = "1", features = ["derive"] }
-urma-core = { version = "0.1.0", path = "../urma-core" }
-urma-chain = { version = "0.1.0", path = "../urma-chain" }
-urma-identity = { version = "0.1.0", path = "../urma-identity" }
+urma-core = { version = "0.1.1", path = "../urma-core" }
+urma-chain = { version = "0.1.1", path = "../urma-chain" }
+urma-identity = { version = "0.1.1", path = "../urma-identity" }
 bech32 = "0.11"

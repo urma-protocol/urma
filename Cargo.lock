@@ -1425,7 +1425,7 @@ dependencies = [
 
 [[package]]
 name = "urma-chain"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitcoin",
  "hex",
@@ -1434,7 +1434,7 @@ dependencies = [
 
 [[package]]
 name = "urma-cli"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "anyhow",
@@ -1474,7 +1474,7 @@ dependencies = [
 
 [[package]]
 name = "urma-core"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "bitcoin",
@@ -1489,7 +1489,7 @@ dependencies = [
 
 [[package]]
 name = "urma-files"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitcoin",
  "hex",
@@ -1508,7 +1508,7 @@ dependencies = [
 
 [[package]]
 name = "urma-git"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -1530,7 +1530,7 @@ dependencies = [
 
 [[package]]
 name = "urma-identity"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -1549,7 +1549,7 @@ dependencies = [
 
 [[package]]
 name = "urma-io"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "libc",
  "sha2",
@@ -1559,7 +1559,7 @@ dependencies = [
 
 [[package]]
 name = "urma-profiles"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitcoin",
  "rand",
@@ -1570,7 +1570,7 @@ dependencies = [
 
 [[package]]
 name = "urma-runtime"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitcoin",
  "bitcoincore-rpc",
@@ -1593,7 +1593,7 @@ dependencies = [
 
 [[package]]
 name = "urma-wallet"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -1605,7 +1605,7 @@ dependencies = [
 
 [[package]]
 name = "urma-wire"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "bitcoin",
  "hex",
@@ -1621,7 +1621,7 @@ dependencies = [
 
 [[package]]
 name = "urma-workflows"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "rand",
  "urma-core",
