@@ -3,8 +3,10 @@ use crate::storage;
 use crate::{disk_plan::DiskPlan, planner::Planner};
 use bitcoin::{Txid, hashes::Hash};
 use sha2::{Digest, Sha256};
+#[cfg(not(target_arch = "wasm32"))]
+use std::fs::OpenOptions;
 use std::{
-    fs::{File, OpenOptions},
+    fs::File,
     io::{Read, Seek, Write},
     path::Path,
 };
@@ -25,6 +27,7 @@ pub(crate) struct DiskWriter<'a, S> {
 }
 
 impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
+    #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new(directory: &'a Path, planner: Planner<'a, S>) -> Result<Self, Error> {
         use std::os::unix::fs::OpenOptionsExt;
         urma_io::create_private_directory(directory)?;
@@ -48,6 +51,15 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
             offset: 0,
             count: 0,
         })
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn new(directory: &'a Path, planner: Planner<'a, S>) -> Result<Self, Error> {
+        drop(planner);
+        Err(Error::Unsupported(format!(
+            "native disk plan storage is unavailable on WASM: {}",
+            directory.display()
+        )))
     }
 
     fn append(&mut self, bytes: &[u8], total: u32) -> Result<ChildReference, Error> {

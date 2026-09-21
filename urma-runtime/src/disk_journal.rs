@@ -7,10 +7,12 @@ use crate::{
 use crate::{node::Presence, storage};
 use std::{
     collections::HashMap,
-    fs::{File, OpenOptions},
-    io::{BufRead, BufReader, Read, Write},
+    fs::File,
+    io::{BufRead, BufReader, Read},
     path::Path,
 };
+#[cfg(not(target_arch = "wasm32"))]
+use std::{fs::OpenOptions, io::Write};
 
 pub(crate) fn history(journal: &Path, id: &str) -> Result<HashMap<String, Presence>, Error> {
     let mut history = HashMap::new();
@@ -81,6 +83,7 @@ pub(crate) fn guard(plan: &DiskPlan, journal: &Path) -> Result<(), Error> {
     Ok(())
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn observe(node: &Node, journal: &Path, report: &PublishReport) -> Result<(), Error> {
     use std::os::unix::fs::OpenOptionsExt;
     let path = journal.with_extension("observations.jsonl");
@@ -97,4 +100,14 @@ pub(crate) fn observe(node: &Node, journal: &Path, report: &PublishReport) -> Re
     file.sync_all()?;
     File::open(urma_io::output_parent(&path))?.sync_all()?;
     Ok(())
+}
+
+#[cfg(target_arch = "wasm32")]
+pub(crate) fn observe(node: &Node, journal: &Path, report: &PublishReport) -> Result<(), Error> {
+    Err(Error::Unsupported(format!(
+        "native observations journal is unavailable on WASM: {} for {} on {:?}",
+        journal.display(),
+        report.plan_id,
+        node.chain()
+    )))
 }
