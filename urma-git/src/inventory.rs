@@ -10,6 +10,11 @@ use std::{
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Limits {
+    #[serde(
+        default = "config::legacy_secret_scan",
+        skip_serializing_if = "config::secret_scan_enabled"
+    )]
+    pub scan_secrets: bool,
     pub max_pack_bytes: u64,
     pub max_objects: usize,
     pub max_paths: usize,
@@ -21,6 +26,7 @@ pub struct Limits {
 impl Default for Limits {
     fn default() -> Self {
         Self {
+            scan_secrets: config::legacy_secret_scan(),
             max_pack_bytes: config::pack_capacity(),
             max_objects: 1_000_000,
             max_paths: 1_000_000,

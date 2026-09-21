@@ -61,7 +61,10 @@ fn fixture(directory: &Path, mock: &Mock) -> DiskPlan {
         &mock.signer,
         &repo,
         &directory,
-        &Limits::default(),
+        &Limits {
+            scan_secrets: false,
+            ..Limits::default()
+        },
         PlanLimits {
             fee_rate: 1,
             max_fee: 2_000_000,

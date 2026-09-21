@@ -17,6 +17,12 @@ pub(crate) struct PublishArgs {
         help = "Repository whose current committed HEAD is published"
     )]
     repo: PathBuf,
+    #[arg(
+        long,
+        conflicts_with = "plan",
+        help = "Scan the new snapshot for possible secrets; findings require explicit review (default: off)"
+    )]
+    scan_secrets: bool,
     #[arg(long, help = "Publish an existing prepared and reviewed plan")]
     plan: Option<PathBuf>,
     #[arg(
@@ -98,12 +104,12 @@ fn prepare(
 ) -> Result<workflows::PreparedReport, Error> {
     let guard = urma_git::workspace::lock(directory).map_err(boundary)?;
     urma_git::workspace::ensure_unpublished(directory).map_err(boundary)?;
-    let limits = config::git_limits()?;
+    let mut limits = config::git_limits()?;
+    limits.scan_secrets = args.scan_secrets;
     let name = urma_git::descriptor::source_name(&args.repo).map_err(boundary)?;
-    let snapshot = stage(
-        "Preparing committed HEAD and scanning public content...",
-        || urma_git::workspace::snapshot(&args.repo, directory, &limits, &name),
-    )
+    let snapshot = stage("Preparing and validating committed HEAD...", || {
+        urma_git::workspace::snapshot(&args.repo, directory, &limits, &name)
+    })
     .map_err(boundary)?;
     let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;

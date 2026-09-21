@@ -154,7 +154,7 @@ fn reusable(
     let object = directory.join("object.bin");
     let pack = directory.join("snapshot.pack");
     let scan: ScanReport = serde_json::from_reader(File::open(directory.join("scan.json"))?)?;
-    Ok(saved.scan.complete
+    Ok(saved.scan.reviewable()
         && serde_json::to_vec(&scan)? == serde_json::to_vec(&saved.scan)?
         && serde_json::to_vec(&snapshot::inspect(&object)?)?
             == serde_json::to_vec(&saved.descriptor)?

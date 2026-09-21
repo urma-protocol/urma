@@ -50,6 +50,36 @@ pub(crate) fn rules() -> Result<Vec<(&'static str, Regex)>, Error> {
     ])
 }
 
+impl ScanReport {
+    pub fn reviewable(&self) -> bool {
+        self.complete
+            || (self.scanner == "disabled"
+                && self.findings.is_empty()
+                && self.objects == 0
+                && self.bytes == 0)
+    }
+}
+
+pub fn scan_selected(
+    repo: &Path,
+    inventory: &Inventory,
+    public: &descriptor::Descriptor,
+    scratch: &Path,
+    enabled: bool,
+) -> Result<ScanReport, Error> {
+    if enabled {
+        return scan(repo, inventory, public, scratch);
+    }
+    Ok(ScanReport {
+        repository_name: public.repository_name.clone(),
+        scanner: "disabled".into(),
+        complete: false,
+        objects: 0,
+        bytes: 0,
+        findings: Vec::new(),
+    })
+}
+
 fn read_chunk(reader: &mut impl Read, buffer: &mut [u8]) -> Result<usize, Error> {
     let mut count = 0;
     while count < buffer.len() {
@@ -187,7 +217,7 @@ pub fn record(snapshot: &Path, plan_hash: &str, classifications: &[String]) -> R
         .iter()
         .map(|finding| finding.id.clone())
         .collect::<BTreeSet<_>>();
-    if !scan.complete || classified != findings {
+    if !scan.reviewable() || classified != findings {
         return Err(Error::ReviewRequired("classify each finding explicitly as public test material, or prepare a new clean commit".into()));
     }
     let receipt = Receipt {
@@ -227,7 +257,7 @@ pub fn require(snapshot: &Path, plan_hash: &str) -> Result<(), Error> {
         || receipt.plan_hash != plan_hash
         || receipt.artifact_sha256 != artifact
         || receipt.scan_sha256 != scan_hash
-        || !scan.complete
+        || !scan.reviewable()
         || receipt.classified_public_test_material != findings
     {
         return Err(Error::ReviewRequired(

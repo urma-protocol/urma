@@ -133,12 +133,15 @@ pub fn prepare_named(
     let payload_path = destination.join("object.bin");
     tracing::info!(target: "urma_progress", "Validating PACK and committed object closure...");
     let verified = validate(&payload_path, scratch.path(), limits)?;
-    tracing::info!(target: "urma_progress", "Scanning public snapshot for possible secrets...");
-    let scan = review::scan(
+    if limits.scan_secrets {
+        tracing::info!(target: "urma_progress", "Scanning public snapshot for possible secrets...");
+    }
+    let scan = review::scan_selected(
         &verified.repository,
         &verified.inventory,
         &descriptor,
         scratch.path(),
+        limits.scan_secrets,
     )?;
     let report = SnapshotReport {
         schema: 1,

@@ -20,6 +20,11 @@ impl GitLimits {
 
 #[derive(Args)]
 pub(crate) struct PrepareArgs {
+    #[arg(
+        long,
+        help = "Scan the snapshot for possible secrets before review (default: off)"
+    )]
+    scan_secrets: bool,
     #[arg(default_value = ".")]
     repo: PathBuf,
     #[arg(long, help = "Public repository name [default: source directory name]")]
@@ -161,7 +166,8 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
     })?;
     let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;
-    let limits = args.resources.load()?;
+    let mut limits = args.resources.load()?;
+    limits.scan_secrets = args.scan_secrets;
     stage("Preparing and validating the Git snapshot...", || {
         urma_git::workspace::snapshot(&args.repo, &args.output, &limits, &name)
     })

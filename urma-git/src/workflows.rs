@@ -171,11 +171,12 @@ pub fn record_review(directory: &Path, classifications: &[String]) -> Result<Str
     let (plan, hash) = GitPlan::load(directory)?;
     let scratch = tempfile::tempdir_in(directory)?;
     let verified = snapshot::validate(&directory.join("object.bin"), scratch.path(), &plan.limits)?;
-    let actual = review::scan(
+    let actual = review::scan_selected(
         &verified.repository,
         &verified.inventory,
         &verified.descriptor,
         scratch.path(),
+        plan.limits.scan_secrets,
     )?;
     let recorded: review::ScanReport =
         serde_json::from_reader(File::open(directory.join("scan.json"))?)?;

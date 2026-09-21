@@ -123,3 +123,10 @@ fn available_memory() -> Result<u64, Error> {
             .ok_or_else(|| Error::Capacity("cgroup memory exhausted".into()))?,
     ))
 }
+pub fn legacy_secret_scan() -> bool {
+    true
+}
+
+pub fn secret_scan_enabled(value: &bool) -> bool {
+    *value
+}
