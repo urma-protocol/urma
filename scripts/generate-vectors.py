@@ -232,6 +232,16 @@ def main():
                       ("invalid-post-utf8",prefix(2)+b"\xc0\x80"),("invalid-profile-utf8",prefix(5)+b"\xff"),
                       ("invalid-reply-utf8",prefix(4)+bytes(32)+b"\xff")]:
         public(name,data,"invalid")
+    profile_record=prefix(12)+b"URMANAM1"+bytes(range(256))
+    for name,data in [("profile-record",profile_record),("profile-record-empty",prefix(12)+b"URMANAM1"),
+                      ("profile-record-zero-id",prefix(12)+bytes(8)+b"unspecified profile"),
+                      ("profile-record-unknown-id",prefix(12)+b"\xffZZZZZZ\x00"+b"unknown profile"),
+                      ("profile-record-nested",prefix(12)+b"URMANAM1"+post),
+                      ("profile-record-max",prefix(12)+b"URMANAM1"+b"x"*32752)]:
+        public(name,data)
+    for name,data in [("profile-record-short",prefix(12)+b"URMANAM"),
+                      ("profile-record-over",prefix(12)+b"URMANAM1"+b"x"*32753)]:
+        public(name,data,"invalid")
     for name,data in [("proof-post",post),("proof-reply",reply),("proof-profile",profile),("proof-avatar",avatar),
                       ("proof-post-max",prefix(2)+b"x"*32760),("proof-private",r),
                       ("proof-segment-one",prefix(2)+b"a"*512+b"\x01"),
@@ -243,6 +253,7 @@ def main():
     proof("proof-wrong-segmentation",prefix(2)+b"a"*513,
           lambda script:script[:41]+push((prefix(2)+b"a"*513)[:500])+push((prefix(2)+b"a"*513)[500:])+b"\x68","invalid")
     proof("proof-offline-container",prefix(3)+bytes(4),outcome="invalid")
+    proof("proof-profile-record",profile_record)
     (OUT/"manifest.json").write_text(json.dumps(manifest,indent=2,ensure_ascii=False)+"\n")
 
 

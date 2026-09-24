@@ -39,3 +39,4 @@ mod reveal;
 pub mod source;
 pub mod storage;
 mod transaction;
+pub mod transfer;

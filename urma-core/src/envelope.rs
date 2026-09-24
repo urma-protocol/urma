@@ -36,7 +36,8 @@ fn validate_record(record: &[u8]) -> Result<(), Error> {
         | RecordKind::Profile
         | RecordKind::Avatar
         | RecordKind::WirePost
-        | RecordKind::WireReply => {
+        | RecordKind::WireReply
+        | RecordKind::ProfileRecord => {
             PublicRecord::decode(record)?;
         }
     }

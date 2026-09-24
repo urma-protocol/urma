@@ -19,9 +19,13 @@ mod git_terminal;
 mod key_cli;
 mod litecoin_cli;
 mod logging;
+mod names_approval;
+mod names_cli;
+mod names_flow;
 mod node_cli;
 mod public_cli;
 mod wallet_cli;
+mod web_cli;
 mod wire_live_cli;
 use clap::{Parser, Subcommand};
 use serde_json::Value;
@@ -67,6 +71,16 @@ enum Command {
     Key {
         #[command(subcommand)]
         command: key_cli::KeyCommand,
+    },
+    #[command(about = "Register, approve and resolve names in URMANAM1 registries")]
+    Names {
+        #[command(subcommand)]
+        command: names_cli::NamesCommand,
+    },
+    #[command(about = "Pack, publish and fetch URMAWEB1 site publications")]
+    Web {
+        #[command(subcommand)]
+        command: web_cli::WebCommand,
     },
     #[command(about = "Show your address, funds and fee estimates")]
     Wallet {
@@ -134,6 +148,8 @@ fn command_name(command: &Command) -> &'static str {
         Command::Capture { .. } => "capture",
         Command::Expert { .. } => "expert",
         Command::Wire { .. } => "wire",
+        Command::Names { .. } => "names",
+        Command::Web { .. } => "web",
         Command::Wallet { .. } => "wallet",
         Command::Key { .. } => "key",
     }
@@ -144,6 +160,8 @@ fn execute(command: Command) -> Result<(), Error> {
         Command::Archive { command } => print_report(files_cli::run(command)?),
         Command::Expert { command } => archive_cli::run(command),
         Command::Wire { command } => print_report(public_cli::run(command)?),
+        Command::Names { command } => print_report(names_cli::run(command)?),
+        Command::Web { command } => print_report(web_cli::run(command)?),
         Command::Git { command } => print_report(git_cli::run(command)?),
         Command::Capture { command } => print_report(capture_cli::run(command)?),
         Command::Wallet { command } => print_report(wallet_cli::run(command)?),

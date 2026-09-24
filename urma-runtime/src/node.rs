@@ -8,7 +8,7 @@ use bitcoin::{Transaction, Txid};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::path::PathBuf;
+use std::{collections::hash_map::Entry, path::PathBuf};
 use urma_chain::{
     decode::{self as chain_decode, DecodeError},
     observation::Chain,
@@ -244,10 +244,10 @@ impl Node {
         let hash = value["blockhash"]
             .as_str()
             .context("missing inclusion block")?;
-        let cached = blocks.get(hash);
-        for presence in cached.iter() {
-            return Ok((*presence).clone());
-        }
+        let slot = match blocks.entry(hash.to_owned()) {
+            Entry::Occupied(cached) => return Ok(cached.get().clone()),
+            Entry::Vacant(slot) => slot,
+        };
         let header = self.call("getblockheader", &[json!(hash)])?;
         let height = header["height"]
             .as_u64()
@@ -260,7 +260,7 @@ impl Node {
             height,
             block_hash: hash.to_owned(),
         };
-        blocks.insert(hash.to_owned(), presence.clone());
+        slot.insert(presence.clone());
         Ok(presence)
     }
 

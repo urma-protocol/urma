@@ -459,6 +459,78 @@
         "bytes": 41,
         "sha256": "817317d6a6f30de458a26d5296f54a4857ca12b3e616464c12cd8ee0b359932d"
       }
+    },
+    {
+      "name": "profile-record",
+      "outcome": "valid",
+      "record": {
+        "file": "profile-record.record",
+        "bytes": 272,
+        "sha256": "c86083c47bb6c15d74d01b3ddf85c69736420dd6efc8d0591af4c41c3bf1b64d"
+      }
+    },
+    {
+      "name": "profile-record-empty",
+      "outcome": "valid",
+      "record": {
+        "file": "profile-record-empty.record",
+        "bytes": 16,
+        "sha256": "98f3d940180aad81b9cbda02a7fbed070a4e8b6960948db71ed04951173a59b5"
+      }
+    },
+    {
+      "name": "profile-record-zero-id",
+      "outcome": "valid",
+      "record": {
+        "file": "profile-record-zero-id.record",
+        "bytes": 35,
+        "sha256": "abe76d9d662ed55ee3b7e8f436f38a3c054c5e72e6f724dbcf114e781c1a2114"
+      }
+    },
+    {
+      "name": "profile-record-unknown-id",
+      "outcome": "valid",
+      "record": {
+        "file": "profile-record-unknown-id.record",
+        "bytes": 31,
+        "sha256": "30fd40938dee8ff6738f699360bd3452193cf70c9bf533be07258f09157cf33d"
+      }
+    },
+    {
+      "name": "profile-record-nested",
+      "outcome": "valid",
+      "record": {
+        "file": "profile-record-nested.record",
+        "bytes": 40,
+        "sha256": "bc846df03f8ba974f1178af06a3c43d7952b769416732b624f31f80d66b45769"
+      }
+    },
+    {
+      "name": "profile-record-max",
+      "outcome": "valid",
+      "record": {
+        "file": "profile-record-max.record",
+        "bytes": 32768,
+        "sha256": "4106d16cfee4a41945200d6897f5f9837cbc116797981ab140693dc7598750a4"
+      }
+    },
+    {
+      "name": "profile-record-short",
+      "outcome": "invalid",
+      "record": {
+        "file": "profile-record-short.record",
+        "bytes": 15,
+        "sha256": "2f4134123b9dec1260ca75fb2b56c86e3f375c1a9b46728ef123f06025501b80"
+      }
+    },
+    {
+      "name": "profile-record-over",
+      "outcome": "invalid",
+      "record": {
+        "file": "profile-record-over.record",
+        "bytes": 32769,
+        "sha256": "e596afb78ad1e033442ba2ee5da53184ac5a1e7cbf84f993c6eecb98a62c6afa"
+      }
     }
   ],
   "proofs": [
@@ -721,6 +793,26 @@
       "tapleaf": "0c91648f526e1ddfc55ba286c9b7336c624250d8ba7479c060a81fe01078254a",
       "sighash": "61c697d4a5bf3cc8d104cc6d65689f61b4a08e08f2ba24b0375c57a9dc2825b1",
       "signature": "75378a2b0abb227f119faeaf950bbbd7de57b006af7db758f7263b98eb27987fa7162b375391597774741cdfcecf7a0cf65d5f49f0ce92aa8c41f71c3e3f211b"
+    },
+    {
+      "name": "proof-profile-record",
+      "outcome": "valid",
+      "commit": {
+        "file": "proof-profile-record.commit",
+        "bytes": 94,
+        "sha256": "f7689353c6f1530e07ff25f437fc9df2e99a68225097f4ddefdc9d31dd503227"
+      },
+      "reveal": {
+        "file": "proof-profile-record.reveal",
+        "bytes": 504,
+        "sha256": "eb8df9a297eeca57f6b95bc6417bfa6d2aeffa8997283dbbbd1dacda05b1b655"
+      },
+      "record_hex": "55524d41000c000055524d414e414d31000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f606162636465666768696a6b6c6d6e6f707172737475767778797a7b7c7d7e7f808182838485868788898a8b8c8d8e8f909192939495969798999a9b9c9d9e9fa0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebfc0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedfe0e1e2e3e4e5e6e7e8e9eaebecedeeeff0f1f2f3f4f5f6f7f8f9fafbfcfdfeff",
+      "author": "f9308a019258c31049344f85f89d5229b531c845836f99b08601f113bce036f9",
+      "txid": "c8fb695c48dea611b0263cd0547b6d67ab26fc2da0c17497c7dec65adbbcff8c",
+      "tapleaf": "a9d01b2934025deece841dcd6893a7e0374e3309044054b801949155a6acea59",
+      "sighash": "afabe3a9fbe2a42968b6f33b79e1f38b3d6090a6c652ab74c7bb053c499bb730",
+      "signature": "bf0b9feda3309d0c2108dd7ad781a87ac574897626a98784219b517a6ee5fd0e0af50ecad6d12b62b709d3dc8fb7bb8da398915d28af7db63a3517ed9cac6a5a"
     }
   ],
   "kdf": {

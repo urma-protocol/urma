@@ -2,7 +2,11 @@ use crate::{approve_publication, node_cli::NodeArgs, print_report};
 use serde_json::Value;
 use std::path::Path;
 use urma_runtime::error::{Error, ensure};
-use urma_runtime::{backend, plan::PublicationPlan, publish};
+use urma_runtime::{
+    backend,
+    plan::PublicationPlan,
+    publish::{self, RevealTiming},
+};
 
 pub(crate) fn export_recovery(recovery: backend::Recovery, output: &Path) -> Result<(), Error> {
     let exported = backend::export(recovery, output)?;
@@ -26,7 +30,7 @@ pub(crate) fn publish_plan(
     let node = node.connect()?;
     let id = plan.id()?;
     approve_publication(label, &id, plan.total_fee, yes)?;
-    let report = publish::publish(&node, &plan, &id, journal)?;
+    let report = publish::publish_with(&node, &plan, &id, journal, RevealTiming::AfterMempool)?;
     print_report(serde_json::to_value(&report)?)?;
     ensure!(
         report.complete,

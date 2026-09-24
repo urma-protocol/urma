@@ -1497,9 +1497,11 @@ dependencies = [
  "urma-git",
  "urma-identity",
  "urma-io",
+ "urma-names",
  "urma-profiles",
  "urma-runtime",
  "urma-wallet",
+ "urma-web",
  "urma-wire",
  "urma-workflows",
  "zeroize",
@@ -1591,6 +1593,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "urma-names"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "tracing",
+ "urma-chain",
+ "urma-core",
+ "urma-io",
+ "urma-runtime",
+ "urma-wallet",
+]
+
+[[package]]
 name = "urma-profiles"
 version = "0.2.0"
 dependencies = [
@@ -1634,6 +1655,24 @@ dependencies = [
  "urma-chain",
  "urma-core",
  "urma-identity",
+]
+
+[[package]]
+name = "urma-web"
+version = "0.2.0"
+dependencies = [
+ "anyhow",
+ "bitcoin",
+ "hex",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "urma-chain",
+ "urma-core",
+ "urma-io",
+ "urma-runtime",
+ "urma-wallet",
 ]
 
 [[package]]

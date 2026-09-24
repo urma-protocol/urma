@@ -52,9 +52,11 @@ fn ui_fixture() {
         eprintln!("accepted={accepted}");
         return;
     }
-    let subscriber = tracing_subscriber::registry().with(git_progress::ProgressLayer.with_filter(
-        tracing_subscriber::filter::Targets::new().with_target("urma_ui", tracing::Level::INFO),
-    ));
+    let subscriber = tracing_subscriber::registry().with(
+        git_progress::ProgressLayer::new(tempfile::tempfile().unwrap(), true).with_filter(
+            tracing_subscriber::filter::Targets::new().with_target("urma_ui", tracing::Level::INFO),
+        ),
+    );
     tracing::subscriber::with_default(subscriber, || {
         let stage = git_terminal::Stage::new("Preparing offline fixture");
         for done in [0u64, 2, 4] {

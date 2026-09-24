@@ -256,6 +256,7 @@ impl Session<'_> {
         notify: &mut impl FnMut(&Progress) -> Result<(), Error>,
     ) -> Result<Vec<BufferedPair>, Error> {
         let mut pairs = Vec::new();
+        self.progress.report.transactions.clear();
         for index in 0..plan.record_count {
             notify(&self.progress)?;
             let pair = plan.record(index)?;
@@ -272,7 +273,6 @@ impl Session<'_> {
                 commit_weight: commit.weight().to_wu(),
                 reveal_weight: reveal.weight().to_wu(),
             });
-            self.progress.report.transactions.clear();
             self.transaction(&pair.commit, "commit", false)?;
             if !self.progress.retryable {
                 break;

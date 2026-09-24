@@ -137,7 +137,11 @@ fn success(output: std::process::Output) -> serde_json::Value {
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(output.stderr.is_empty());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(
+        stderr.lines().all(|line| line.starts_with("Log: ")),
+        "{stderr}"
+    );
     serde_json::from_slice(&output.stdout).unwrap()
 }
 

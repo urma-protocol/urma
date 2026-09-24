@@ -77,6 +77,7 @@ impl Daemon {
                 "-dbcache=32",
                 "-prune=0",
                 "-persistmempool=0",
+                "-txindex=1",
                 "-printtoconsole=0",
                 "-rpcbind=127.0.0.1",
                 "-rpcallowip=127.0.0.1",
@@ -628,6 +629,10 @@ fn public_kinds_are_accepted_and_verified_on_a_separate_node() -> Result<()> {
         PublicRecord::Avatar(Box::new([0x12; 512])),
         PublicRecord::Post("x".repeat(32760)),
         PublicRecord::Post(format!("{}\u{1}", "x".repeat(512))),
+        PublicRecord::ProfileRecord {
+            profile: *b"URMANAM1",
+            payload: b"opaque \xff\xc0".to_vec(),
+        },
     ] {
         let funding_id: Value = wallet.call("sendtoaddress", &[address.clone(), json!(0.01)])?;
         sender.call("generatetoaddress", &[json!(1), address.clone()])?;
@@ -832,6 +837,1380 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
     println!(
         "{}",
         json!({"network":"regtest","public_network":false,"publisher_stopped":true,"root":root.txid(),"author":root.author().to_string(),"payload_bytes":payload.len(),"sha256":hex::encode(Sha256::digest(payload)),"records":receipts,"receiver_scanned_from_genesis":true})
+    );
+    Ok(())
+}
+
+fn names_cli(
+    workdir: &Path,
+    node: &Daemon,
+    vault: &Path,
+    pass: &Path,
+    args: &[&str],
+) -> Result<Output> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_urma"))
+        .current_dir(workdir)
+        .env("URMA_OUTPUT", "json")
+        .env("URMA_NETWORK", "bitcoin-regtest")
+        .env("URMA_RPC_URL", node.url())
+        .env("URMA_NODE_AUTH_FILE", node.cookie())
+        .env("URMA_VAULT", vault)
+        .env("URMA_UNLOCK_FILE", pass)
+        .env("URMA_CONFIG", workdir.join("absent-config"))
+        .args(args)
+        .output()?)
+}
+
+fn mempool(node: &Daemon) -> Result<Vec<String>> {
+    Ok(node
+        .call("getrawmempool", &[])?
+        .as_array()
+        .context("mempool")?
+        .iter()
+        .map(|txid| txid.as_str().unwrap_or_default().to_owned())
+        .collect())
+}
+
+fn publish_names_record(
+    workdir: &Path,
+    node: &Daemon,
+    vault: &Path,
+    pass: &Path,
+    mining: &Value,
+    record: &str,
+    plan: &str,
+    journal: &str,
+) -> Result<(String, u64)> {
+    successful(names_cli(
+        workdir,
+        node,
+        vault,
+        pass,
+        &["names", "plan", "--record", record, "--output", plan],
+    )?)?;
+    ensure!(mempool(node)?.is_empty(), "plan broadcast something");
+    let publish = [
+        "names",
+        "publish",
+        "--plan",
+        plan,
+        "--journal",
+        journal,
+        "--yes",
+    ];
+    let paused = names_cli(workdir, node, vault, pass, &publish)?;
+    ensure!(
+        !paused.status.success(),
+        "publish completed without a block"
+    );
+    let pool = mempool(node)?;
+    ensure!(
+        pool.len() == 1,
+        "commit alone must wait in the mempool: {pool:?}"
+    );
+    let commit_txid = pool[0].clone();
+    node.call("generatetoaddress", &[json!(1), mining.clone()])?;
+    ensure!(
+        mempool(node)?.is_empty(),
+        "reveal broadcast before the commit's block"
+    );
+    let resume = [
+        "names",
+        "resume",
+        "--plan",
+        plan,
+        "--journal",
+        journal,
+        "--yes",
+    ];
+    let paused = names_cli(workdir, node, vault, pass, &resume)?;
+    ensure!(
+        !paused.status.success(),
+        "resume completed without the reveal's block"
+    );
+    let pool = mempool(node)?;
+    ensure!(
+        pool.len() == 1 && pool[0] != commit_txid,
+        "reveal must follow the commit's block: {pool:?}"
+    );
+    let reveal_txid = pool[0].clone();
+    node.call("generatetoaddress", &[json!(1), mining.clone()])?;
+    successful(names_cli(workdir, node, vault, pass, &resume)?)?;
+    let verbose = node.call("getrawtransaction", &[json!(reveal_txid), json!(true)])?;
+    let header = node.call("getblockheader", &[verbose["blockhash"].clone()])?;
+    let height = header["height"].as_u64().context("reveal height")?;
+    Ok((reveal_txid, height))
+}
+
+#[test]
+#[ignore = "requires bitcoind; names registry genesis, claim, scan and resolve on loopback regtest only"]
+fn names_registry_publishes_scans_and_resolves_on_regtest() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let root = tempfile::Builder::new()
+        .prefix("urma-names-regtest-")
+        .tempdir()?;
+    let workdir = root.path();
+    let node = Daemon::start(workdir.join("node"), None)?;
+    node.call("createwallet", &[json!("miner")])?;
+    let miner = Client::new(
+        &format!("{}/wallet/miner", node.url()),
+        Auth::CookieFile(node.cookie()),
+    )?;
+    let mining: Value = miner.call("getnewaddress", &[])?;
+    node.call("generatetoaddress", &[json!(101), mining.clone()])?;
+    let vault = workdir.join("identity.vault");
+    let pass = workdir.join("password");
+    let phrase = workdir.join("recovery");
+    fs::write(&pass, "names regtest password")?;
+    fs::set_permissions(&pass, fs::Permissions::from_mode(0o600))?;
+    successful(names_cli(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &[
+            "key",
+            "create",
+            "--vault",
+            vault.to_str().context("vault path")?,
+            "--password-file",
+            pass.to_str().context("password path")?,
+            "--recovery-out",
+            phrase.to_str().context("phrase path")?,
+            "--name",
+            "registrar",
+        ],
+    )?)?;
+    let identities = successful(names_cli(workdir, &node, &vault, &pass, &["key", "list"])?)?;
+    let author = identities["identities"][0]["author"]
+        .as_str()
+        .context("author")?
+        .to_owned();
+    let address = successful(names_cli(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &["wallet", "address"],
+    )?)?;
+    let receiving = address["receive_address"].as_str().context("address")?;
+    for _ in 0..4 {
+        miner.call::<Value>("sendtoaddress", &[json!(receiving), json!(0.01)])?;
+    }
+    node.call("generatetoaddress", &[json!(1), mining.clone()])?;
+    successful(names_cli(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &[
+            "names",
+            "encode",
+            "genesis",
+            "--mode",
+            "open",
+            "--expiry-blocks",
+            "5000",
+            "--reveal-max-blocks",
+            "144",
+            "--output",
+            "genesis.record",
+        ],
+    )?)?;
+    let (genesis, genesis_height) = publish_names_record(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &mining,
+        "genesis.record",
+        "genesis-plan.json",
+        "genesis-progress.json",
+    )?;
+    let scan = |max_blocks: &str| -> Result<Value> {
+        successful(names_cli(
+            workdir,
+            &node,
+            &vault,
+            &pass,
+            &[
+                "names",
+                "scan",
+                "--genesis",
+                &genesis,
+                "--genesis-height",
+                &genesis_height.to_string(),
+                "--index",
+                "names-index.json",
+                "--max-blocks",
+                max_blocks,
+            ],
+        )?)
+    };
+    let report = scan("1000")?;
+    ensure!(
+        report["complete_to_tip"] == true && report["names"] == 0 && report["genesis"] == genesis,
+        "initial scan: {report}"
+    );
+    successful(names_cli(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &[
+            "names",
+            "encode",
+            "claim",
+            "--registry",
+            &genesis,
+            "--name",
+            "Atelier",
+            "--target",
+            &genesis,
+            "--output",
+            "claim.record",
+        ],
+    )?)?;
+    let (claim, claim_height) = publish_names_record(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &mining,
+        "claim.record",
+        "claim-plan.json",
+        "claim-progress.json",
+    )?;
+    let report = scan("1000")?;
+    ensure!(
+        report["complete_to_tip"] == true && report["names"] == 1,
+        "claim scan: {report}"
+    );
+    let applied = report["records"]
+        .as_array()
+        .context("records")?
+        .iter()
+        .any(|row| {
+            row["txid"] == claim && row["verdict"] == "Applied" && row["height"] == claim_height
+        });
+    ensure!(applied, "claim verdict: {report}");
+    let resolved = successful(names_cli(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &[
+            "names",
+            "resolve",
+            "--network",
+            "bitcoin-regtest",
+            "--index",
+            "names-index.json",
+            "ATELIER",
+        ],
+    )?)?;
+    let bound = &resolved["resolution"]["Bound"];
+    ensure!(
+        resolved["name"] == "atelier"
+            && bound["owner"] == author
+            && bound["target"]["Publication"] == genesis
+            && bound["claim_txid"] == claim
+            && bound["expiry"] == claim_height + 5000
+            && resolved["height"] == report["height"],
+        "resolution: {resolved}"
+    );
+    let pending = successful(names_cli(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &[
+            "names",
+            "pending",
+            "--network",
+            "bitcoin-regtest",
+            "--index",
+            "names-index.json",
+        ],
+    )?)?;
+    ensure!(
+        pending["pending"].as_array().context("pending")?.is_empty(),
+        "pending: {pending}"
+    );
+    let again = scan("1000")?;
+    ensure!(
+        again["scanned"] == 0 && again["rolled_back"] == 0,
+        "idempotent scan: {again}"
+    );
+    println!(
+        "{}",
+        json!({"network":"regtest","genesis":genesis,"genesis_height":genesis_height,"claim":claim,"claim_height":claim_height,"owner":author,"public_network":false})
+    );
+    Ok(())
+}
+
+struct Identity {
+    node: Daemon,
+    mining: Value,
+    vault: PathBuf,
+    pass: PathBuf,
+    author: String,
+}
+
+impl Identity {
+    fn cli(&self, workdir: &Path, args: &[&str]) -> Result<Output> {
+        names_cli(workdir, &self.node, &self.vault, &self.pass, args)
+    }
+
+    fn mine(&self, blocks: u64) -> Result<()> {
+        self.node
+            .call("generatetoaddress", &[json!(blocks), self.mining.clone()])?;
+        Ok(())
+    }
+}
+
+fn regtest_identity(workdir: &Path, funding_outputs: u32) -> Result<Identity> {
+    use std::os::unix::fs::PermissionsExt;
+    let node = Daemon::start(workdir.join("node"), None)?;
+    node.call("createwallet", &[json!("miner")])?;
+    let miner = Client::new(
+        &format!("{}/wallet/miner", node.url()),
+        Auth::CookieFile(node.cookie()),
+    )?;
+    let mining: Value = miner.call("getnewaddress", &[])?;
+    node.call("generatetoaddress", &[json!(101), mining.clone()])?;
+    let vault = workdir.join("identity.vault");
+    let pass = workdir.join("password");
+    let phrase = workdir.join("recovery");
+    fs::write(&pass, "regtest identity password")?;
+    fs::set_permissions(&pass, fs::Permissions::from_mode(0o600))?;
+    successful(names_cli(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &[
+            "key",
+            "create",
+            "--vault",
+            vault.to_str().context("vault path")?,
+            "--password-file",
+            pass.to_str().context("password path")?,
+            "--recovery-out",
+            phrase.to_str().context("phrase path")?,
+            "--name",
+            "publisher",
+        ],
+    )?)?;
+    let identities = successful(names_cli(workdir, &node, &vault, &pass, &["key", "list"])?)?;
+    let author = identities["identities"][0]["author"]
+        .as_str()
+        .context("author")?
+        .to_owned();
+    let address = successful(names_cli(
+        workdir,
+        &node,
+        &vault,
+        &pass,
+        &["wallet", "address"],
+    )?)?;
+    let receiving = address["receive_address"].as_str().context("address")?;
+    for _ in 0..funding_outputs {
+        miner.call::<Value>("sendtoaddress", &[json!(receiving), json!(0.05)])?;
+    }
+    node.call("generatetoaddress", &[json!(1), mining.clone()])?;
+    Ok(Identity {
+        node,
+        mining,
+        vault,
+        pass,
+        author,
+    })
+}
+
+fn publish_until_complete(
+    identity: &Identity,
+    workdir: &Path,
+    group: &str,
+    plan: &str,
+    journal: &str,
+) -> Result<()> {
+    let mut output = identity.cli(
+        workdir,
+        &[
+            group,
+            "publish",
+            "--plan",
+            plan,
+            "--journal",
+            journal,
+            "--yes",
+        ],
+    )?;
+    for _round in 0..16 {
+        if output.status.success() {
+            return Ok(());
+        }
+        identity.mine(1)?;
+        output = identity.cli(
+            workdir,
+            &[
+                group,
+                "resume",
+                "--plan",
+                plan,
+                "--journal",
+                journal,
+                "--yes",
+            ],
+        )?;
+    }
+    ensure!(
+        output.status.success(),
+        "publication did not complete: {}\n{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    Ok(())
+}
+
+fn get_resource(
+    identity: &Identity,
+    workdir: &Path,
+    root: &str,
+    path: &str,
+    output: &str,
+) -> Result<Output> {
+    identity.cli(
+        workdir,
+        &[
+            "web",
+            "get",
+            "--store",
+            "web-store",
+            "--network",
+            "bitcoin-regtest",
+            "--root",
+            root,
+            "--path",
+            path,
+            "--output",
+            output,
+        ],
+    )
+}
+
+#[test]
+#[ignore = "requires bitcoind; web package publication, verified store, pinned object and naming on loopback regtest only"]
+fn web_publications_are_fetched_into_the_store_pinned_and_named_on_regtest() -> Result<()> {
+    let root = tempfile::Builder::new()
+        .prefix("urma-web-regtest-")
+        .tempdir()?;
+    let workdir = root.path();
+    let id = regtest_identity(workdir, 12)?;
+    let site = workdir.join("site");
+    fs::create_dir_all(site.join("sub"))?;
+    let index = b"<!doctype html><meta charset=utf-8><title>demo</title><link rel=stylesheet href=style.css><script src=app.js></script><p>salut</p>";
+    fs::write(site.join("index.html"), index)?;
+    fs::write(site.join("style.css"), "body{margin:0}")?;
+    fs::write(site.join("app.js"), "document.title='ok'")?;
+    fs::write(site.join("sub/page.html"), "<p>sub</p>")?;
+    let packed = successful(id.cli(
+        workdir,
+        &[
+            "web",
+            "pack",
+            "--dir",
+            "site",
+            "--entry",
+            "index.html",
+            "--label",
+            "demo site",
+            "--output",
+            "site.package",
+        ],
+    )?)?;
+    ensure!(
+        packed["files"].as_array().context("files")?.len() == 4,
+        "{packed}"
+    );
+    let inspected = successful(id.cli(workdir, &["web", "inspect", "--package", "site.package"])?)?;
+    ensure!(
+        inspected["status"] == "valid" && inspected["payload_sha256"] == packed["payload_sha256"],
+        "{inspected}"
+    );
+    let planned = successful(id.cli(
+        workdir,
+        &[
+            "web",
+            "plan",
+            "--package",
+            "site.package",
+            "--max-fee",
+            "100000",
+            "--output",
+            "web-plan",
+        ],
+    )?)?;
+    let root1 = planned["root_txid"].as_str().context("root")?.to_owned();
+    ensure!(
+        planned["records"] == 3 && planned["broadcast"] == false,
+        "{planned}"
+    );
+    ensure!(mempool(&id.node)?.is_empty(), "plan broadcast something");
+    publish_until_complete(&id, workdir, "web", "web-plan", "web-progress.json")?;
+    let journal: Value =
+        serde_json::from_slice(&std::fs::read(workdir.join("web-progress.json"))?)?;
+    let mut heights = Vec::new();
+    for transaction in journal["transactions"].as_array().context("transactions")? {
+        heights.push(transaction["presence"]["height"].as_u64().context("height")?);
+    }
+    let first = *heights.iter().min().context("min")?;
+    let last = *heights.iter().max().context("max")?;
+    ensure!(
+        heights.len() == 6 && last - first == 1,
+        "buffered path must publish three records in two blocks: {heights:?}"
+    );
+    let fetched = successful(id.cli(
+        workdir,
+        &["web", "fetch", "--root", &root1, "--store", "web-store"],
+    )?)?;
+    let publication = &fetched["publication"];
+    ensure!(
+        publication["files"].as_array().context("files")?.len() == 4,
+        "files: {fetched}"
+    );
+    ensure!(
+        publication["pinned"].as_array().context("pinned")?.len() == 0,
+        "pinned: {fetched}"
+    );
+    ensure!(publication["author"] == id.author, "author: {fetched}");
+    ensure!(
+        publication["network"] == "bitcoin-regtest",
+        "network: {fetched}"
+    );
+    ensure!(
+        publication["payload_sha256"] == packed["payload_sha256"],
+        "payload: {fetched}"
+    );
+    let got = successful(get_resource(&id, workdir, &root1, "/", "index.out")?)?;
+    ensure!(
+        got["mime"] == "text/html" && fs::read(workdir.join("index.out"))? == index,
+        "{got}"
+    );
+    successful(get_resource(
+        &id,
+        workdir,
+        &root1,
+        "/sub/page.html",
+        "page.out",
+    )?)?;
+    ensure!(fs::read(workdir.join("page.out"))? == b"<p>sub</p>");
+    ensure!(
+        !get_resource(&id, workdir, &root1, "/missing", "missing.out")?
+            .status
+            .success()
+    );
+    ensure!(
+        !get_resource(&id, workdir, &root1, "/sub/", "sub.out")?
+            .status
+            .success()
+    );
+    ensure!(!workdir.join("missing.out").exists() && !workdir.join("sub.out").exists());
+    let payload_sha = packed["payload_sha256"]
+        .as_str()
+        .context("payload sha")?
+        .to_owned();
+    let site2 = workdir.join("site2");
+    fs::create_dir_all(&site2)?;
+    fs::write(
+        site2.join("index.html"),
+        "<!doctype html><a download href=downloads/site1.bin>site1</a>",
+    )?;
+    let pin = format!("downloads/site1.bin:application/octet-stream:{root1}:{payload_sha}");
+    let packed2 = successful(id.cli(
+        workdir,
+        &[
+            "web",
+            "pack",
+            "--dir",
+            "site2",
+            "--label",
+            "pinned",
+            "--pin",
+            &pin,
+            "--output",
+            "site2.package",
+        ],
+    )?)?;
+    ensure!(
+        packed2["pinned"].as_array().context("pinned")?.len() == 1,
+        "{packed2}"
+    );
+    let planned2 = successful(id.cli(
+        workdir,
+        &[
+            "web",
+            "plan",
+            "--package",
+            "site2.package",
+            "--max-fee",
+            "100000",
+            "--output",
+            "web2-plan",
+        ],
+    )?)?;
+    let root2 = planned2["root_txid"].as_str().context("root2")?.to_owned();
+    publish_until_complete(&id, workdir, "web", "web2-plan", "web2-progress.json")?;
+    let fetched2 = successful(id.cli(
+        workdir,
+        &["web", "fetch", "--root", &root2, "--store", "web-store"],
+    )?)?;
+    ensure!(
+        fetched2["publication"]["pinned"]
+            .as_array()
+            .context("pinned")?
+            .len()
+            == 1
+            && fetched2["publication"]["files"]
+                .as_array()
+                .context("files")?
+                .len()
+                == 1,
+        "{fetched2}"
+    );
+    let pinned_get = successful(get_resource(
+        &id,
+        workdir,
+        &root2,
+        "/downloads/site1.bin",
+        "site1.out",
+    )?)?;
+    ensure!(
+        pinned_get["mime"] == "application/octet-stream"
+            && fs::read(workdir.join("site1.out"))? == fs::read(workdir.join("site.package"))?,
+        "{pinned_get}"
+    );
+    let manifest = successful(id.cli(
+        workdir,
+        &[
+            "web",
+            "manifest",
+            "--store",
+            "web-store",
+            "--network",
+            "bitcoin-regtest",
+            "--root",
+            &root2,
+        ],
+    )?)?;
+    ensure!(
+        manifest["author"] == id.author
+            && manifest["pinned"][0]["root_txid"] == root1
+            && manifest["entry"] == "index.html",
+        "{manifest}"
+    );
+    let store_objects = workdir.join("web-store").join("objects");
+    let payload_sha = fetched2["publication"]["payload_sha256"]
+        .as_str()
+        .context("payload")?
+        .to_owned();
+    let original = fs::read(store_objects.join(&payload_sha))?;
+    fs::write(
+        store_objects.join(&payload_sha),
+        b"<!doctype html><p>forged</p>",
+    )?;
+    ensure!(
+        !get_resource(&id, workdir, &root2, "/", "forged.out")?
+            .status
+            .success(),
+        "forged package served"
+    );
+    fs::write(store_objects.join(&payload_sha), &original)?;
+    let pin_sha = fetched2["publication"]["pinned"][0]["sha256"]
+        .as_str()
+        .context("pin sha")?
+        .to_owned();
+    fs::remove_file(store_objects.join(&pin_sha))?;
+    let missing_pin = get_resource(&id, workdir, &root2, "/", "incomplete.out")?;
+    ensure!(
+        !missing_pin.status.success(),
+        "publication served with a missing pinned object"
+    );
+    ensure!(
+        String::from_utf8_lossy(&missing_pin.stderr).contains("declared set incomplete"),
+        "{}",
+        String::from_utf8_lossy(&missing_pin.stderr)
+    );
+    successful(id.cli(
+        workdir,
+        &["web", "fetch", "--root", &root2, "--store", "web-store"],
+    )?)?;
+    successful(get_resource(&id, workdir, &root2, "/", "restored.out")?)?;
+    let bad_pin = format!(
+        "downloads/site1.bin:application/octet-stream:{root1}:{}",
+        "00".repeat(32)
+    );
+    successful(id.cli(
+        workdir,
+        &[
+            "web",
+            "pack",
+            "--dir",
+            "site2",
+            "--label",
+            "bad pin",
+            "--pin",
+            &bad_pin,
+            "--output",
+            "site3.package",
+        ],
+    )?)?;
+    let planned3 = successful(id.cli(
+        workdir,
+        &[
+            "web",
+            "plan",
+            "--package",
+            "site3.package",
+            "--max-fee",
+            "100000",
+            "--output",
+            "web3-plan",
+        ],
+    )?)?;
+    let root3 = planned3["root_txid"].as_str().context("root3")?.to_owned();
+    publish_until_complete(&id, workdir, "web", "web3-plan", "web3-progress.json")?;
+    let rejected = id.cli(
+        workdir,
+        &["web", "fetch", "--root", &root3, "--store", "web-store"],
+    )?;
+    ensure!(!rejected.status.success(), "a wrong pin was stored");
+    ensure!(
+        !id.cli(
+            workdir,
+            &[
+                "web",
+                "manifest",
+                "--store",
+                "web-store",
+                "--network",
+                "bitcoin-regtest",
+                "--root",
+                &root3
+            ],
+        )?
+        .status
+        .success()
+    );
+    successful(id.cli(
+        workdir,
+        &[
+            "names",
+            "encode",
+            "genesis",
+            "--mode",
+            "open",
+            "--expiry-blocks",
+            "5000",
+            "--reveal-max-blocks",
+            "144",
+            "--output",
+            "genesis.record",
+        ],
+    )?)?;
+    let (genesis, genesis_height) = publish_names_record(
+        workdir,
+        &id.node,
+        &id.vault,
+        &id.pass,
+        &id.mining,
+        "genesis.record",
+        "genesis-plan.json",
+        "genesis-progress.json",
+    )?;
+    successful(id.cli(
+        workdir,
+        &[
+            "names",
+            "encode",
+            "claim",
+            "--registry",
+            &genesis,
+            "--name",
+            "atelier",
+            "--target",
+            &root2,
+            "--output",
+            "claim.record",
+        ],
+    )?)?;
+    let (claim, _claim_height) = publish_names_record(
+        workdir,
+        &id.node,
+        &id.vault,
+        &id.pass,
+        &id.mining,
+        "claim.record",
+        "claim-plan.json",
+        "claim-progress.json",
+    )?;
+    successful(id.cli(
+        workdir,
+        &[
+            "names",
+            "scan",
+            "--genesis",
+            &genesis,
+            "--genesis-height",
+            &genesis_height.to_string(),
+            "--index",
+            "names-index.json",
+        ],
+    )?)?;
+    let resolved = successful(id.cli(
+        workdir,
+        &[
+            "names",
+            "resolve",
+            "--network",
+            "bitcoin-regtest",
+            "--index",
+            "names-index.json",
+            "atelier",
+        ],
+    )?)?;
+    ensure!(
+        resolved["resolution"]["Bound"]["target"]["Publication"] == root2
+            && resolved["resolution"]["Bound"]["claim_txid"] == claim,
+        "{resolved}"
+    );
+    println!(
+        "{}",
+        json!({"network":"regtest","site":root1,"pinned_site":root2,"rejected_pin_site":root3,"genesis":genesis,"claim":claim,"author":id.author,"public_network":false})
+    );
+    Ok(())
+}
+
+struct Signer {
+    vault: PathBuf,
+    pass: PathBuf,
+    author: String,
+}
+
+fn extra_identity(
+    workdir: &Path,
+    node: &Daemon,
+    miner: &Client,
+    mining: &Value,
+    label: &str,
+    outputs: u32,
+) -> Result<Signer> {
+    use std::os::unix::fs::PermissionsExt;
+    let vault = workdir.join(format!("{label}.vault"));
+    let pass = workdir.join(format!("{label}.password"));
+    let phrase = workdir.join(format!("{label}.recovery"));
+    fs::write(&pass, format!("{label} regtest password"))?;
+    fs::set_permissions(&pass, fs::Permissions::from_mode(0o600))?;
+    successful(names_cli(
+        workdir,
+        node,
+        &vault,
+        &pass,
+        &[
+            "key",
+            "create",
+            "--vault",
+            vault.to_str().context("vault path")?,
+            "--password-file",
+            pass.to_str().context("password path")?,
+            "--recovery-out",
+            phrase.to_str().context("phrase path")?,
+            "--name",
+            label,
+        ],
+    )?)?;
+    let identities = successful(names_cli(workdir, node, &vault, &pass, &["key", "list"])?)?;
+    let author = identities["identities"][0]["author"]
+        .as_str()
+        .context("author")?
+        .to_owned();
+    let address = successful(names_cli(
+        workdir,
+        node,
+        &vault,
+        &pass,
+        &["wallet", "address"],
+    )?)?;
+    let receiving = address["receive_address"].as_str().context("address")?;
+    for _ in 0..outputs {
+        miner.call::<Value>("sendtoaddress", &[json!(receiving), json!(0.01)])?;
+    }
+    node.call("generatetoaddress", &[json!(1), mining.clone()])?;
+    Ok(Signer {
+        vault,
+        pass,
+        author,
+    })
+}
+
+fn publish_site(owner: &Identity, workdir: &Path, tag: &str, body: &str) -> Result<String> {
+    let dir = workdir.join(tag);
+    fs::create_dir_all(&dir)?;
+    fs::write(dir.join("index.html"), body)?;
+    let package = format!("{tag}.package");
+    let plan = format!("{tag}-plan");
+    successful(owner.cli(
+        workdir,
+        &[
+            "web",
+            "pack",
+            "--dir",
+            tag,
+            "--entry",
+            "index.html",
+            "--label",
+            tag,
+            "--output",
+            &package,
+        ],
+    )?)?;
+    let planned = successful(owner.cli(
+        workdir,
+        &[
+            "web",
+            "plan",
+            "--package",
+            &package,
+            "--max-fee",
+            "100000",
+            "--output",
+            &plan,
+        ],
+    )?)?;
+    let root = planned["root_txid"].as_str().context("root")?.to_owned();
+    publish_until_complete(owner, workdir, "web", &plan, &format!("{tag}-progress.json"))?;
+    Ok(root)
+}
+
+fn verdict_of(report: &Value, txid: &str) -> Result<Value> {
+    report["records"]
+        .as_array()
+        .context("records")?
+        .iter()
+        .find(|row| row["txid"] == txid)
+        .map(|row| row["verdict"].clone())
+        .context("record missing from the scan report")
+}
+
+#[test]
+#[ignore = "requires bitcoind; administered names registry with approvals, update, renew, suspend, restore and expiry on loopback regtest only"]
+fn administered_registry_approves_updates_renews_suspends_restores_and_expires_on_regtest()
+-> Result<()> {
+    let root = tempfile::Builder::new()
+        .prefix("urma-names-administered-")
+        .tempdir()?;
+    let workdir = root.path();
+    let owner = regtest_identity(workdir, 16)?;
+    let node = &owner.node;
+    let mining = owner.mining.clone();
+    let miner = Client::new(
+        &format!("{}/wallet/miner", node.url()),
+        Auth::CookieFile(node.cookie()),
+    )?;
+    let one = extra_identity(workdir, node, &miner, &mining, "approver-one", 10)?;
+    let two = extra_identity(workdir, node, &miner, &mining, "approver-two", 8)?;
+    let three = extra_identity(workdir, node, &miner, &mining, "approver-three", 6)?;
+    let owner_signer = Signer {
+        vault: owner.vault.clone(),
+        pass: owner.pass.clone(),
+        author: owner.author.clone(),
+    };
+    let encode = |signer: &Signer, args: &[&str]| -> Result<()> {
+        let mut full = vec!["names", "encode"];
+        full.extend_from_slice(args);
+        successful(names_cli(workdir, node, &signer.vault, &signer.pass, &full)?)?;
+        Ok(())
+    };
+    let publish = |signer: &Signer, record: &str, tag: &str| -> Result<(String, u64)> {
+        publish_names_record(
+            workdir,
+            node,
+            &signer.vault,
+            &signer.pass,
+            &mining,
+            record,
+            &format!("{tag}-plan.json"),
+            &format!("{tag}-progress.json"),
+        )
+    };
+    let site_one = publish_site(&owner, workdir, "site-one", "<!doctype html><p>one</p>")?;
+    let site_two = publish_site(&owner, workdir, "site-two", "<!doctype html><p>two</p>")?;
+    encode(
+        &owner_signer,
+        &[
+            "genesis",
+            "--mode",
+            "administered",
+            "--expiry-blocks",
+            "60",
+            "--reveal-max-blocks",
+            "20",
+            "--threshold",
+            "2",
+            "--approver",
+            &one.author,
+            "--approver",
+            &two.author,
+            "--approver",
+            &three.author,
+            "--output",
+            "genesis.record",
+        ],
+    )?;
+    let (genesis, genesis_height) = publish(&owner_signer, "genesis.record", "genesis")?;
+    let scan = || -> Result<Value> {
+        successful(names_cli(
+            workdir,
+            node,
+            &owner.vault,
+            &owner.pass,
+            &[
+                "names",
+                "scan",
+                "--genesis",
+                &genesis,
+                "--genesis-height",
+                &genesis_height.to_string(),
+                "--index",
+                "names-index.json",
+                "--max-blocks",
+                "1000",
+            ],
+        )?)
+    };
+    let resolve = || -> Result<Value> {
+        Ok(successful(names_cli(
+            workdir,
+            node,
+            &owner.vault,
+            &owner.pass,
+            &[
+                "names",
+                "resolve",
+                "--network",
+                "bitcoin-regtest",
+                "--index",
+                "names-index.json",
+                "atelier",
+            ],
+        )?)?["resolution"]
+            .clone())
+    };
+    let open_pending = || -> Result<Vec<Value>> {
+        let pending = successful(names_cli(
+            workdir,
+            node,
+            &owner.vault,
+            &owner.pass,
+            &[
+                "names",
+                "pending",
+                "--network",
+                "bitcoin-regtest",
+                "--index",
+                "names-index.json",
+            ],
+        )?)?;
+        Ok(pending["pending"]
+            .as_array()
+            .context("pending")?
+            .iter()
+            .filter(|row| row["record"]["completed"] == false)
+            .cloned()
+            .collect())
+    };
+    let report = scan()?;
+    ensure!(
+        report["complete_to_tip"] == true && report["names"] == 0,
+        "genesis scan: {report}"
+    );
+    encode(
+        &owner_signer,
+        &[
+            "claim",
+            "--registry",
+            &genesis,
+            "--name",
+            "Atelier",
+            "--target",
+            &site_one,
+            "--output",
+            "request.record",
+        ],
+    )?;
+    let (request, _) = publish(&owner_signer, "request.record", "request")?;
+    let report = scan()?;
+    ensure!(verdict_of(&report, &request)? == "Pending", "{report}");
+    let pending = open_pending()?;
+    ensure!(
+        pending.len() == 1
+            && pending[0]["txid"] == request
+            && pending[0]["record"]["kind"] == "Request"
+            && pending[0]["record"]["approvals"].as_array().context("approvals")?.is_empty(),
+        "pending before approvals: {pending:?}"
+    );
+    ensure!(resolve()? == "Unbound", "request alone must not bind");
+    let approve = |signer: &Signer, record_txid: &str, record: &str, tag: &str| -> Result<String> {
+        let output = format!("{tag}.record");
+        encode(
+            signer,
+            &[
+                "approve",
+                "--registry",
+                &genesis,
+                "--record-txid",
+                record_txid,
+                "--record",
+                record,
+                "--output",
+                &output,
+            ],
+        )?;
+        Ok(publish(signer, &output, tag)?.0)
+    };
+    let first = approve(&one, &request, "request.record", "approve-one")?;
+    let report = scan()?;
+    ensure!(verdict_of(&report, &first)? == "Applied", "{report}");
+    ensure!(resolve()? == "Unbound", "one approval of two must not bind");
+    let pending = open_pending()?;
+    ensure!(
+        pending.len() == 1 && pending[0]["record"]["approvals"] == json!([one.author]),
+        "pending after one approval: {pending:?}"
+    );
+    let repeated = approve(&one, &request, "request.record", "approve-one-again")?;
+    let report = scan()?;
+    ensure!(
+        verdict_of(&report, &repeated)? == json!({"Inert": "Repeated"}),
+        "{report}"
+    );
+    let outsider = approve(&owner_signer, &request, "request.record", "approve-owner")?;
+    let report = scan()?;
+    ensure!(
+        verdict_of(&report, &outsider)? == json!({"Invalid": "NotApprover"}),
+        "{report}"
+    );
+    ensure!(resolve()? == "Unbound", "repeated and foreign approvals must not bind");
+    let second = approve(&two, &request, "request.record", "approve-two")?;
+    let report = scan()?;
+    ensure!(verdict_of(&report, &second)? == "Applied", "{report}");
+    let second_height = report["height"].as_u64().context("height")?;
+    let bound = resolve()?;
+    ensure!(
+        bound["Bound"]["owner"] == owner.author
+            && bound["Bound"]["target"]["Publication"] == site_one
+            && bound["Bound"]["claim_txid"] == request
+            && bound["Bound"]["expiry"] == second_height + 60,
+        "activation at the threshold: {bound}"
+    );
+    ensure!(open_pending()?.is_empty(), "completed request still pending");
+    let late = approve(&three, &request, "request.record", "approve-three-late")?;
+    let report = scan()?;
+    ensure!(
+        verdict_of(&report, &late)? == json!({"Inert": "Completed"}),
+        "{report}"
+    );
+    encode(
+        &owner_signer,
+        &[
+            "update",
+            "--registry",
+            &genesis,
+            "--name",
+            "atelier",
+            "--target",
+            &site_two,
+            "--output",
+            "update.record",
+        ],
+    )?;
+    let (update, _) = publish(&owner_signer, "update.record", "update")?;
+    let report = scan()?;
+    ensure!(verdict_of(&report, &update)? == "Pending", "{report}");
+    ensure!(
+        resolve()?["Bound"]["target"]["Publication"] == site_one,
+        "pending update must not change the served target"
+    );
+    let pending = open_pending()?;
+    ensure!(
+        pending.len() == 1 && pending[0]["record"]["kind"] == "Update",
+        "pending update: {pending:?}"
+    );
+    approve(&one, &update, "update.record", "approve-update-one")?;
+    scan()?;
+    ensure!(
+        resolve()?["Bound"]["target"]["Publication"] == site_one,
+        "one approval of two must not move the target"
+    );
+    let completing = approve(&two, &update, "update.record", "approve-update-two")?;
+    scan()?;
+    let bound = resolve()?;
+    ensure!(
+        bound["Bound"]["target"]["Publication"] == site_two
+            && bound["Bound"]["last_txid"] == completing
+            && bound["Bound"]["expiry"] == second_height + 60,
+        "update completion: {bound}"
+    );
+    encode(
+        &owner_signer,
+        &[
+            "renew",
+            "--registry",
+            &genesis,
+            "--name",
+            "atelier",
+            "--target",
+            &site_one,
+            "--output",
+            "renew-wrong.record",
+        ],
+    )?;
+    let (wrong, _) = publish(&owner_signer, "renew-wrong.record", "renew-wrong")?;
+    let report = scan()?;
+    ensure!(
+        verdict_of(&report, &wrong)? == json!({"Invalid": "TargetChanged"}),
+        "{report}"
+    );
+    encode(
+        &owner_signer,
+        &[
+            "renew",
+            "--registry",
+            &genesis,
+            "--name",
+            "atelier",
+            "--target",
+            &site_two,
+            "--output",
+            "renew.record",
+        ],
+    )?;
+    let (renew, renew_height) = publish(&owner_signer, "renew.record", "renew")?;
+    let report = scan()?;
+    ensure!(verdict_of(&report, &renew)? == "Applied", "{report}");
+    ensure!(
+        resolve()?["Bound"]["expiry"] == renew_height + 60,
+        "renewal must restart the term at the renewal block"
+    );
+    let name_op = |signer: &Signer, op: &str, tag: &str| -> Result<String> {
+        let output = format!("{tag}.record");
+        encode(
+            signer,
+            &[op, "--registry", &genesis, "--name", "atelier", "--output", &output],
+        )?;
+        Ok(publish(signer, &output, tag)?.0)
+    };
+    let suspend_one = name_op(&one, "suspend", "suspend-one")?;
+    let report = scan()?;
+    ensure!(verdict_of(&report, &suspend_one)? == "Applied", "{report}");
+    ensure!(
+        resolve()?["Bound"]["target"]["Publication"] == site_two,
+        "one suspend vote of two must keep serving"
+    );
+    let suspend_owner = name_op(&owner_signer, "suspend", "suspend-owner")?;
+    let report = scan()?;
+    ensure!(
+        verdict_of(&report, &suspend_owner)? == json!({"Invalid": "NotApprover"}),
+        "{report}"
+    );
+    name_op(&two, "suspend", "suspend-two")?;
+    scan()?;
+    ensure!(resolve()? == "Suspended", "two suspend votes must suspend");
+    let suspend_three = name_op(&three, "suspend", "suspend-three")?;
+    let report = scan()?;
+    ensure!(
+        verdict_of(&report, &suspend_three)? == json!({"Inert": "WrongPhase"}),
+        "{report}"
+    );
+    encode(
+        &owner_signer,
+        &[
+            "renew",
+            "--registry",
+            &genesis,
+            "--name",
+            "atelier",
+            "--target",
+            &site_two,
+            "--output",
+            "renew-suspended.record",
+        ],
+    )?;
+    let (renew_suspended, renew_suspended_height) =
+        publish(&owner_signer, "renew-suspended.record", "renew-suspended")?;
+    let report = scan()?;
+    ensure!(
+        verdict_of(&report, &renew_suspended)? == "Applied",
+        "{report}"
+    );
+    ensure!(resolve()? == "Suspended", "renewal must not lift a suspension");
+    name_op(&one, "restore", "restore-one")?;
+    scan()?;
+    ensure!(resolve()? == "Suspended", "one restore vote of two must not restore");
+    let restore_again = name_op(&one, "restore", "restore-one-again")?;
+    let report = scan()?;
+    ensure!(
+        verdict_of(&report, &restore_again)? == json!({"Inert": "Repeated"}),
+        "{report}"
+    );
+    name_op(&two, "restore", "restore-two")?;
+    scan()?;
+    let bound = resolve()?;
+    ensure!(
+        bound["Bound"]["target"]["Publication"] == site_two
+            && bound["Bound"]["expiry"] == renew_suspended_height + 60,
+        "restore must serve the target renewed while suspended: {bound}"
+    );
+    let expiry = bound["Bound"]["expiry"].as_u64().context("expiry")?;
+    let tip = node.call("getblockcount", &[])?.as_u64().context("tip")?;
+    ensure!(tip < expiry, "term already over before the expiry check");
+    node.call("generatetoaddress", &[json!(expiry - tip), mining.clone()])?;
+    let report = scan()?;
+    ensure!(report["height"] == expiry, "scan to the expiry block: {report}");
+    ensure!(resolve()? == "Unbound", "name must be unbound at its expiry height");
+    encode(
+        &three,
+        &[
+            "claim",
+            "--registry",
+            &genesis,
+            "--name",
+            "atelier",
+            "--target",
+            &site_one,
+            "--output",
+            "reclaim.record",
+        ],
+    )?;
+    let (reclaim, _) = publish(&three, "reclaim.record", "reclaim")?;
+    approve(&one, &reclaim, "reclaim.record", "approve-reclaim-one")?;
+    approve(&two, &reclaim, "reclaim.record", "approve-reclaim-two")?;
+    scan()?;
+    let bound = resolve()?;
+    ensure!(
+        bound["Bound"]["owner"] == three.author
+            && bound["Bound"]["target"]["Publication"] == site_one
+            && bound["Bound"]["claim_txid"] == reclaim,
+        "reclaim after expiry: {bound}"
+    );
+    let again = scan()?;
+    ensure!(
+        again["scanned"] == 0 && again["rolled_back"] == 0,
+        "idempotent scan: {again}"
+    );
+    println!(
+        "{}",
+        json!({"network":"regtest","genesis":genesis,"genesis_height":genesis_height,"request":request,"update":update,"renew":renew,"reclaim":reclaim,"owner":owner.author,"approvers":[one.author,two.author,three.author],"public_network":false})
     );
     Ok(())
 }

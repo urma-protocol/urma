@@ -118,11 +118,27 @@ fn temporary_rejection(error: &Error) -> bool {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RevealTiming {
+    AfterMempool,
+    AfterConfirmation,
+}
+
 pub fn publish(
     node: &Node,
     plan: &PublicationPlan,
     approved_id: &str,
     journal: &Path,
+) -> Result<PublishReport, Error> {
+    publish_with(node, plan, approved_id, journal, RevealTiming::AfterMempool)
+}
+
+pub fn publish_with(
+    node: &Node,
+    plan: &PublicationPlan,
+    approved_id: &str,
+    journal: &Path,
+    timing: RevealTiming,
 ) -> Result<PublishReport, Error> {
     let (mut report, anchor) = start(
         node,
@@ -153,7 +169,8 @@ pub fn publish(
             store(journal, &report)?;
             return Ok(report);
         }
-        if plan.records.len() != 1 && !matches!(presence, Presence::Confirmed { .. }) {
+        let dependent = plan.records.len() != 1 || timing == RevealTiming::AfterConfirmation;
+        if dependent && !matches!(presence, Presence::Confirmed { .. }) {
             report.blocked_reason =
                 "awaiting one confirmation before dependent publication or recovery".into();
             store(journal, &report)?;

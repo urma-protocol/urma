@@ -13,6 +13,7 @@
 !/tests/vectors/**/*.commit
 !/tests/vectors/**/*.json
 !/tests/vectors/**/*.original
+!/tests/vectors/**/*.package
 !/tests/vectors/**/*.record
 !/tests/vectors/**/*.reveal
 !/tests/vectors/**/*.urma
@@ -20,6 +21,8 @@
 !/tests/vectors/identity-vault-v1/generate.py
 !/scripts/generate-vectors.py
 !/scripts/generate-multipart-vectors.py
+!/scripts/generate-names-vectors.py
+!/scripts/generate-web-vectors.py
 !/scripts/open-bundle.sh
 !/scripts/read-multipart.py
 !/scripts/smoke-universal-regtest.py

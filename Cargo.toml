@@ -13,6 +13,8 @@ members = [
     "urma-runtime",
     "urma-files",
     "urma-git",
+    "urma-names",
+    "urma-web",
 ]
 
 [workspace.package]

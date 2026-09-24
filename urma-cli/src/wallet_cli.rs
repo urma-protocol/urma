@@ -1,9 +1,42 @@
-use crate::{key_cli::VaultAccess, node_cli::NodeArgs};
+use crate::{approve_publication, key_cli::VaultAccess, node_cli::NodeArgs};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
-use urma_runtime::error::Error;
+use urma_runtime::{
+    error::Error,
+    transfer::{self, TransferRequest},
+};
 use urma_wallet::wallet::{FeeBudget, FeeRate};
+
+fn send(
+    access: &VaultAccess,
+    node: &NodeArgs,
+    to: &str,
+    request: TransferRequest,
+    yes: bool,
+) -> Result<Value, Error> {
+    let vault = access.open()?;
+    let signer = vault.keyring().active()?;
+    let runtime = node.connect()?;
+    let prepared = transfer::prepare(&runtime, &signer, &request)?;
+    let txid = prepared.transaction.compute_txid();
+    approve_publication(
+        &format!("Send {} base units to {to}", request.amount),
+        &txid.to_string(),
+        prepared.fee,
+        yes,
+    )?;
+    let sent = transfer::submit(&runtime, &prepared)?;
+    Ok(json!({
+        "status": "broadcast",
+        "txid": sent.to_string(),
+        "to": to,
+        "amount": request.amount,
+        "fee": prepared.fee,
+        "change": prepared.change,
+        "chain": node.chain()?,
+    }))
+}
 
 #[derive(Subcommand)]
 pub(crate) enum WalletCommand {
@@ -27,6 +60,23 @@ pub(crate) enum WalletCommand {
         access: VaultAccess,
         #[command(flatten)]
         node: NodeArgs,
+    },
+    #[command(about = "Send funds from your active identity to an address")]
+    Send {
+        #[command(flatten)]
+        access: VaultAccess,
+        #[command(flatten)]
+        node: NodeArgs,
+        #[arg(long, help = "Destination address on the selected network")]
+        to: String,
+        #[arg(long, help = "Amount in base units (litoshis on Litecoin)")]
+        amount: u64,
+        #[arg(long, default_value = "1")]
+        rate: NonZeroU64,
+        #[arg(long, default_value_t = 10_000)]
+        max_fee: u64,
+        #[arg(short, long, help = "Approve the displayed transfer and fee")]
+        yes: bool,
     },
     #[command(about = "Estimate a fee from virtual transaction size (offline)")]
     Quote {
@@ -64,6 +114,26 @@ pub(crate) fn run(command: WalletCommand) -> Result<Value, Error> {
                 json!({"author":signer.author().0.to_string(), "chain":node.chain()?, "receive_address":urma_wallet::address::receive_address(&signer, node.chain()?)?, "utxos":utxos, "spendable_confirmed_balance":spendable, "network_verified":true, "broadcast":false}),
             )
         }
+        WalletCommand::Send {
+            access,
+            node,
+            to,
+            amount,
+            rate,
+            max_fee,
+            yes,
+        } => send(
+            &access,
+            &node,
+            &to,
+            TransferRequest {
+                destination: urma_wallet::address::destination_script(&to, node.chain()?)?,
+                amount,
+                rate,
+                max_fee,
+            },
+            yes,
+        ),
         WalletCommand::Quote {
             node,
             vbytes,

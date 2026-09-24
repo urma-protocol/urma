@@ -51,6 +51,8 @@ urma-runtime = { version = "0.2.0", path = "../urma-runtime" }
 
 urma-files = { version = "0.2.0", path = "../urma-files" }
 urma-git = { version = "0.2.0", path = "../urma-git" }
+urma-names = { version = "0.2.0", path = "../urma-names" }
+urma-web = { version = "0.2.0", path = "../urma-web" }
 
 [dev-dependencies]
 anyhow = "1"

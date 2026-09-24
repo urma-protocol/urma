@@ -1,0 +1,26 @@
+[package]
+name = "urma-web"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme = false
+include = ["Cargo.toml", "src/**/*.rs"]
+description = "URMA Web profile URMAWEB1: flat site packages with pinned objects, packing and verified store"
+
+[dependencies]
+bitcoin = { version = "0.32", features = ["serde"] }
+hex = "0.4"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+urma-core = { version = "0.2.0", path = "../urma-core" }
+urma-io = { version = "0.2.0", path = "../urma-io" }
+
+[dev-dependencies]
+anyhow = "1"
+tempfile = "3"
+urma-chain = { version = "0.2.0", path = "../urma-chain" }
+urma-runtime = { version = "0.2.0", path = "../urma-runtime" }
+urma-wallet = { version = "0.2.0", path = "../urma-wallet" }

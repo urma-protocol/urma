@@ -17,6 +17,7 @@ pub enum PublicKind {
     Reply,
     Profile,
     Avatar,
+    ProfileRecord,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -71,6 +72,8 @@ pub(crate) enum PublicTools {
         output: PathBuf,
         #[arg(long)]
         reply_to: Option<Txid>,
+        #[arg(long)]
+        profile: Option<String>,
     },
     Prepare {
         #[arg(long)]
@@ -101,28 +104,42 @@ fn encode(
     input: PathBuf,
     output: PathBuf,
     target: Option<Txid>,
+    profile: Option<String>,
 ) -> Result<Value, Error> {
     let bytes = storage::read_bounded(&input, Urma::MAX_PUBLIC_BYTES)?;
+    if !matches!(kind, PublicKind::Reply) {
+        reject_target(target)?;
+    }
+    if !matches!(kind, PublicKind::ProfileRecord) {
+        reject_profile(profile.as_deref())?;
+    }
     let record = match kind {
+        PublicKind::Post => PublicRecord::Post(String::from_utf8(bytes)?),
         PublicKind::Reply => PublicRecord::Reply {
             target: target.context("reply requires --reply-to")?,
             text: String::from_utf8(bytes)?,
         },
-        other => {
-            reject_target(target)?;
-            match other {
-                PublicKind::Post => PublicRecord::Post(String::from_utf8(bytes)?),
-                PublicKind::Profile => PublicRecord::Profile(String::from_utf8(bytes)?),
-                PublicKind::Avatar => PublicRecord::Avatar(Box::new(bytes.as_slice().try_into()?)),
-                PublicKind::Reply => bail!("reply target was not handled"),
-            }
-        }
+        PublicKind::Profile => PublicRecord::Profile(String::from_utf8(bytes)?),
+        PublicKind::Avatar => PublicRecord::Avatar(Box::new(bytes.as_slice().try_into()?)),
+        PublicKind::ProfileRecord => PublicRecord::ProfileRecord {
+            profile: profile_identifier(&profile.context("profile record requires --profile")?)?,
+            payload: bytes,
+        },
     };
     let bytes = record.encode()?;
     storage::write_new(&output, &bytes)?;
     Ok(
         json!({"status":"encoded","version":Urma::VERSION,"kind":record.kind().byte(),"bytes":bytes.len()}),
     )
+}
+
+fn profile_identifier(text: &str) -> Result<[u8; 8], Error> {
+    let bytes = match text.len() {
+        8 => text.as_bytes().to_vec(),
+        16 => hex::decode(text)?,
+        _ => bail!("profile identifier must be 8 bytes or 16 hex digits"),
+    };
+    Ok(bytes.as_slice().try_into()?)
 }
 
 pub(crate) fn run(command: PublicCommand) -> Result<Value, Error> {
@@ -142,7 +159,8 @@ fn tools(command: PublicTools) -> Result<Value, Error> {
             input,
             output,
             reply_to,
-        } => encode(kind, input, output, reply_to),
+            profile,
+        } => encode(kind, input, output, reply_to, profile),
         PublicTools::Prepare {
             record,
             access,
@@ -196,4 +214,11 @@ fn reject_target(target: Option<Txid>) -> Result<(), Error> {
         return Ok(());
     };
     bail!("target {txid} requires reply kind")
+}
+
+fn reject_profile(profile: Option<&str>) -> Result<(), Error> {
+    let Some(identifier) = profile else {
+        return Ok(());
+    };
+    bail!("--profile {identifier} requires the profile-record kind")
 }

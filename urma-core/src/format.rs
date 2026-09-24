@@ -19,6 +19,7 @@ impl Urma {
     pub const PRIVATE_RECORD_BYTES: usize = 32_928;
     pub const MAX_PRIVATE_BYTES: u64 = 140_737_488_322_560;
     pub const MAX_PUBLIC_BYTES: usize = 32_768;
+    pub const PROFILE_IDENTIFIER_BYTES: usize = 8;
     pub const AVATAR_BYTES: usize = 512;
     pub const CONTAINER_HEADER_BYTES: usize = 12;
     pub const CONTENT_DOMAIN: &'static [u8] = b"URMA/V0/private/content";
@@ -40,6 +41,7 @@ pub enum RecordKind {
     RootManifest = 9,
     WirePost = 10,
     WireReply = 11,
+    ProfileRecord = 12,
 }
 
 impl RecordKind {
@@ -56,6 +58,7 @@ impl RecordKind {
             Self::RootManifest => 9,
             Self::WirePost => 10,
             Self::WireReply => 11,
+            Self::ProfileRecord => 12,
         }
     }
 
@@ -86,6 +89,7 @@ impl RecordKind {
             9 => Ok(Self::RootManifest),
             10 => Ok(Self::WirePost),
             11 => Ok(Self::WireReply),
+            12 => Ok(Self::ProfileRecord),
             kind => Err(Error::Unsupported(format!("unsupported URMA kind {kind}"))),
         }
     }
@@ -143,6 +147,10 @@ pub enum PublicRecord {
         topics: Topics,
         text: String,
     },
+    ProfileRecord {
+        profile: [u8; 8],
+        payload: Vec<u8>,
+    },
 }
 
 impl PublicRecord {
@@ -154,6 +162,7 @@ impl PublicRecord {
             Self::Avatar(..) => RecordKind::Avatar,
             Self::WirePost { .. } => RecordKind::WirePost,
             Self::WireReply { .. } => RecordKind::WireReply,
+            Self::ProfileRecord { .. } => RecordKind::ProfileRecord,
         }
     }
 
@@ -177,6 +186,10 @@ impl PublicRecord {
                 .checked_add(32)
                 .ok_or_else(|| Error::Invalid("reply size overflow".into()))?,
             Self::Avatar(pixels) => pixels.len(),
+            Self::ProfileRecord { payload, .. } => payload
+                .len()
+                .checked_add(Urma::PROFILE_IDENTIFIER_BYTES)
+                .ok_or_else(|| Error::Invalid("profile record size overflow".into()))?,
             Self::WirePost { .. } | Self::WireReply { .. } => {
                 bail!("structured record handled separately")
             }
@@ -194,6 +207,10 @@ impl PublicRecord {
                 bytes.extend_from_slice(text.as_bytes());
             }
             Self::Avatar(pixels) => bytes.extend_from_slice(pixels.as_slice()),
+            Self::ProfileRecord { profile, payload } => {
+                bytes.extend_from_slice(profile);
+                bytes.extend_from_slice(payload);
+            }
             Self::WirePost { .. } | Self::WireReply { .. } => {
                 bail!("structured record handled separately")
             }
@@ -223,6 +240,16 @@ impl PublicRecord {
                 })
             }
             RecordKind::Avatar => Ok(Self::Avatar(Box::new(body.try_into()?))),
+            RecordKind::ProfileRecord => {
+                ensure!(
+                    body.len() >= Urma::PROFILE_IDENTIFIER_BYTES,
+                    "truncated profile identifier"
+                );
+                Ok(Self::ProfileRecord {
+                    profile: body[..Urma::PROFILE_IDENTIFIER_BYTES].try_into()?,
+                    payload: body[Urma::PROFILE_IDENTIFIER_BYTES..].to_vec(),
+                })
+            }
             RecordKind::WirePost => {
                 let (topics, text) = Topics::decode_body(body)?;
                 Ok(Self::WirePost { topics, text })

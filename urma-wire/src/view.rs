@@ -64,6 +64,9 @@ fn render(entry: &Entry) -> Result<Value, Error> {
         }
         PublicRecord::Profile(name) => json!({"kind":"profile","name":name}),
         PublicRecord::Avatar(pixels) => json!({"kind":"avatar","pixels_hex":hex::encode(*pixels)}),
+        PublicRecord::ProfileRecord { .. } => {
+            return Err(Error::Invalid("kind 0C is not a Wire record".into()));
+        }
     };
     Ok(
         json!({"txid":entry.txid,"author":entry.author,"height":entry.height,"position":entry.position,"payload":payload}),

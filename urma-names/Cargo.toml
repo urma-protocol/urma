@@ -1,0 +1,27 @@
+[package]
+name = "urma-names"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+repository.workspace = true
+readme = false
+include = ["Cargo.toml", "src/**/*.rs"]
+description = "URMA names registry profile URMANAM1: payload codec and deterministic registry engine"
+
+[dependencies]
+bitcoin = { version = "0.32", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+tracing = "0.1"
+urma-chain = { version = "0.2.0", path = "../urma-chain" }
+urma-core = { version = "0.2.0", path = "../urma-core" }
+urma-io = { version = "0.2.0", path = "../urma-io" }
+
+[dev-dependencies]
+anyhow = "1"
+hex = "0.4"
+tempfile = "3"
+urma-runtime = { version = "0.2.0", path = "../urma-runtime" }
+urma-wallet = { version = "0.2.0", path = "../urma-wallet" }

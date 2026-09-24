@@ -431,7 +431,7 @@ fn unknown_allocations_and_client_capacity_are_distinct_errors() -> Result<()> {
     for kind in 0..=255u8 {
         let mut header = RecordKind::Post.prefix();
         header[5] = kind;
-        assert_eq!(RecordKind::parse(&header).is_ok(), (1..=9).contains(&kind));
+        assert_eq!(RecordKind::parse(&header).is_ok(), (1..=12).contains(&kind));
     }
     for flags in 1..=u16::MAX {
         let mut header = RecordKind::Post.prefix();
@@ -448,5 +448,62 @@ fn unknown_allocations_and_client_capacity_are_distinct_errors() -> Result<()> {
         urma_runtime::storage::read_bounded(&file, 2),
         Err(urma_runtime::error::Error::Capacity(_))
     ));
+    Ok(())
+}
+
+#[test]
+fn profile_records_keep_identifier_and_opaque_payload_within_bounds() -> Result<()> {
+    let nested = PublicRecord::decode(&fs::read(vectors().join("profile-record-nested.record"))?)?;
+    let PublicRecord::ProfileRecord { profile, payload } = nested else {
+        panic!("not a profile record")
+    };
+    assert_eq!(&profile, b"URMANAM1");
+    assert_eq!(payload, fs::read(vectors().join("post.record"))?);
+    let bytes = fs::read(vectors().join("profile-record.record"))?;
+    for length in 0..16 {
+        assert!(PublicRecord::decode(&bytes[..length]).is_err(), "{length}");
+    }
+    let empty = PublicRecord::decode(&bytes[..16])?;
+    assert_eq!(
+        empty,
+        PublicRecord::ProfileRecord {
+            profile: bytes[8..16].try_into()?,
+            payload: Vec::new()
+        }
+    );
+    assert_eq!(empty.encode()?, bytes[..16]);
+    let full = PublicRecord::ProfileRecord {
+        profile: [0; 8],
+        payload: vec![0xff; 32752],
+    };
+    assert_eq!(full.encode()?.len(), Urma::MAX_PUBLIC_BYTES);
+    assert!(
+        PublicRecord::ProfileRecord {
+            profile: [0; 8],
+            payload: vec![0xff; 32753],
+        }
+        .encode()
+        .is_err()
+    );
+    assert_eq!(RecordKind::parse(&bytes)?, RecordKind::ProfileRecord);
+    assert_eq!(RecordKind::ProfileRecord.byte(), 0x0c);
+    let temp = tempfile::tempdir()?;
+    fs::write(temp.path().join("payload"), b"opaque \xff\xc0")?;
+    let response = Command::new(env!("CARGO_BIN_EXE_urma"))
+        .env("URMA_OUTPUT", "json")
+        .args(["wire", "expert", "encode", "--kind", "profile-record"])
+        .args(["--profile", "URMANAM1", "--input"])
+        .arg(temp.path().join("payload"))
+        .arg("--output")
+        .arg(temp.path().join("record"))
+        .output()?;
+    assert!(
+        response.status.success(),
+        "{}",
+        String::from_utf8_lossy(&response.stderr)
+    );
+    let encoded = fs::read(temp.path().join("record"))?;
+    assert_eq!(encoded[..8], RecordKind::ProfileRecord.prefix());
+    assert_eq!(&encoded[8..], b"URMANAM1opaque \xff\xc0");
     Ok(())
 }

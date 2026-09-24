@@ -1,7 +1,7 @@
 use crate::config;
 use clap::Args;
 use urma_chain::observation::Chain;
-use urma_runtime::error::Error;
+use urma_runtime::error::{Context, Error};
 use urma_runtime::node::Node;
 
 #[derive(Args)]
@@ -22,4 +22,11 @@ impl NodeArgs {
             config::Connection::Public => Node::public(chain),
         }
     }
+}
+
+pub(crate) fn chain_name(chain: Chain) -> Result<String, Error> {
+    Ok(serde_json::to_value(chain)?
+        .as_str()
+        .context("chain name")?
+        .to_owned())
 }

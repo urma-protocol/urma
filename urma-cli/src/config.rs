@@ -46,6 +46,56 @@ pub(crate) fn log_directory() -> Result<PathBuf, Error> {
     Ok(state.join("urma/logs"))
 }
 
+fn data_directory() -> Result<PathBuf, Error> {
+    match std::env::var_os("XDG_DATA_HOME") {
+        Some(value) if PathBuf::from(&value).is_absolute() => Ok(PathBuf::from(value)),
+        Some(value) => {
+            tracing::warn!(path = ?value, "ignoring relative XDG_DATA_HOME");
+            Ok(home()?.join(".local/share"))
+        }
+        None => Ok(home()?.join(".local/share")),
+    }
+}
+
+pub(crate) struct StoreChoice(pub(crate) Option<PathBuf>);
+
+pub(crate) fn web_store(requested: StoreChoice) -> Result<PathBuf, Error> {
+    match requested.0 {
+        Some(path) => Ok(path),
+        None => match std::env::var_os("URMA_WEB_STORE") {
+            Some(path) => Ok(PathBuf::from(path)),
+            None => Ok(data_directory()?.join("urma/web-store")),
+        },
+    }
+}
+
+pub(crate) struct IndexChoice {
+    pub(crate) path: Option<PathBuf>,
+    pub(crate) registry: Option<bitcoin::Txid>,
+}
+
+pub(crate) fn names_index(choice: IndexChoice, network: &str) -> Result<PathBuf, Error> {
+    match choice.path {
+        Some(path) => Ok(path),
+        None => match choice.registry {
+            Some(registry) => {
+                let directory = match std::env::var_os("URMA_NAMES_DIR") {
+                    Some(path) => PathBuf::from(path),
+                    None => data_directory()?.join("urma/names"),
+                };
+                Ok(directory.join(network).join(format!("{registry}.json")))
+            }
+            None => Err(Error::Missing(
+                "name the registry with --registry GENESIS_TXID or the index with --index".into(),
+            )),
+        },
+    }
+}
+
+pub(crate) fn names_watch_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(15)
+}
+
 pub(crate) fn home() -> Result<PathBuf, Error> {
     Ok(std::env::var_os("HOME")
         .context("HOME is unset; set HOME to your user directory")?
@@ -241,6 +291,10 @@ pub(crate) fn publication_poll_interval() -> std::time::Duration {
 
 pub(crate) fn publication_tip_interval() -> std::time::Duration {
     std::time::Duration::from_secs(2)
+}
+
+pub(crate) fn web_watch_interval() -> std::time::Duration {
+    std::time::Duration::from_secs(10)
 }
 
 pub(crate) struct FeeCeiling(pub Option<u64>);

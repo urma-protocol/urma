@@ -1,0 +1,514 @@
+{
+  "profile": "URMANAM1",
+  "license": "CC0-1.0",
+  "cases": [
+    {
+      "name": "genesis-open",
+      "outcome": "valid",
+      "record": {
+        "file": "genesis-open.record",
+        "bytes": 27,
+        "sha256": "02fe44b1a0bd123766c33533fdb444c3aa8a8bb58dcddc2e4a6b1fc277d9575f"
+      },
+      "expect": {
+        "mode": "open",
+        "expiry_blocks": 210240,
+        "reveal_max_blocks": 144,
+        "threshold": 0,
+        "approvers": []
+      }
+    },
+    {
+      "name": "genesis-administered",
+      "outcome": "valid",
+      "record": {
+        "file": "genesis-administered.record",
+        "bytes": 123,
+        "sha256": "8da49471de025fe0f9c85367d5db3fa7c2af3673492d4b676085fb2afa8669f9"
+      },
+      "expect": {
+        "mode": "administered",
+        "expiry_blocks": 210240,
+        "reveal_max_blocks": 144,
+        "threshold": 2,
+        "approvers": [
+          "774ae7f858a9411e5ef4246b70c65aac5649980be5c17891bbec17895da008cb",
+          "d01115d548e7561b15c38f004d734633687cf4419620095bc5b0f47070afe85a",
+          "f28773c2d975288bc7d1d205c3748651b075fbc6610e58cddeeddf8f19405aa8"
+        ]
+      }
+    },
+    {
+      "name": "genesis-min-window",
+      "outcome": "valid",
+      "record": {
+        "file": "genesis-min-window.record",
+        "bytes": 27,
+        "sha256": "63a8b4e5f4237c775669efd0fb411e20a9f4f67b36af852b653db3d78abe1755"
+      }
+    },
+    {
+      "name": "genesis-max-approvers",
+      "outcome": "valid",
+      "record": {
+        "file": "genesis-max-approvers.record",
+        "bytes": 8187,
+        "sha256": "d782665904d705ceddfc472a106995dec4e21358132f01ecccb8084ff223a09e"
+      }
+    },
+    {
+      "name": "claim",
+      "outcome": "valid",
+      "record": {
+        "file": "claim.record",
+        "bytes": 105,
+        "sha256": "e54f68e7978e56ff17eb0962db816a3534e4f7ce2537192220d0e2cadfca1946"
+      },
+      "expect": {
+        "op": 1,
+        "registry": "5f5e5d5c5b5a595857565554535251504f4e4d4c4b4a49484746454443424140",
+        "salt": "000102030405060708090a0b0c0d0e0f",
+        "name": "atelier",
+        "target": "7f7e7d7c7b7a797877767574737271706f6e6d6c6b6a69686766656463626160"
+      }
+    },
+    {
+      "name": "claim-reserve",
+      "outcome": "valid",
+      "record": {
+        "file": "claim-reserve.record",
+        "bytes": 105,
+        "sha256": "1a05080d1dcca988de0c363e6f217c6826b521cba4156105a506f8659679a738"
+      }
+    },
+    {
+      "name": "claim-hyphens",
+      "outcome": "valid",
+      "record": {
+        "file": "claim-hyphens.record",
+        "bytes": 104,
+        "sha256": "192ec7b18deff26afc4b29d4a686501ccac85785174dd0327c85b938af75a4da"
+      }
+    },
+    {
+      "name": "claim-digits",
+      "outcome": "valid",
+      "record": {
+        "file": "claim-digits.record",
+        "bytes": 99,
+        "sha256": "217c207ea156d79040e7396f4c83c1c8cfa50e613ab0d759619e584175dde13b"
+      }
+    },
+    {
+      "name": "claim-max-name",
+      "outcome": "valid",
+      "record": {
+        "file": "claim-max-name.record",
+        "bytes": 161,
+        "sha256": "65817fefc918ef62701db399c03c91e539b00398c9b326ced82696275ed088c0"
+      }
+    },
+    {
+      "name": "update",
+      "outcome": "valid",
+      "record": {
+        "file": "update.record",
+        "bytes": 99,
+        "sha256": "088a514b2e08efb186cd01869c5b95e9b1cecfc9c3403d74bca5a9daf3686e7d"
+      }
+    },
+    {
+      "name": "renew",
+      "outcome": "valid",
+      "record": {
+        "file": "renew.record",
+        "bytes": 100,
+        "sha256": "f21e3536c0122951bb92381e8075d46e61ac6775b5aff8cb26af1cca6f7aa55b"
+      }
+    },
+    {
+      "name": "approve",
+      "outcome": "valid",
+      "record": {
+        "file": "approve.record",
+        "bytes": 113,
+        "sha256": "178bce96665bd892ba785bda7a05868b8e9ec1d4dd656ffe0263e07ce2f807d0"
+      },
+      "expect": {
+        "op": 4,
+        "registry": "5f5e5d5c5b5a595857565554535251504f4e4d4c4b4a49484746454443424140",
+        "record_txid": "9f9e9d9c9b9a999897969594939291908f8e8d8c8b8a89888786858483828180",
+        "record_sha256": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf"
+      }
+    },
+    {
+      "name": "suspend",
+      "outcome": "valid",
+      "record": {
+        "file": "suspend.record",
+        "bytes": 57,
+        "sha256": "a87c9884bf646441da8282593d91ead95179b6fb760816f754fb34965150a5b4"
+      }
+    },
+    {
+      "name": "restore",
+      "outcome": "valid",
+      "record": {
+        "file": "restore.record",
+        "bytes": 57,
+        "sha256": "a6ad8605ca0ca28bce40b7a5ee6c5ded1e361f22f41adb4e28b5d876024be7b9"
+      }
+    },
+    {
+      "name": "genesis-rules-01",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-rules-01.record",
+        "bytes": 27,
+        "sha256": "ba9bd050f55f6b484c55d54add7397c8f2e50669b6174de92050fe89df83fb57"
+      }
+    },
+    {
+      "name": "genesis-mode-02",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-mode-02.record",
+        "bytes": 27,
+        "sha256": "5436c2062d339840cb12d88c1b6dc66b5b8a97fb9355381f1dbd239ac70b67b8"
+      }
+    },
+    {
+      "name": "genesis-expiry-equal-window",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-expiry-equal-window.record",
+        "bytes": 27,
+        "sha256": "9ca3b3c9994fe494b3d4c470d241dc0fd7901494f6f6dded9fac5f38c25dd5e3"
+      }
+    },
+    {
+      "name": "genesis-window-zero",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-window-zero.record",
+        "bytes": 27,
+        "sha256": "7cb80d2822b1821f977c688725303e8b390402783f3178b9166f0fbc6bf2bedc"
+      }
+    },
+    {
+      "name": "genesis-open-with-approver",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-open-with-approver.record",
+        "bytes": 59,
+        "sha256": "79f18fa7281662966fe37e5e3462a632ffccc2b557b52d49d46d739be57a04c1"
+      }
+    },
+    {
+      "name": "genesis-open-with-threshold",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-open-with-threshold.record",
+        "bytes": 27,
+        "sha256": "932ce7ce38c1437ce1e61441aa2612782bd7e3b4a50f6e0d7d0c35af5531484a"
+      }
+    },
+    {
+      "name": "genesis-administered-threshold-zero",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-administered-threshold-zero.record",
+        "bytes": 123,
+        "sha256": "ac0903d3269ba29fc08ccd77b43143ec1f107390c30d1ae02b33852743703631"
+      }
+    },
+    {
+      "name": "genesis-administered-threshold-high",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-administered-threshold-high.record",
+        "bytes": 123,
+        "sha256": "4420f4d396fb40dc8d202a96fd24673e8474bba811ccdc7f407c68b268461b7b"
+      }
+    },
+    {
+      "name": "genesis-administered-no-approvers",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-administered-no-approvers.record",
+        "bytes": 27,
+        "sha256": "ed4265e3fac0433533abb6d4cbf426d485d4e1ac8036da68ad354e2b49b58431"
+      }
+    },
+    {
+      "name": "genesis-approvers-unsorted",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-approvers-unsorted.record",
+        "bytes": 123,
+        "sha256": "227ca6aef9029e48d727159d26f47d4528186421862079b48a132a6dd17b9599"
+      }
+    },
+    {
+      "name": "genesis-approvers-duplicate",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-approvers-duplicate.record",
+        "bytes": 91,
+        "sha256": "65f733447d846bfafd6dbf2d3a69ce500b5fd8baebbc54edd14e84de600887b7"
+      }
+    },
+    {
+      "name": "genesis-approver-not-on-curve",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-approver-not-on-curve.record",
+        "bytes": 59,
+        "sha256": "f2a9363c36ae8d91d79a858e27ec71cb88bdf2c56ff80fc985dd45a0f7c46c79"
+      }
+    },
+    {
+      "name": "genesis-count-mismatch",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-count-mismatch.record",
+        "bytes": 122,
+        "sha256": "bed9204ea281b75703cdaa81e31b708090743a615fb5ed8b96b5babbc9aea546"
+      }
+    },
+    {
+      "name": "genesis-trailing",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-trailing.record",
+        "bytes": 28,
+        "sha256": "87885f1c96637dbe671ab9569ab20f9d3e4f465156ae77fbc64e6aca92f29527"
+      }
+    },
+    {
+      "name": "genesis-truncated",
+      "outcome": "invalid",
+      "record": {
+        "file": "genesis-truncated.record",
+        "bytes": 26,
+        "sha256": "c39246833fbf6c2f41866431a7e2555d4ab7ecc3493ae5b5022dccd6b45c692d"
+      }
+    },
+    {
+      "name": "claim-empty-name",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-empty-name.record",
+        "bytes": 98,
+        "sha256": "d5fbcfd5b44800774165116e1f502745dd49837d3fd98ffb5ba014025cd76863"
+      }
+    },
+    {
+      "name": "claim-uppercase",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-uppercase.record",
+        "bytes": 105,
+        "sha256": "e513bbd33ca8506d5d882ab41fe6ae244fcbe5e18a8fcc8f2296f149f31822d2"
+      }
+    },
+    {
+      "name": "claim-leading-hyphen",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-leading-hyphen.record",
+        "bytes": 100,
+        "sha256": "7560aa90b3a505ab0dcb1a67dc67daa6874c6b60c75b64c924f635943e82a2ab"
+      }
+    },
+    {
+      "name": "claim-trailing-hyphen",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-trailing-hyphen.record",
+        "bytes": 100,
+        "sha256": "58de539c946446e97cc43f74d574cd815c22b3d76a699a482deabc4702f5ade2"
+      }
+    },
+    {
+      "name": "claim-xn-hyphens",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-xn-hyphens.record",
+        "bytes": 104,
+        "sha256": "7b2d1f745f5d6e51783ea7d23715eb7de8109ef88f1749bd88e1341c2e9f9f9b"
+      }
+    },
+    {
+      "name": "claim-name-64",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-name-64.record",
+        "bytes": 162,
+        "sha256": "caa86df162818508bb6817785b5eb7a66d14c24f62ba8fab300f033f5144bc7d"
+      }
+    },
+    {
+      "name": "claim-underscore",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-underscore.record",
+        "bytes": 101,
+        "sha256": "4293f0ca384365696aaf452e7192a90b667b1a167ad69e0c4c8225ed61119341"
+      }
+    },
+    {
+      "name": "claim-space",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-space.record",
+        "bytes": 101,
+        "sha256": "8802da7d77eaaf440b6071f355d452a7c99421b314265d7c646952fc19d1030b"
+      }
+    },
+    {
+      "name": "claim-utf8",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-utf8.record",
+        "bytes": 104,
+        "sha256": "d723b72cd999dd23aeee61596548c02c17a087fe4fe5eb3b6eb2a7562a7609be"
+      }
+    },
+    {
+      "name": "claim-trailing",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-trailing.record",
+        "bytes": 100,
+        "sha256": "5ff9a75f79a66a91dc099f5d2564e319cd6f3190ccba876df6edd6391d2e0574"
+      }
+    },
+    {
+      "name": "claim-truncated",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-truncated.record",
+        "bytes": 98,
+        "sha256": "ae75e6f5a38483594448397a2e00d984334a226cacaf93902f3c8d7dc1dbe769"
+      }
+    },
+    {
+      "name": "claim-length-mismatch",
+      "outcome": "invalid",
+      "record": {
+        "file": "claim-length-mismatch.record",
+        "bytes": 101,
+        "sha256": "960ff38356b9276a30b3a5a5972d7e615ccaabbf0d9d5c6331f3aa537b9b1865"
+      }
+    },
+    {
+      "name": "update-empty-name",
+      "outcome": "invalid",
+      "record": {
+        "file": "update-empty-name.record",
+        "bytes": 98,
+        "sha256": "ca25fbe27315026c8487635bad3b738ffa2530b74875c36918f79861b67f07cf"
+      }
+    },
+    {
+      "name": "renew-truncated",
+      "outcome": "invalid",
+      "record": {
+        "file": "renew-truncated.record",
+        "bytes": 100,
+        "sha256": "79d50c762e374465c1e7bc3643cf2ccce9d1484f9e41be96de0d65856abef5ce"
+      }
+    },
+    {
+      "name": "approve-short",
+      "outcome": "invalid",
+      "record": {
+        "file": "approve-short.record",
+        "bytes": 112,
+        "sha256": "dbba718f15086541e75953e3f76ac18b0bd68482a902ae01612b8e55557cc123"
+      }
+    },
+    {
+      "name": "approve-long",
+      "outcome": "invalid",
+      "record": {
+        "file": "approve-long.record",
+        "bytes": 114,
+        "sha256": "b209f8f0fffc3115a36e96e5466988e37b8d191347d2a858cadd3a67ae0b162d"
+      }
+    },
+    {
+      "name": "suspend-trailing",
+      "outcome": "invalid",
+      "record": {
+        "file": "suspend-trailing.record",
+        "bytes": 52,
+        "sha256": "eaa168ec8c71f55fb05a742b79e34e1aa6a5568439fd280c75c855dd51d00c1a"
+      }
+    },
+    {
+      "name": "suspend-truncated",
+      "outcome": "invalid",
+      "record": {
+        "file": "suspend-truncated.record",
+        "bytes": 52,
+        "sha256": "28a69da5538336f48e8a2f259bff95d6c81dbc38a21d8630631048377581763b"
+      }
+    },
+    {
+      "name": "restore-uppercase",
+      "outcome": "invalid",
+      "record": {
+        "file": "restore-uppercase.record",
+        "bytes": 51,
+        "sha256": "e67f8f78d439e7f87948754ffbfcd66fa81d558511ed5b92372f1ae5e4c950ff"
+      }
+    },
+    {
+      "name": "restore-empty-name",
+      "outcome": "invalid",
+      "record": {
+        "file": "restore-empty-name.record",
+        "bytes": 50,
+        "sha256": "a5156b408562b1d475b8466512f618f3600cf515585b3e97db9d8df3f7783ffa"
+      }
+    },
+    {
+      "name": "op-07",
+      "outcome": "invalid",
+      "record": {
+        "file": "op-07.record",
+        "bytes": 49,
+        "sha256": "aa1b9d472ae091edbd16bee836d197bad7a8c6bfc435ce30da495a3b9a576639"
+      }
+    },
+    {
+      "name": "empty-payload",
+      "outcome": "invalid",
+      "record": {
+        "file": "empty-payload.record",
+        "bytes": 16,
+        "sha256": "98f3d940180aad81b9cbda02a7fbed070a4e8b6960948db71ed04951173a59b5"
+      }
+    },
+    {
+      "name": "foreign-profile",
+      "outcome": "foreign",
+      "record": {
+        "file": "foreign-profile.record",
+        "bytes": 27,
+        "sha256": "ca027fa8329937adc5b629056ef7b0a63014485affb515150798335ec67bb624"
+      }
+    },
+    {
+      "name": "zero-profile",
+      "outcome": "foreign",
+      "record": {
+        "file": "zero-profile.record",
+        "bytes": 27,
+        "sha256": "52448a90557c6563a6cafe27efebd1abb0c6564ad2112cdbc76bb6e6dd3e07fd"
+      }
+    }
+  ]
+}
