@@ -16,11 +16,14 @@ impl NodeArgs {
     }
 
     pub(crate) fn connect(&self) -> Result<Node, Error> {
-        let chain = self.chain()?;
-        match config::connection(chain)? {
-            config::Connection::Local(local) => Node::connect(local),
-            config::Connection::Public => Node::public(chain),
-        }
+        connect(self.chain()?)
+    }
+}
+
+pub(crate) fn connect(chain: Chain) -> Result<Node, Error> {
+    match config::connection(chain)? {
+        config::Connection::Local(local) => Node::connect(local),
+        config::Connection::Public => Node::public(chain),
     }
 }
 

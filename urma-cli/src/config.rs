@@ -1,8 +1,13 @@
+use crate::gateway_host::{LinkScheme, PublicPort};
+use crate::gateway_http::HttpLimits;
 use serde::Deserialize;
-use std::path::PathBuf;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
+use std::path::{Path, PathBuf};
+use std::time::Duration;
 use urma_chain::observation::Chain;
 use urma_runtime::error::{Context, Error, ensure};
 use urma_runtime::node::NodeConfig;
+use urma_web::config::Limits;
 
 #[derive(Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -78,18 +83,119 @@ pub(crate) fn names_index(choice: IndexChoice, network: &str) -> Result<PathBuf,
     match choice.path {
         Some(path) => Ok(path),
         None => match choice.registry {
-            Some(registry) => {
-                let directory = match std::env::var_os("URMA_NAMES_DIR") {
-                    Some(path) => PathBuf::from(path),
-                    None => data_directory()?.join("urma/names"),
-                };
-                Ok(directory.join(network).join(format!("{registry}.json")))
-            }
+            Some(registry) => Ok(registry_index(
+                &names_directory(NamesDirChoice(None))?,
+                network,
+                registry,
+            )),
             None => Err(Error::Missing(
                 "name the registry with --registry GENESIS_TXID or the index with --index".into(),
             )),
         },
     }
+}
+
+pub(crate) struct NamesDirChoice(pub(crate) Option<PathBuf>);
+
+pub(crate) fn names_directory(requested: NamesDirChoice) -> Result<PathBuf, Error> {
+    match requested.0 {
+        Some(path) => Ok(path),
+        None => match std::env::var_os("URMA_NAMES_DIR") {
+            Some(path) => Ok(PathBuf::from(path)),
+            None => Ok(data_directory()?.join("urma/names")),
+        },
+    }
+}
+
+pub(crate) fn registry_index(directory: &Path, network: &str, registry: bitcoin::Txid) -> PathBuf {
+    directory.join(network).join(format!("{registry}.json"))
+}
+
+pub(crate) struct GatewayChoice {
+    pub(crate) bind: Option<SocketAddr>,
+    pub(crate) scheme: Option<LinkScheme>,
+    pub(crate) public_port: Option<u16>,
+    pub(crate) store: Option<PathBuf>,
+    pub(crate) names_dir: Option<PathBuf>,
+    pub(crate) rescan_seconds: Option<u64>,
+    pub(crate) max_bytes: Option<usize>,
+    pub(crate) workers: Option<usize>,
+}
+
+pub(crate) struct GatewaySettings {
+    pub(crate) bind: SocketAddr,
+    pub(crate) scheme: LinkScheme,
+    pub(crate) public_port: PublicPort,
+    pub(crate) store: PathBuf,
+    pub(crate) names_dir: PathBuf,
+    pub(crate) rescan: Duration,
+    pub(crate) scan_blocks: u64,
+    pub(crate) max_bytes: usize,
+    pub(crate) workers: usize,
+    pub(crate) http: HttpLimits,
+    pub(crate) max_age: u64,
+    pub(crate) fetch_wait: Duration,
+    pub(crate) fetch_retry: Duration,
+    pub(crate) fetch_queue: usize,
+    pub(crate) cache_bytes: usize,
+    pub(crate) html_memory: usize,
+}
+
+impl GatewaySettings {
+    const WORKERS: usize = 8;
+    const RESCAN_SECONDS: u64 = 30;
+}
+
+pub(crate) fn gateway(choice: GatewayChoice) -> Result<GatewaySettings, Error> {
+    let workers = match choice.workers {
+        Some(count) => count,
+        None => GatewaySettings::WORKERS,
+    };
+    ensure!((1..=256).contains(&workers), "--workers must be 1..256");
+    let rescan = match choice.rescan_seconds {
+        Some(seconds) => seconds,
+        None => GatewaySettings::RESCAN_SECONDS,
+    };
+    ensure!(rescan >= 1, "--rescan-seconds must be at least 1");
+    Ok(GatewaySettings {
+        bind: match choice.bind {
+            Some(address) => address,
+            None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080)),
+        },
+        scheme: match choice.scheme {
+            Some(scheme) => scheme,
+            None => LinkScheme::Https,
+        },
+        public_port: match choice.public_port {
+            Some(port) => PublicPort::Explicit(port),
+            None => PublicPort::Default,
+        },
+        store: web_store(StoreChoice(choice.store))?,
+        names_dir: names_directory(NamesDirChoice(choice.names_dir))?,
+        rescan: Duration::from_secs(rescan),
+        scan_blocks: 1000,
+        max_bytes: match choice.max_bytes {
+            Some(bytes) => bytes,
+            None => Limits::DEFAULT.max_package_bytes,
+        },
+        workers,
+        http: HttpLimits {
+            head_bytes: 16 * 1024,
+            max_headers: 64,
+            target_bytes: 8 * 1024,
+            io_timeout: Duration::from_secs(15),
+            head_timeout: Duration::from_secs(20),
+            accept_backoff: Duration::from_millis(250),
+            linger: Duration::from_secs(2),
+            linger_bytes: 64 * 1024,
+        },
+        max_age: 60,
+        fetch_wait: Duration::from_secs(8),
+        fetch_retry: Duration::from_secs(60),
+        fetch_queue: 32,
+        cache_bytes: 256 * 1024 * 1024,
+        html_memory: 16 * 1024 * 1024,
+    })
 }
 
 pub(crate) fn names_watch_interval() -> std::time::Duration {

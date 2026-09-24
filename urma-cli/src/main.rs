@@ -11,6 +11,14 @@ mod common_cli;
 mod config;
 mod files_cli;
 mod funding_cli;
+mod gateway_cli;
+mod gateway_host;
+mod gateway_http;
+mod gateway_links;
+mod gateway_pages;
+mod gateway_route;
+mod gateway_site;
+mod gateway_state;
 mod git_cli;
 mod git_follow_cli;
 mod git_progress;
@@ -82,6 +90,11 @@ enum Command {
         #[command(subcommand)]
         command: web_cli::WebCommand,
     },
+    #[command(about = "Serve registry names to ordinary browsers over HTTP (portal)")]
+    Gateway {
+        #[command(subcommand)]
+        command: gateway_cli::GatewayCommand,
+    },
     #[command(about = "Show your address, funds and fee estimates")]
     Wallet {
         #[command(subcommand)]
@@ -150,6 +163,7 @@ fn command_name(command: &Command) -> &'static str {
         Command::Wire { .. } => "wire",
         Command::Names { .. } => "names",
         Command::Web { .. } => "web",
+        Command::Gateway { .. } => "gateway",
         Command::Wallet { .. } => "wallet",
         Command::Key { .. } => "key",
     }
@@ -162,6 +176,7 @@ fn execute(command: Command) -> Result<(), Error> {
         Command::Wire { command } => print_report(public_cli::run(command)?),
         Command::Names { command } => print_report(names_cli::run(command)?),
         Command::Web { command } => print_report(web_cli::run(command)?),
+        Command::Gateway { command } => print_report(gateway_cli::run(command)?),
         Command::Git { command } => print_report(git_cli::run(command)?),
         Command::Capture { command } => print_report(capture_cli::run(command)?),
         Command::Wallet { command } => print_report(wallet_cli::run(command)?),
