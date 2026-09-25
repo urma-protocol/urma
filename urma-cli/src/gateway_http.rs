@@ -1,4 +1,7 @@
-use crate::gateway_pages::error_page;
+use crate::{
+    gateway_host::LinkScheme,
+    gateway_pages::{Subject, error_page, name_error_page},
+};
 use serde_json::Value;
 use std::{
     fmt::{Display, Formatter},
@@ -58,25 +61,42 @@ pub(crate) struct Reply {
 }
 
 impl Reply {
-    pub(crate) const NO_STORE: &'static str = "no-store";
-    const CSP: &'static str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'";
-    const PERMISSIONS: &'static str = "accelerometer=(), ambient-light-sensor=(), autoplay=(), battery=(), bluetooth=(), browsing-topics=(), camera=(), display-capture=(), document-domain=(), encrypted-media=(), geolocation=(), gyroscope=(), hid=(), identity-credentials-get=(), idle-detection=(), interest-cohort=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), window-management=(), xr-spatial-tracking=()";
+    const NO_STORE: &'static str = "no-store";
+    const SITE_CSP: &'static str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
+    const PORTAL_CSP: &'static str = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    const PERMISSIONS: &'static str = "accelerometer=(), ambient-light-sensor=(), attribution-reporting=(), bluetooth=(), browsing-topics=(), camera=(), clipboard-read=(), display-capture=(), geolocation=(), gyroscope=(), hid=(), identity-credentials-get=(), idle-detection=(), local-fonts=(), magnetometer=(), microphone=(), midi=(), otp-credentials=(), payment=(), publickey-credentials-create=(), publickey-credentials-get=(), screen-wake-lock=(), serial=(), storage-access=(), usb=(), window-management=(), xr-spatial-tracking=()";
+    const HSTS: &'static str = "max-age=31536000; includeSubDomains";
 
-    pub(crate) fn new(status: u16, content_type: &str, cache: &str, body: Vec<u8>) -> Self {
+    fn new(status: u16, content_type: &str, cache: String, policy: &str, body: Vec<u8>) -> Self {
         Self {
             status,
             headers: vec![
                 ("Content-Type", content_type.to_owned()),
-                ("Cache-Control", cache.to_owned()),
-                ("Content-Security-Policy", Self::CSP.to_owned()),
-                ("X-Content-Type-Options", "nosniff".to_owned()),
-                ("Permissions-Policy", Self::PERMISSIONS.to_owned()),
-                ("Referrer-Policy", "no-referrer".to_owned()),
-                ("Cross-Origin-Opener-Policy", "same-origin".to_owned()),
-                ("Cross-Origin-Resource-Policy", "same-origin".to_owned()),
+                ("Cache-Control", cache),
+                ("Content-Security-Policy", policy.to_owned()),
             ],
             body,
         }
+    }
+
+    pub(crate) fn site(status: u16, mime: &str, max_age: u64, body: Vec<u8>) -> Self {
+        Self::new(
+            status,
+            mime,
+            format!("public, max-age={max_age}, no-transform"),
+            Self::SITE_CSP,
+            body,
+        )
+    }
+
+    pub(crate) fn portal(status: u16, content_type: &str, body: Vec<u8>) -> Self {
+        Self::new(
+            status,
+            content_type,
+            Self::NO_STORE.to_owned(),
+            Self::PORTAL_CSP,
+            body,
+        )
     }
 
     pub(crate) fn with(mut self, name: &'static str, value: String) -> Self {
@@ -85,19 +105,13 @@ impl Reply {
     }
 
     pub(crate) fn html(status: u16, page: String) -> Self {
-        Self::new(
-            status,
-            "text/html; charset=utf-8",
-            Self::NO_STORE,
-            page.into_bytes(),
-        )
+        Self::portal(status, "text/html; charset=utf-8", page.into_bytes())
     }
 
     pub(crate) fn text(status: u16, text: &str) -> Self {
-        Self::new(
+        Self::portal(
             status,
             "text/plain; charset=utf-8",
-            Self::NO_STORE,
             text.as_bytes().to_vec(),
         )
     }
@@ -105,12 +119,32 @@ impl Reply {
     pub(crate) fn json(status: u16, value: &Value) -> Result<Self, Error> {
         let mut body = serde_json::to_vec_pretty(value)?;
         body.push(b'\n');
-        Ok(Self::new(status, "application/json", Self::NO_STORE, body))
+        Ok(Self::portal(status, "application/json", body))
     }
 
     pub(crate) fn not_modified(mut self) -> Self {
         self.status = 304;
         self.body.clear();
+        self
+    }
+
+    pub(crate) fn secured(mut self, scheme: LinkScheme) -> Self {
+        for (name, value) in [
+            ("X-Content-Type-Options", "nosniff"),
+            ("Referrer-Policy", "no-referrer"),
+            ("Cross-Origin-Opener-Policy", "same-origin"),
+            ("Cross-Origin-Resource-Policy", "same-origin"),
+            ("Origin-Agent-Cluster", "?1"),
+            ("Permissions-Policy", Self::PERMISSIONS),
+        ] {
+            self.headers.push((name, value.to_owned()));
+        }
+        match scheme {
+            LinkScheme::Https => self
+                .headers
+                .push(("Strict-Transport-Security", Self::HSTS.to_owned())),
+            LinkScheme::Http => {}
+        }
         self
     }
 
@@ -146,15 +180,14 @@ fn reason(status: u16) -> &'static str {
         301 => "Moved Permanently",
         304 => "Not Modified",
         400 => "Bad Request",
+        403 => "Forbidden",
         404 => "Not Found",
         405 => "Method Not Allowed",
         408 => "Request Timeout",
-        410 => "Gone",
         413 => "Content Too Large",
         414 => "URI Too Long",
         421 => "Misdirected Request",
         431 => "Request Header Fields Too Large",
-        451 => "Unavailable For Legal Reasons",
         500 => "Internal Server Error",
         502 => "Bad Gateway",
         503 => "Service Unavailable",
@@ -162,21 +195,106 @@ fn reason(status: u16) -> &'static str {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum State {
+    NotAName,
+    NetworkNotServed,
+    IndexBehind,
+    Unbound,
+    Reserved,
+    Expired,
+    Suspended,
+    Undeclared,
+    VerificationFailed,
+    Fetching,
+    FetchFailed,
+    ServiceWorker,
+    NotAPortalPage,
+    NotServable,
+    Misdirected,
+    BadRequest,
+    MethodNotAllowed,
+    RequestTimeout,
+    BodyRefused,
+    TargetTooLong,
+    HeadTooLarge,
+    Internal,
+}
+
+impl State {
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Self::NotAName => "not-a-name",
+            Self::NetworkNotServed => "network-not-served",
+            Self::IndexBehind => "index-behind",
+            Self::Unbound => "unbound",
+            Self::Reserved => "reserved",
+            Self::Expired => "expired",
+            Self::Suspended => "suspended",
+            Self::Undeclared => "undeclared",
+            Self::VerificationFailed => "verification-failed",
+            Self::Fetching => "fetching",
+            Self::FetchFailed => "fetch-failed",
+            Self::ServiceWorker => "service-worker",
+            Self::NotAPortalPage => "not-a-portal-page",
+            Self::NotServable => "not-servable",
+            Self::Misdirected => "misdirected",
+            Self::BadRequest => "bad-request",
+            Self::MethodNotAllowed => "method-not-allowed",
+            Self::RequestTimeout => "request-timeout",
+            Self::BodyRefused => "body-refused",
+            Self::TargetTooLong => "target-too-long",
+            Self::HeadTooLarge => "head-too-large",
+            Self::Internal => "internal-error",
+        }
+    }
+
+    pub(crate) fn status(self) -> u16 {
+        match self {
+            Self::NotAName
+            | Self::NetworkNotServed
+            | Self::Unbound
+            | Self::Reserved
+            | Self::Expired
+            | Self::Undeclared
+            | Self::NotAPortalPage
+            | Self::NotServable => 404,
+            Self::Suspended | Self::ServiceWorker => 403,
+            Self::IndexBehind | Self::Fetching => 503,
+            Self::VerificationFailed | Self::FetchFailed => 502,
+            Self::Misdirected => 421,
+            Self::BadRequest => 400,
+            Self::MethodNotAllowed => 405,
+            Self::RequestTimeout => 408,
+            Self::BodyRefused => 413,
+            Self::TargetTooLong => 414,
+            Self::HeadTooLarge => 431,
+            Self::Internal => 500,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Scope {
+    Portal,
+    Name(Box<Subject>),
+}
+
 #[derive(Debug)]
 pub(crate) struct Refusal {
-    pub(crate) status: u16,
-    pub(crate) title: &'static str,
+    pub(crate) state: State,
     pub(crate) detail: String,
     pub(crate) headers: Vec<(&'static str, String)>,
+    pub(crate) scope: Scope,
 }
 
 impl Refusal {
-    pub(crate) fn new(status: u16, title: &'static str, detail: String) -> Self {
+    pub(crate) fn new(state: State, detail: String) -> Self {
         Self {
-            status,
-            title,
+            state,
             detail,
             headers: Vec::new(),
+            scope: Scope::Portal,
         }
     }
 
@@ -185,15 +303,37 @@ impl Refusal {
         self
     }
 
+    pub(crate) fn about(mut self, subject: Subject) -> Self {
+        self.scope = Scope::Name(Box::new(subject));
+        self
+    }
+
     pub(crate) fn internal(detail: String) -> Self {
-        Self::new(500, "Internal Server Error", detail)
+        Self::new(State::Internal, detail)
+    }
+
+    pub(crate) fn status(&self) -> u16 {
+        self.state.status()
     }
 
     pub(crate) fn reply(&self) -> Reply {
-        let mut reply = Reply::html(
-            self.status,
-            error_page(self.status, self.title, &self.detail),
-        );
+        let status = self.status();
+        let title = reason(status);
+        let state = self.state.label();
+        let mut reply = match &self.scope {
+            Scope::Portal => Reply::html(status, error_page(status, title, state, &self.detail)),
+            Scope::Name(subject) => {
+                let mut reply = Reply::html(
+                    status,
+                    name_error_page(status, title, state, &self.detail, subject),
+                );
+                for (name, value) in subject.headers() {
+                    reply = reply.with(name, value);
+                }
+                reply
+            }
+        }
+        .with("URMA-State", state.to_owned());
         for (name, value) in &self.headers {
             reply = reply.with(name, value.clone());
         }
@@ -203,7 +343,13 @@ impl Refusal {
 
 impl Display for Refusal {
     fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{} {}: {}", self.status, self.title, self.detail)
+        write!(
+            formatter,
+            "{} {}: {}",
+            self.status(),
+            self.state.label(),
+            self.detail
+        )
     }
 }
 
@@ -224,11 +370,12 @@ enum Incoming {
 pub(crate) fn accept_loop(
     listener: &TcpListener,
     limits: &HttpLimits,
+    scheme: LinkScheme,
     respond: &impl Fn(&Request) -> Reply,
 ) {
     loop {
         match listener.accept() {
-            Ok((stream, peer)) => match exchange(stream, limits, respond) {
+            Ok((stream, peer)) => match exchange(stream, limits, scheme, respond) {
                 Ok(()) => {}
                 Err(cause) => {
                     tracing::warn!(target: "urma_gateway", %peer, error = %cause, "connection ended with an error")
@@ -245,6 +392,7 @@ pub(crate) fn accept_loop(
 fn exchange(
     mut stream: TcpStream,
     limits: &HttpLimits,
+    scheme: LinkScheme,
     respond: &impl Fn(&Request) -> Reply,
 ) -> Result<(), Error> {
     stream.set_read_timeout(Some(limits.io_timeout))?;
@@ -257,7 +405,7 @@ fn exchange(
         }
         Incoming::Request(request) => (respond(&request), request.method),
     };
-    stream.write_all(&reply.encode(method)?)?;
+    stream.write_all(&reply.secured(scheme).encode(method)?)?;
     stream.flush()?;
     stream.shutdown(Shutdown::Write)?;
     linger(&mut stream, limits)
@@ -298,11 +446,10 @@ fn read_request(stream: &mut TcpStream, limits: &HttpLimits) -> Result<Incoming,
             if buffer.is_empty() {
                 return Ok(Incoming::Closed);
             }
-            return Ok(Incoming::Refused(Refusal::new(
-                400,
-                "Bad Request",
+            return Ok(refused(
+                State::BadRequest,
                 "connection closed inside the request head".into(),
-            )));
+            ));
         }
         let Some(fresh) = chunk.get(..count) else {
             return Err(Error::Invalid("read past the chunk buffer".into()));
@@ -312,19 +459,17 @@ fn read_request(stream: &mut TcpStream, limits: &HttpLimits) -> Result<Incoming,
             return Ok(incoming);
         }
         if buffer.len() >= limits.head_bytes {
-            return Ok(Incoming::Refused(Refusal::new(
-                431,
-                "Request Header Fields Too Large",
+            return Ok(refused(
+                State::HeadTooLarge,
                 format!("request head exceeds {} bytes", limits.head_bytes),
-            )));
+            ));
         }
     }
 }
 
 fn timeout() -> Refusal {
     Refusal::new(
-        408,
-        "Request Timeout",
+        State::RequestTimeout,
         "the request head did not arrive in time".into(),
     )
 }
@@ -342,23 +487,27 @@ fn parse_head(buffer: &[u8], limits: &HttpLimits) -> Parsed {
         Ok(httparse::Status::Complete(..)) => Parsed::Done(admit(&parsed, limits)),
         Err(cause) => {
             tracing::warn!(target: "urma_gateway", error = %cause, "unparseable request head");
-            let status = if cause == httparse::Error::TooManyHeaders {
-                431
+            let state = if cause == httparse::Error::TooManyHeaders {
+                State::HeadTooLarge
             } else {
-                400
+                State::BadRequest
             };
-            Parsed::Done(Incoming::Refused(Refusal::new(
-                status,
-                reason(status),
-                format!("unparseable request head: {cause}"),
-            )))
+            Parsed::Done(refused(state, format!("unparseable request head: {cause}")))
         }
     }
 }
 
+fn is_service_worker(header: &httparse::Header<'_>) -> bool {
+    header.name.eq_ignore_ascii_case("service-worker")
+        && header.value.trim_ascii().eq_ignore_ascii_case(b"script")
+}
+
 fn admit(parsed: &httparse::Request<'_, '_>, limits: &HttpLimits) -> Incoming {
     let (Some(method), Some(target)) = (parsed.method, parsed.path) else {
-        return refused(400, "request line without method or target".into());
+        return refused(
+            State::BadRequest,
+            "request line without method or target".into(),
+        );
     };
     let method = match method {
         "GET" => Method::Get,
@@ -366,8 +515,7 @@ fn admit(parsed: &httparse::Request<'_, '_>, limits: &HttpLimits) -> Incoming {
         other => {
             return Incoming::Refused(
                 Refusal::new(
-                    405,
-                    "Method Not Allowed",
+                    State::MethodNotAllowed,
                     format!("{other} is not served; the portal is read-only"),
                 )
                 .with("Allow", "GET, HEAD".into()),
@@ -376,12 +524,15 @@ fn admit(parsed: &httparse::Request<'_, '_>, limits: &HttpLimits) -> Incoming {
     };
     if target.len() > limits.target_bytes {
         return refused(
-            414,
+            State::TargetTooLong,
             format!("request target exceeds {} bytes", limits.target_bytes),
         );
     }
     if !target.starts_with('/') {
-        return refused(400, "request target must be an absolute path".into());
+        return refused(
+            State::BadRequest,
+            "request target must be an absolute path".into(),
+        );
     }
     let mut hosts = Vec::new();
     let mut validators = Vec::new();
@@ -392,13 +543,21 @@ fn admit(parsed: &httparse::Request<'_, '_>, limits: &HttpLimits) -> Incoming {
             || (header.name.eq_ignore_ascii_case("content-length")
                 && header.value.trim_ascii() != b"0")
         {
-            return refused(413, "request bodies are not accepted".into());
+            return refused(State::BodyRefused, "request bodies are not accepted".into());
         } else if header.name.eq_ignore_ascii_case("if-none-match") {
             validators.extend(entity_tags(header.value));
+        } else if is_service_worker(header) {
+            return refused(
+                State::ServiceWorker,
+                "service worker scripts are refused: a worker would keep serving a site after its name moves, expires or is suspended".into(),
+            );
         }
     }
     let [host] = hosts.as_slice() else {
-        return refused(400, "exactly one Host header is required".into());
+        return refused(
+            State::BadRequest,
+            "exactly one Host header is required".into(),
+        );
     };
     match std::str::from_utf8(host) {
         Ok(host) => Incoming::Request(Request {
@@ -409,13 +568,16 @@ fn admit(parsed: &httparse::Request<'_, '_>, limits: &HttpLimits) -> Incoming {
         }),
         Err(cause) => {
             tracing::warn!(target: "urma_gateway", error = %cause, "Host header is not UTF-8");
-            refused(400, format!("Host header is not UTF-8: {cause}"))
+            refused(
+                State::BadRequest,
+                format!("Host header is not UTF-8: {cause}"),
+            )
         }
     }
 }
 
-fn refused(status: u16, detail: String) -> Incoming {
-    Incoming::Refused(Refusal::new(status, reason(status), detail))
+fn refused(state: State, detail: String) -> Incoming {
+    Incoming::Refused(Refusal::new(state, detail))
 }
 
 fn entity_tags(value: &[u8]) -> Vec<String> {

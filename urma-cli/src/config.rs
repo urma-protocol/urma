@@ -1,5 +1,6 @@
 use crate::gateway_host::{LinkScheme, PublicPort};
 use crate::gateway_http::HttpLimits;
+use crate::gateway_route::Freshness;
 use serde::Deserialize;
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
@@ -139,11 +140,14 @@ pub(crate) struct GatewaySettings {
     pub(crate) fetch_queue: usize,
     pub(crate) cache_bytes: usize,
     pub(crate) html_memory: usize,
+    pub(crate) freshness: Freshness,
 }
 
 impl GatewaySettings {
     const WORKERS: usize = 8;
     const RESCAN_SECONDS: u64 = 30;
+    const MAX_INDEX_LAG_BLOCKS: u64 = 2;
+    const MAX_SCAN_AGE: Duration = Duration::from_secs(600);
 }
 
 pub(crate) fn gateway(choice: GatewayChoice) -> Result<GatewaySettings, Error> {
@@ -157,6 +161,11 @@ pub(crate) fn gateway(choice: GatewayChoice) -> Result<GatewaySettings, Error> {
         None => GatewaySettings::RESCAN_SECONDS,
     };
     ensure!(rescan >= 1, "--rescan-seconds must be at least 1");
+    ensure!(
+        Duration::from_secs(rescan) < GatewaySettings::MAX_SCAN_AGE,
+        "--rescan-seconds must stay under {}, the age at which a names index stops being current",
+        GatewaySettings::MAX_SCAN_AGE.as_secs()
+    );
     Ok(GatewaySettings {
         bind: match choice.bind {
             Some(address) => address,
@@ -195,6 +204,11 @@ pub(crate) fn gateway(choice: GatewayChoice) -> Result<GatewaySettings, Error> {
         fetch_queue: 32,
         cache_bytes: 256 * 1024 * 1024,
         html_memory: 16 * 1024 * 1024,
+        freshness: Freshness {
+            max_lag: GatewaySettings::MAX_INDEX_LAG_BLOCKS,
+            max_age: GatewaySettings::MAX_SCAN_AGE,
+            retry: Duration::from_secs(rescan),
+        },
     })
 }
 

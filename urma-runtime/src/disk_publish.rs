@@ -80,7 +80,7 @@ impl Buffer {
             commits: 0,
             commit_vbytes: 0,
         };
-        for (pair, rows) in pairs.iter().zip(observations.chunks_exact(2)) {
+        for (pair, rows) in pairs.iter().zip(observations.as_chunks::<2>().0) {
             if rows[0].state == State::Mempool {
                 buffer.weight += pair.commit_weight;
                 buffer.broadcast_weight += pair.commit_weight;

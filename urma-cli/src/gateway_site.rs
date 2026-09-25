@@ -1,19 +1,17 @@
 use crate::{
+    gateway_file::{Declared, Provenance, Serving},
     gateway_host::{Host, Portal, SiteHost, authority, classify},
-    gateway_http::{Refusal, Reply, Request},
-    gateway_links::{Transformed, transform},
-    gateway_pages::{ListedName, Listing, ListingState, index_page, unavailable_page},
-    gateway_route::{Route, route, split_target},
+    gateway_http::{Refusal, Reply, Request, State},
+    gateway_pages::{ListedName, Listing, ListingState, Subject, index_page, unavailable_page},
+    gateway_route::{Currency, Route, route, split_target},
     gateway_state::{Availability, Binding, Gateway, Network, Snapshot},
     web_cli::web_error,
 };
 use bitcoin::consensus::encode::serialize_hex;
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use urma_names::state::{Resolution, Target};
 use urma_web::{
     error::WebError,
-    grammar::is_entry_mime,
     store::{Served, Verified},
 };
 
@@ -30,23 +28,7 @@ struct Origin<'a> {
     network: &'a Network,
     binding: &'a Binding,
     verified: &'a Verified,
-}
-
-impl Origin<'_> {
-    fn stamp(&self, reply: Reply) -> Reply {
-        reply
-            .with("URMA-Network", self.network.name.clone())
-            .with("URMA-Registry", self.network.genesis.to_string())
-            .with("URMA-Name", self.site.name.to_string())
-            .with("URMA-Root", self.binding.root.to_string())
-            .with("URMA-Author", self.verified.author.clone())
-            .with("URMA-Payload-SHA256", self.verified.payload_sha256.clone())
-    }
-}
-
-enum Body {
-    Original(Vec<u8>),
-    Rewritten(Vec<u8>),
+    provenance: Provenance,
 }
 
 pub(crate) fn respond(gateway: &Gateway, request: &Request) -> Reply {
@@ -56,7 +38,7 @@ pub(crate) fn respond(gateway: &Gateway, request: &Request) -> Reply {
             reply
         }
         Err(refusal) => {
-            tracing::warn!(target: "urma_gateway", status = refusal.status, host = %request.host, target = %request.target, reason = %refusal.detail, "request refused");
+            tracing::warn!(target: "urma_gateway", status = refusal.status(), state = refusal.state.label(), host = %request.host, target = %request.target, reason = %refusal.detail, "request refused");
             refusal.reply()
         }
     }
@@ -64,15 +46,14 @@ pub(crate) fn respond(gateway: &Gateway, request: &Request) -> Reply {
 
 fn handle(gateway: &Gateway, request: &Request) -> Result<Reply, Refusal> {
     let host = authority(&request.host)
-        .map_err(|cause| Refusal::new(400, "Bad Request", cause.to_string()))?;
+        .map_err(|cause| Refusal::new(State::BadRequest, cause.to_string()))?;
     let classified = classify(&host, &gateway.portal)
-        .map_err(|cause| Refusal::new(404, "Not Found", cause.to_string()))?;
+        .map_err(|cause| Refusal::new(State::NotAName, cause.to_string()))?;
     match classified {
         Host::Apex => apex(gateway, request),
         Host::Site(site) => site_reply(gateway, request, &site),
         Host::Foreign => Err(Refusal::new(
-            421,
-            "Misdirected Request",
+            State::Misdirected,
             format!(
                 "{host} is neither {} nor a name host under it",
                 gateway.portal.domain()
@@ -107,8 +88,7 @@ fn apex(gateway: &Gateway, request: &Request) -> Result<Reply, Refusal> {
         )),
         WellKnown::ASK => ask(gateway, query),
         other => Err(Refusal::new(
-            404,
-            "Not Found",
+            State::NotAPortalPage,
             format!("{other} is not a portal page"),
         )),
     }
@@ -118,23 +98,21 @@ fn ask(gateway: &Gateway, query: &str) -> Result<Reply, Refusal> {
     let domains = parameters(query, "domain");
     let [domain] = domains.as_slice() else {
         return Err(Refusal::new(
-            404,
-            "Not Found",
+            State::NotServable,
             "ask needs exactly one domain parameter".into(),
         ));
     };
     let denied = |cause: String| {
         Refusal::new(
-            404,
-            "Not Found",
-            format!("no certificate for {domain:?}: {cause}"),
+            State::NotServable,
+            format!("{domain:?} is not a servable name host: {cause}"),
         )
     };
     if domain.contains(':') || domain.len() > Portal::MAX_HOST_BYTES {
         return Err(denied("not a bare host name".into()));
     }
-    let classified = classify(&domain.to_ascii_lowercase(), &gateway.portal)
-        .map_err(|cause| denied(cause.to_string()))?;
+    let classified =
+        classify(domain, &gateway.portal).map_err(|cause| denied(cause.to_string()))?;
     let Host::Site(site) = classified else {
         return Err(denied("not a name host of this portal".into()));
     };
@@ -145,61 +123,76 @@ fn ask(gateway: &Gateway, query: &str) -> Result<Reply, Refusal> {
 }
 
 fn site_reply(gateway: &Gateway, request: &Request, site: &SiteHost) -> Result<Reply, Refusal> {
+    let mut subject = Subject::new(site.name.to_string(), site.suffix.label());
+    match name_reply(gateway, request, site, &mut subject) {
+        Ok(reply) => Ok(reply),
+        Err(refusal) => Err(refusal.about(subject)),
+    }
+}
+
+fn name_reply(
+    gateway: &Gateway,
+    request: &Request,
+    site: &SiteHost,
+    subject: &mut Subject,
+) -> Result<Reply, Refusal> {
     let network = gateway.network(site.suffix)?;
-    let binding = gateway.bound(site)?;
+    subject.network = Some(network.name.clone());
+    subject.registry = Some(network.genesis.to_string());
+    let snapshot = gateway.snapshot(network)?;
+    subject.index = Some(snapshot.point());
+    gateway.current(network, &snapshot)?;
+    let binding = gateway.binding(site, network, snapshot)?;
     let verified = gateway.publication(network, binding.root)?;
     let origin = Origin {
         site,
         network,
         binding: &binding,
         verified: &verified,
+        provenance: Provenance {
+            subject: subject.clone(),
+            root: binding.root.to_string(),
+            author: verified.author.clone(),
+            payload_sha256: verified.payload_sha256.clone(),
+        },
     };
+    serve_root(gateway, request, &origin)
+}
+
+fn serve_root(gateway: &Gateway, request: &Request, origin: &Origin<'_>) -> Result<Reply, Refusal> {
     let path = split_target(&request.target).0;
     if path == WellKnown::PROOF {
-        return proof(gateway, &origin);
+        return proof(gateway, origin);
     }
-    match route(&verified.package, &request.target) {
-        Route::Serve(declared) => file(gateway, request, &origin, &declared),
-        Route::Redirect(location) => Ok(origin.stamp(
-            Reply::new(
+    match route(&origin.verified.package, &request.target) {
+        Route::Serve(declared) => file(gateway, request, origin, &declared),
+        Route::Redirect(location) => Ok(origin
+            .provenance
+            .stamp(Reply::site(
                 301,
                 "text/html; charset=utf-8",
-                &format!("public, max-age={}", gateway.settings.max_age),
+                gateway.settings.max_age,
                 Vec::new(),
-            )
-            .with("Location", location),
-        )),
+            ))
+            .with("Location", location)),
         Route::Undeclared => Err(Refusal::new(
-            404,
-            "Not Found",
-            format!("{path} is not in the declared set of {}", binding.root),
+            State::Undeclared,
+            format!(
+                "{path} is not in the declared set of {}",
+                origin.binding.root
+            ),
         )),
     }
 }
 
 fn store_refusal(what: &str, cause: WebError) -> Refusal {
     Refusal::new(
-        502,
-        "Bad Gateway",
+        State::VerificationFailed,
         format!(
             "{what} failed verification in the store: {}",
             web_error(cause)
         ),
     )
-}
-
-fn links(gateway: &Gateway, mime: &str, bytes: Vec<u8>) -> Body {
-    if !is_entry_mime(mime) {
-        return Body::Original(bytes);
-    }
-    match transform(&bytes, &gateway.portal, gateway.settings.html_memory) {
-        Ok(Transformed::Rewritten(rewritten)) => Body::Rewritten(rewritten),
-        Ok(Transformed::Unchanged) => Body::Original(bytes),
-        Err(cause) => {
-            tracing::warn!(target: "urma_gateway", error = %cause, "links-v1 transform failed; serving the verified original bytes");
-            Body::Original(bytes)
-        }
-    }
 }
 
 fn file(
@@ -208,10 +201,13 @@ fn file(
     origin: &Origin<'_>,
     path: &str,
 ) -> Result<Reply, Refusal> {
-    let served = gateway
-        .store
-        .serve(origin.verified, path)
-        .map_err(|cause| store_refusal(path, cause))?;
+    let served = match gateway.store.serve(origin.verified, &format!("/{path}")) {
+        Ok(served) => served,
+        Err(cause) => {
+            gateway.refetch(origin.network, origin.binding.root);
+            return Err(store_refusal(path, cause));
+        }
+    };
     let Served::Resource {
         mime,
         sha256,
@@ -219,38 +215,28 @@ fn file(
     } = served
     else {
         return Err(Refusal::new(
-            404,
-            "Not Found",
+            State::Undeclared,
             format!("{path} is not in the declared set"),
         ));
     };
-    if hex::encode(Sha256::digest(&bytes)) != sha256 {
-        return Err(Refusal::new(
-            502,
-            "Bad Gateway",
-            format!("{path}: bytes differ from the declared SHA-256"),
-        ));
-    }
-    let cache = format!("public, max-age={}", gateway.settings.max_age);
-    let (reply, digest) = match links(gateway, &mime, bytes) {
-        Body::Original(body) => (Reply::new(200, &mime, &cache, body), sha256),
-        Body::Rewritten(body) => {
-            let digest = hex::encode(Sha256::digest(&body));
-            let reply = Reply::new(200, &mime, &cache, body)
-                .with("URMA-Transform", "links-v1".into())
-                .with("URMA-Original-SHA256", sha256);
-            (reply, digest)
-        }
+    let serving = Serving {
+        portal: &gateway.portal,
+        max_age: gateway.settings.max_age,
+        html_memory: gateway.settings.html_memory,
     };
-    let etag = format!("\"{digest}\"");
-    let reply = origin
-        .stamp(reply)
-        .with("URMA-SHA256", digest)
-        .with("ETag", etag.clone());
-    if request.validates(&etag) {
-        return Ok(reply.not_modified());
+    let declared = Declared {
+        path: path.to_owned(),
+        mime,
+        sha256,
+        bytes,
+    };
+    match serving.file(&origin.provenance, declared, request) {
+        Ok(reply) => Ok(reply),
+        Err(refusal) => {
+            gateway.refetch(origin.network, origin.binding.root);
+            Err(refusal)
+        }
     }
-    Ok(reply)
 }
 
 fn proof(gateway: &Gateway, origin: &Origin<'_>) -> Result<Reply, Refusal> {
@@ -301,11 +287,11 @@ fn proof(gateway: &Gateway, origin: &Origin<'_>) -> Result<Reply, Refusal> {
             "pinned": summary.pinned,
         },
         "serving": {
-            "transform": "links-v1",
-            "rule": "only text/html responses may have urma:// navigation links rewritten; such responses carry URMA-Transform and URMA-Original-SHA256 (declared bytes), and URMA-SHA256 always names the bytes served",
+            "transform": Serving::TRANSFORM,
+            "rule": "text/html responses get links-v1 and carry URMA-Transform and URMA-Original-SHA256 (the declared bytes); URMA-SHA256 always names the bytes served",
         },
     });
-    Ok(origin.stamp(Reply::json(200, &value)?))
+    Ok(origin.provenance.stamp(Reply::json(200, &value)?))
 }
 
 fn listings(gateway: &Gateway) -> Result<Vec<Listing>, Refusal> {
@@ -313,12 +299,7 @@ fn listings(gateway: &Gateway) -> Result<Vec<Listing>, Refusal> {
     for network in gateway.networks.values() {
         let state = match network.availability()? {
             Availability::Pending(reason) => ListingState::Pending(reason),
-            Availability::Ready(snapshot) => ListingState::Ready {
-                height: snapshot.index.registry.height(),
-                tip: snapshot.tip,
-                block_hash: snapshot.index.tip_hash(),
-                names: bound_names(&gateway.portal, network, &snapshot),
-            },
+            Availability::Ready(snapshot) => listing_state(gateway, network, &snapshot),
         };
         listings.push(Listing {
             suffix: network.suffix.label(),
@@ -328,6 +309,21 @@ fn listings(gateway: &Gateway) -> Result<Vec<Listing>, Refusal> {
         });
     }
     Ok(listings)
+}
+
+fn listing_state(gateway: &Gateway, network: &Network, snapshot: &Snapshot) -> ListingState {
+    match gateway.currency(snapshot) {
+        Currency::Current => ListingState::Ready {
+            index: snapshot.point(),
+            tip: snapshot.tip,
+            names: bound_names(&gateway.portal, network, snapshot),
+        },
+        Currency::Behind(reason) => ListingState::Behind {
+            index: snapshot.point(),
+            tip: snapshot.tip,
+            reason,
+        },
+    }
 }
 
 fn bound_names(portal: &Portal, network: &Network, snapshot: &Snapshot) -> Vec<ListedName> {

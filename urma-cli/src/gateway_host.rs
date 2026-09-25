@@ -219,7 +219,7 @@ pub(crate) fn authority(header: &str) -> Result<String, HostError> {
             "host carries a space, a control byte or non-ASCII".into(),
         ));
     }
-    Ok(host.to_ascii_lowercase())
+    Ok(host.to_owned())
 }
 
 fn without_port(header: &str) -> Result<&str, HostError> {

@@ -1,8 +1,9 @@
 use crate::{
     config::{self, GatewaySettings},
     gateway_host::{Portal, SiteHost, Suffix},
-    gateway_http::Refusal,
-    gateway_route::standing,
+    gateway_http::{Refusal, State},
+    gateway_pages::IndexPoint,
+    gateway_route::{Currency, Scan, standing},
     names_cli::{load_index, sync_index},
     node_cli::{chain_name, connect},
     web_cli::{store_publication, web_error},
@@ -26,6 +27,16 @@ pub(crate) struct Snapshot {
     pub(crate) index: NamesIndex,
     pub(crate) tip: u64,
     pub(crate) synced: u64,
+    pub(crate) scan: Scan,
+}
+
+impl Snapshot {
+    pub(crate) fn point(&self) -> IndexPoint {
+        IndexPoint {
+            height: self.index.registry.height(),
+            block_hash: self.index.tip_hash(),
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -63,6 +74,7 @@ fn loaded(network: &str, genesis: Txid, path: &Path) -> Result<Snapshot, Error> 
         index,
         tip,
         synced: unix_now()?,
+        scan: Scan::Never,
     })
 }
 
@@ -101,6 +113,7 @@ impl Network {
         let report = sync_index(&node, self.genesis, &self.index, blocks)?;
         let mut snapshot = loaded(&self.name, self.genesis, &self.index)?;
         snapshot.tip = report.tip;
+        snapshot.scan = Scan::At(Instant::now());
         let snapshot = Arc::new(snapshot);
         let mut state = self
             .state
@@ -230,8 +243,7 @@ impl Gateway {
     pub(crate) fn network(&self, suffix: Suffix) -> Result<&Network, Refusal> {
         self.networks.get(&suffix).ok_or_else(|| {
             Refusal::new(
-                404,
-                "Not Found",
+                State::NetworkNotServed,
                 format!(
                     "the .{} network is not served by this portal",
                     suffix.label()
@@ -243,18 +255,37 @@ impl Gateway {
     pub(crate) fn snapshot(&self, network: &Network) -> Result<Arc<Snapshot>, Refusal> {
         match network.availability()? {
             Availability::Ready(snapshot) => Ok(snapshot),
-            Availability::Pending(reason) => Err(Refusal::new(
-                503,
-                "Service Unavailable",
-                format!("the {} names index is not ready: {reason}", network.name),
-            )
-            .with("Retry-After", self.settings.rescan.as_secs().to_string())),
+            Availability::Pending(reason) => Err(self.settings.freshness.refusal(
+                &network.name,
+                &format!("no usable names index yet: {reason}"),
+            )),
         }
     }
 
-    pub(crate) fn bound(&self, site: &SiteHost) -> Result<Binding, Refusal> {
-        let network = self.network(site.suffix)?;
-        let snapshot = self.snapshot(network)?;
+    pub(crate) fn currency(&self, snapshot: &Snapshot) -> Currency {
+        self.settings.freshness.judge(
+            snapshot.index.registry.height(),
+            snapshot.tip,
+            snapshot.scan,
+            Instant::now(),
+        )
+    }
+
+    pub(crate) fn current(&self, network: &Network, snapshot: &Snapshot) -> Result<(), Refusal> {
+        match self.currency(snapshot) {
+            Currency::Current => Ok(()),
+            Currency::Behind(reason) => {
+                Err(self.settings.freshness.refusal(&network.name, &reason))
+            }
+        }
+    }
+
+    pub(crate) fn binding(
+        &self,
+        site: &SiteHost,
+        network: &Network,
+        snapshot: Arc<Snapshot>,
+    ) -> Result<Binding, Refusal> {
         let (bound, root) = standing(
             &format!("{}.{}", site.name, site.suffix.label()),
             network.genesis,
@@ -266,6 +297,13 @@ impl Gateway {
             bound,
             root,
         })
+    }
+
+    pub(crate) fn bound(&self, site: &SiteHost) -> Result<Binding, Refusal> {
+        let network = self.network(site.suffix)?;
+        let snapshot = self.snapshot(network)?;
+        self.current(network, &snapshot)?;
+        self.binding(site, network, snapshot)
     }
 
     pub(crate) fn publication(
@@ -289,12 +327,39 @@ impl Gateway {
         self.await_fetch(key)?;
         let verified = self.verify(network, root).map_err(|cause| {
             Refusal::new(
-                502,
-                "Bad Gateway",
+                State::VerificationFailed,
                 format!("publication {root} failed verification in the store: {cause}"),
             )
         })?;
         self.remember(key, verified)
+    }
+
+    pub(crate) fn refetch(&self, network: &Network, root: Txid) {
+        let key = Key {
+            suffix: network.suffix,
+            root,
+        };
+        match self.cache.lock() {
+            Ok(mut cache) => cache.forget(&key),
+            Err(cause) => {
+                tracing::error!(target: "urma_gateway", %root, error = %cause, "publication cache lock poisoned; the failed publication stays cached")
+            }
+        }
+        let mut flights = match self.flights.lock() {
+            Ok(flights) => flights,
+            Err(cause) => {
+                tracing::error!(target: "urma_gateway", %root, error = %cause, "fetch lock poisoned; no refetch queued");
+                return;
+            }
+        };
+        match self.launch(&mut flights, key) {
+            Ok(()) => {
+                tracing::warn!(target: "urma_gateway", %root, "publication failed re-verification; refetching it")
+            }
+            Err(refusal) => {
+                tracing::warn!(target: "urma_gateway", %root, reason = %refusal.detail, "publication failed re-verification; no refetch queued")
+            }
+        }
     }
 
     fn verify(&self, network: &Network, root: Txid) -> Result<Verified, Error> {
@@ -372,8 +437,7 @@ impl Gateway {
             Ok(()) => {}
             Err(TrySendError::Full(rejected)) => {
                 return Err(Refusal::new(
-                    503,
-                    "Service Unavailable",
+                    State::Fetching,
                     format!(
                         "the fetch queue is full; publication {} will be fetched later",
                         rejected.root
@@ -394,8 +458,7 @@ impl Gateway {
 
     fn pending(&self, key: Key) -> Refusal {
         Refusal::new(
-            503,
-            "Service Unavailable",
+            State::Fetching,
             format!(
                 "publication {} is being fetched and verified; retry shortly",
                 key.root
@@ -406,8 +469,7 @@ impl Gateway {
 
     fn failed(&self, key: Key, reason: &str) -> Refusal {
         Refusal::new(
-            502,
-            "Bad Gateway",
+            State::FetchFailed,
             format!(
                 "publication {} could not be fetched and verified: {reason}",
                 key.root
@@ -474,7 +536,7 @@ impl Gateway {
                         tracing::info!(target: "urma_gateway", network = %network.name, height = snapshot.index.registry.height(), tip = snapshot.tip, "registry index refreshed")
                     }
                     Err(cause) => {
-                        tracing::warn!(target: "urma_gateway", network = %network.name, error = %cause, "registry rescan failed; serving the previous index")
+                        tracing::warn!(target: "urma_gateway", network = %network.name, error = %cause, "registry rescan failed; serving the previous index until it is no longer current")
                     }
                 }
             }

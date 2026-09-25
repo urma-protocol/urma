@@ -871,6 +871,7 @@ fn mempool(node: &Daemon) -> Result<Vec<String>> {
         .collect())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn publish_names_record(
     workdir: &Path,
     node: &Daemon,
@@ -1381,7 +1382,10 @@ fn web_publications_are_fetched_into_the_store_pinned_and_named_on_regtest() -> 
         "files: {fetched}"
     );
     ensure!(
-        publication["pinned"].as_array().context("pinned")?.len() == 0,
+        publication["pinned"]
+            .as_array()
+            .context("pinned")?
+            .is_empty(),
         "pinned: {fetched}"
     );
     ensure!(publication["author"] == id.author, "author: {fetched}");

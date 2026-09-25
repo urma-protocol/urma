@@ -12,6 +12,7 @@ mod config;
 mod files_cli;
 mod funding_cli;
 mod gateway_cli;
+mod gateway_file;
 mod gateway_host;
 mod gateway_http;
 mod gateway_links;

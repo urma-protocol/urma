@@ -1,4 +1,85 @@
 use crate::gateway_host::Portal;
+use std::fmt::{Display, Formatter};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IndexPoint {
+    pub(crate) height: u64,
+    pub(crate) block_hash: String,
+}
+
+impl Display for IndexPoint {
+    fn fmt(&self, formatter: &mut Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "{} {}", self.height, self.block_hash)
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct Subject {
+    pub(crate) name: String,
+    pub(crate) suffix: &'static str,
+    pub(crate) network: Option<String>,
+    pub(crate) registry: Option<String>,
+    pub(crate) index: Option<IndexPoint>,
+}
+
+impl Subject {
+    pub(crate) fn new(name: String, suffix: &'static str) -> Self {
+        Self {
+            name,
+            suffix,
+            network: None,
+            registry: None,
+            index: None,
+        }
+    }
+
+    pub(crate) fn address(&self) -> String {
+        format!("urma://{}.{}/", self.name, self.suffix)
+    }
+
+    pub(crate) fn headers(&self) -> Vec<(&'static str, String)> {
+        let mut headers = Vec::new();
+        for network in self.network.iter() {
+            headers.push(("URMA-Network", network.clone()));
+        }
+        for registry in self.registry.iter() {
+            headers.push(("URMA-Registry", registry.clone()));
+        }
+        headers.push(("URMA-Name", self.name.clone()));
+        for index in self.index.iter() {
+            headers.push(("URMA-Index", index.to_string()));
+        }
+        headers
+    }
+
+    fn facts(&self) -> String {
+        let mut facts = format!(
+            "<span>Name</span><code>{}.{}</code>",
+            escape(&self.name),
+            escape(self.suffix)
+        );
+        for network in self.network.iter() {
+            facts.push_str(&format!(
+                "<span>Network</span><code>{}</code>",
+                escape(network)
+            ));
+        }
+        for registry in self.registry.iter() {
+            facts.push_str(&format!(
+                "<span>Registry</span><code>{}</code>",
+                escape(registry)
+            ));
+        }
+        for index in self.index.iter() {
+            facts.push_str(&format!(
+                "<span>Index height</span><span>{} (block <code>{}</code>)</span>",
+                index.height,
+                escape(&index.block_hash)
+            ));
+        }
+        facts
+    }
+}
 
 pub(crate) struct ListedName {
     pub(crate) name: String,
@@ -10,10 +91,14 @@ pub(crate) struct ListedName {
 pub(crate) enum ListingState {
     Pending(String),
     Ready {
-        height: u64,
+        index: IndexPoint,
         tip: u64,
-        block_hash: String,
         names: Vec<ListedName>,
+    },
+    Behind {
+        index: IndexPoint,
+        tip: u64,
+        reason: String,
     },
 }
 
@@ -53,15 +138,38 @@ fn document(title: &str, body: &str) -> String {
     )
 }
 
-pub(crate) fn error_page(status: u16, title: &str, detail: &str) -> String {
+fn failure(status: u16, title: &str, detail: &str, facts: &str, closing: &str) -> String {
     document(
         &format!("{status} {title}"),
         &format!(
-            "<h1>{status} {}</h1>\n<p>{}</p>\n<p class=\"note\">URMA portal</p>",
+            "<h1>{status} {}</h1>\n<p>{}</p>\n<div class=\"facts\">{facts}</div>\n{closing}<p class=\"note\">URMA portal</p>",
             escape(title),
             escape(detail)
         ),
     )
+}
+
+fn state_fact(state: &str) -> String {
+    format!("<span>State</span><code>{}</code>", escape(state))
+}
+
+pub(crate) fn error_page(status: u16, title: &str, state: &str, detail: &str) -> String {
+    failure(status, title, detail, &state_fact(state), "")
+}
+
+pub(crate) fn name_error_page(
+    status: u16,
+    title: &str,
+    state: &str,
+    detail: &str,
+    subject: &Subject,
+) -> String {
+    let facts = format!("{}{}", state_fact(state), subject.facts());
+    let closing = format!(
+        "<p>The URMA browser opens this site as <code>{}</code> and checks the registry and the publication itself.</p>\n",
+        escape(&subject.address())
+    );
+    failure(status, title, detail, &facts, &closing)
 }
 
 fn names_list(names: &[ListedName]) -> String {
@@ -82,6 +190,14 @@ fn names_list(names: &[ListedName]) -> String {
     items
 }
 
+fn indexed(index: &IndexPoint, tip: u64) -> String {
+    format!(
+        "<span>Indexed height</span><span>{} (chain tip {tip})</span><span>Block</span><code>{}</code>",
+        index.height,
+        escape(&index.block_hash)
+    )
+}
+
 fn listing_section(listing: &Listing) -> String {
     let heading = format!(
         "<h2>.{} — {}</h2>\n<div class=\"facts\"><span>Registry</span><code>{}</code>",
@@ -94,15 +210,17 @@ fn listing_section(listing: &Listing) -> String {
             "{heading}<span>Index</span><span>not ready: {}</span></div>",
             escape(reason)
         ),
-        ListingState::Ready {
-            height,
-            tip,
-            block_hash,
-            names,
-        } => format!(
-            "{heading}<span>Indexed height</span><span>{height} (chain tip {tip})</span><span>Block</span><code>{}</code></div>\n{}",
-            escape(block_hash),
-            names_list(names)
+        ListingState::Ready { index, tip, names } => {
+            format!(
+                "{heading}{}</div>\n{}",
+                indexed(index, *tip),
+                names_list(names)
+            )
+        }
+        ListingState::Behind { index, tip, reason } => format!(
+            "{heading}{}<span>Index</span><span>behind: {}</span></div>\n<p class=\"note\">Names of this network answer 503 until its index is current again.</p>",
+            indexed(index, *tip),
+            escape(reason)
         ),
     }
 }

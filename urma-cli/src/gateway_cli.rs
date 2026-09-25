@@ -40,7 +40,7 @@ pub(crate) struct ServeArgs {
     #[arg(
         long,
         value_enum,
-        help = "Scheme of rewritten links and portal URLs; defaults to https (http for local testing)"
+        help = "Public scheme of rewritten links and portal URLs; https also sends HSTS; defaults to https (http for local testing)"
     )]
     scheme: Option<LinkScheme>,
     #[arg(
@@ -123,9 +123,12 @@ fn serve(args: ServeArgs) -> Result<Value, Error> {
         scope.spawn(move || shared.fetch_loop(queue));
         for _worker in 0..shared.settings.workers {
             scope.spawn(|| {
-                accept_loop(&listener, &shared.settings.http, &|request: &Request| {
-                    respond(shared, request)
-                })
+                accept_loop(
+                    &listener,
+                    &shared.settings.http,
+                    shared.settings.scheme,
+                    &|request: &Request| respond(shared, request),
+                )
             });
         }
     });
