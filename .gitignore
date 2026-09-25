@@ -11,6 +11,8 @@
 !/tests/fixtures/tiny-public-test.jpg
 !/tests/vectors/**/*.bin
 !/tests/vectors/**/*.commit
+!/tests/vectors/**/*.expected
+!/tests/vectors/**/*.html
 !/tests/vectors/**/*.json
 !/tests/vectors/**/*.original
 !/tests/vectors/**/*.package
@@ -22,6 +24,7 @@
 !/scripts/generate-vectors.py
 !/scripts/generate-multipart-vectors.py
 !/scripts/generate-names-vectors.py
+!/scripts/generate-portal-vectors.py
 !/scripts/generate-web-vectors.py
 !/scripts/open-bundle.sh
 !/scripts/read-multipart.py

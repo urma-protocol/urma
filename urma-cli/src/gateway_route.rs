@@ -1,7 +1,7 @@
 use crate::gateway_http::{Refusal, State};
 use bitcoin::Txid;
 use std::time::{Duration, Instant};
-use urma_names::state::{Bound, Resolution, Target};
+use urma_names::state::{Resolution, Target};
 use urma_web::package::{Package, Resource};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -61,7 +61,7 @@ pub(crate) fn standing(
     registry: Txid,
     resolution: Resolution,
     tip: u64,
-) -> Result<(Bound, Txid), Refusal> {
+) -> Result<Txid, Refusal> {
     let bound = match resolution {
         Resolution::Unbound => {
             return Err(Refusal::new(
@@ -92,7 +92,7 @@ pub(crate) fn standing(
             ),
         ));
     }
-    Ok((bound, root))
+    Ok(root)
 }
 
 #[derive(Clone, Copy, Debug)]

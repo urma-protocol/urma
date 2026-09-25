@@ -116,13 +116,14 @@ pub(crate) enum Host {
 #[derive(Debug)]
 pub(crate) struct Portal {
     domain: String,
+    authority: String,
     scheme: LinkScheme,
-    port: PublicPort,
     registries: BTreeMap<Suffix, Txid>,
 }
 
 impl Portal {
     pub(crate) const MAX_HOST_BYTES: usize = 253;
+    const LOCAL_DOMAIN: &'static str = "localhost";
 
     pub(crate) fn new(
         domain: &str,
@@ -144,10 +145,24 @@ impl Portal {
             !registries.is_empty(),
             "configure at least one registry with --registry <suffix>=<genesis>"
         );
+        let expected = if domain == Self::LOCAL_DOMAIN {
+            LinkScheme::Http
+        } else {
+            LinkScheme::Https
+        };
+        ensure!(
+            scheme == expected,
+            "links-v1 uses {} for {domain}: https, or http when the domain is localhost",
+            expected.label()
+        );
+        let authority = match port {
+            PublicPort::Default => domain.to_owned(),
+            PublicPort::Explicit(port) => format!("{domain}:{port}"),
+        };
         Ok(Self {
             domain: domain.to_owned(),
+            authority,
             scheme,
-            port,
             registries,
         })
     }
@@ -156,12 +171,12 @@ impl Portal {
         &self.domain
     }
 
-    pub(crate) fn registries(&self) -> &BTreeMap<Suffix, Txid> {
-        &self.registries
+    pub(crate) fn authority(&self) -> &str {
+        &self.authority
     }
 
-    pub(crate) fn serves(&self, suffix: Suffix) -> bool {
-        self.registries.contains_key(&suffix)
+    pub(crate) fn registries(&self) -> &BTreeMap<Suffix, Txid> {
+        &self.registries
     }
 
     pub(crate) fn is_registry(&self, suffix: Suffix, genesis: &str) -> bool {
@@ -172,23 +187,28 @@ impl Portal {
     }
 
     pub(crate) fn apex_origin(&self) -> String {
-        self.origin(&self.domain)
+        format!("{}://{}", self.scheme.label(), self.authority)
     }
 
     pub(crate) fn site_origin(&self, name: &Name, suffix: Suffix) -> String {
-        self.origin(&format!("{name}.{}.{}", suffix.label(), self.domain))
+        format!(
+            "{}://{name}.{}.{}",
+            self.scheme.label(),
+            suffix.label(),
+            self.authority
+        )
     }
 
-    pub(crate) fn unavailable(&self, original: &str) -> String {
-        let encoded: String = url::form_urlencoded::byte_serialize(original.as_bytes()).collect();
-        format!("{}/unavailable?u={encoded}", self.apex_origin())
-    }
-
-    fn origin(&self, host: &str) -> String {
-        match self.port {
-            PublicPort::Default => format!("{}://{host}", self.scheme.label()),
-            PublicPort::Explicit(port) => format!("{}://{host}:{port}", self.scheme.label()),
+    pub(crate) fn unavailable(&self, original: &[u8]) -> String {
+        let mut link = format!("{}/unavailable?u=", self.apex_origin());
+        for byte in original {
+            if byte.is_ascii_alphanumeric() || b"-._~".contains(byte) {
+                link.push(char::from(*byte));
+            } else {
+                link.push_str(&format!("%{byte:02X}"));
+            }
         }
+        link
     }
 }
 

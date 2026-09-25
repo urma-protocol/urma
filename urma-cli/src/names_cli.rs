@@ -337,9 +337,10 @@ pub(crate) fn pending_records(index: &NamesIndex, name: &str) -> Result<Vec<Valu
 }
 
 fn resolve(args: IndexArgs, name: &str) -> Result<Value, Error> {
-    let index = open_index(args)?;
-    let name = Name::normalize(name)?;
-    let resolution = index.registry.resolve(&name);
+    resolution(&open_index(args)?, &Name::normalize(name)?)
+}
+
+pub(crate) fn resolution(index: &NamesIndex, name: &Name) -> Result<Value, Error> {
     Ok(json!({
         "network": index.network,
         "registry": index.registry.genesis().to_string(),
@@ -347,8 +348,8 @@ fn resolve(args: IndexArgs, name: &str) -> Result<Value, Error> {
         "height": index.registry.height(),
         "block_hash": index.tip_hash(),
         "name": name.as_str(),
-        "resolution": serde_json::to_value(resolution)?,
-        "pending": pending_records(&index, name.as_str())?,
+        "resolution": serde_json::to_value(index.registry.resolve(name))?,
+        "pending": pending_records(index, name.as_str())?,
         "locally_cached": true,
     }))
 }

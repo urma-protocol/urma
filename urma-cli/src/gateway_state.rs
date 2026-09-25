@@ -16,17 +16,17 @@ use std::{
         Arc, Condvar, Mutex, RwLock,
         mpsc::{Receiver, SyncSender, TrySendError},
     },
-    time::{Instant, SystemTime, UNIX_EPOCH},
+    time::Instant,
 };
 use urma_chain::observation::Chain;
-use urma_names::{index::NamesIndex, state::Bound};
+use urma_names::index::NamesIndex;
 use urma_runtime::error::{Error, ensure};
 use urma_web::store::{Store, StoredPublication, Verified};
 
 pub(crate) struct Snapshot {
     pub(crate) index: NamesIndex,
     pub(crate) tip: u64,
-    pub(crate) synced: u64,
+    pub(crate) tip_hash: String,
     pub(crate) scan: Scan,
 }
 
@@ -35,6 +35,13 @@ impl Snapshot {
         IndexPoint {
             height: self.index.registry.height(),
             block_hash: self.index.tip_hash(),
+        }
+    }
+
+    pub(crate) fn tip_point(&self) -> IndexPoint {
+        IndexPoint {
+            height: self.tip,
+            block_hash: self.tip_hash.clone(),
         }
     }
 }
@@ -54,13 +61,6 @@ pub(crate) struct Network {
     state: RwLock<Availability>,
 }
 
-fn unix_now() -> Result<u64, Error> {
-    Ok(SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|cause| Error::Io(std::io::Error::other(cause)))?
-        .as_secs())
-}
-
 fn loaded(network: &str, genesis: Txid, path: &Path) -> Result<Snapshot, Error> {
     let index = load_index(network, path)?;
     ensure!(
@@ -70,10 +70,11 @@ fn loaded(network: &str, genesis: Txid, path: &Path) -> Result<Snapshot, Error> 
         index.registry.genesis()
     );
     let tip = index.registry.height();
+    let tip_hash = index.tip_hash();
     Ok(Snapshot {
         index,
         tip,
-        synced: unix_now()?,
+        tip_hash,
         scan: Scan::Never,
     })
 }
@@ -113,6 +114,7 @@ impl Network {
         let report = sync_index(&node, self.genesis, &self.index, blocks)?;
         let mut snapshot = loaded(&self.name, self.genesis, &self.index)?;
         snapshot.tip = report.tip;
+        snapshot.tip_hash = node.block_hash(report.tip)?.to_string();
         snapshot.scan = Scan::At(Instant::now());
         let snapshot = Arc::new(snapshot);
         let mut state = self
@@ -191,12 +193,6 @@ fn footprint(verified: &Verified) -> Result<usize, Refusal> {
             .ok_or_else(|| Refusal::internal("publication size overflow".into()))?;
     }
     Ok(total)
-}
-
-pub(crate) struct Binding {
-    pub(crate) snapshot: Arc<Snapshot>,
-    pub(crate) bound: Bound,
-    pub(crate) root: Txid,
 }
 
 pub(crate) struct Gateway {
@@ -280,30 +276,25 @@ impl Gateway {
         }
     }
 
-    pub(crate) fn binding(
+    pub(crate) fn servable(
         &self,
         site: &SiteHost,
         network: &Network,
-        snapshot: Arc<Snapshot>,
-    ) -> Result<Binding, Refusal> {
-        let (bound, root) = standing(
+        snapshot: &Snapshot,
+    ) -> Result<Txid, Refusal> {
+        self.current(network, snapshot)?;
+        standing(
             &format!("{}.{}", site.name, site.suffix.label()),
             network.genesis,
             snapshot.index.registry.resolve(&site.name),
             snapshot.tip,
-        )?;
-        Ok(Binding {
-            snapshot,
-            bound,
-            root,
-        })
+        )
     }
 
-    pub(crate) fn bound(&self, site: &SiteHost) -> Result<Binding, Refusal> {
+    pub(crate) fn bound(&self, site: &SiteHost) -> Result<Txid, Refusal> {
         let network = self.network(site.suffix)?;
         let snapshot = self.snapshot(network)?;
-        self.current(network, &snapshot)?;
-        self.binding(site, network, snapshot)
+        self.servable(site, network, &snapshot)
     }
 
     pub(crate) fn publication(

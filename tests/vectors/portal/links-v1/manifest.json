@@ -1,0 +1,323 @@
+{
+  "transform": "links-v1",
+  "specification": "PORTAL.md section 6",
+  "license": "CC0-1.0",
+  "parameters": {
+    "public": {
+      "D": "urma-portal.rosint.org",
+      "S": "https",
+      "G": {
+        "ltc": null,
+        "btc": null,
+        "tltc": "4c53ebbea660c206c4a09d4ccc48479950d7300e39876c9772b2f72ca232d1e3",
+        "tbtc": null
+      }
+    },
+    "local": {
+      "D": "localhost:8080",
+      "S": "http",
+      "G": {
+        "ltc": null,
+        "btc": null,
+        "tltc": "4c53ebbea660c206c4a09d4ccc48479950d7300e39876c9772b2f72ca232d1e3",
+        "tbtc": null
+      }
+    }
+  },
+  "cases": [
+    {
+      "name": "spec-example-a",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.4: short name; path, query, fragment and the character reference are kept"
+    },
+    {
+      "name": "spec-example-area",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.4: explicit registry equal to G(tltc), unquoted, uppercase markup, empty tail"
+    },
+    {
+      "name": "spec-example-meta",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.4: meta refresh; URL= and a quote, cut at the closing quote"
+    },
+    {
+      "name": "spec-example-form",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.4: a publication address goes to /unavailable with pct(C)"
+    },
+    {
+      "name": "spec-untouched-scheme-case",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "spec-untouched-host-case",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "spec-untouched-port",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "spec-untouched-character-reference",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "spec-untouched-scheme-relative",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "spec-untouched-img-src",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "spec-untouched-script",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "spec-untouched-comment",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "spec-untouched-textarea",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.4: listed as untouched"
+    },
+    {
+      "name": "slot-whitespace-kept",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.2: leading and trailing ASCII whitespace of a slot is kept and excluded from C"
+    },
+    {
+      "name": "slot-whitespace-untouched",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.2: whitespace inside C, or a vertical tab (not ASCII whitespace), leaves the slot untouched"
+    },
+    {
+      "name": "tail-rejected-bytes",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.2: a tail T with a byte <= 0x20, 0x7F or a backslash leaves the slot untouched"
+    },
+    {
+      "name": "tail-allowed-bytes",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.2 and 6.3: every other tail byte (quotes, angle brackets, %, bytes >= 0x80) is copied as is"
+    },
+    {
+      "name": "pct-encoding",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.3: pct keeps A-Z a-z 0-9 - . _ ~ and writes every other byte as % and two uppercase hex digits"
+    },
+    {
+      "name": "short-names",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.3: short name.s maps to S://name.s.D followed by T' (a / is added when T is empty or starts with ? or #)"
+    },
+    {
+      "name": "short-names-any-suffix",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.3: a short name maps to its name host whether or not G(s) exists"
+    },
+    {
+      "name": "explicit-registry",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.3: explicit g.name.s maps to the name host iff g = G(s), otherwise to /unavailable"
+    },
+    {
+      "name": "publication-addresses",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.3: a publication address r.s always maps to /unavailable"
+    },
+    {
+      "name": "non-canonical-addresses",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.2: an address that is not canonical per BROWSER_CONTRACT 4, or not urma://, is left untouched"
+    },
+    {
+      "name": "local-parameters",
+      "parameters": "local",
+      "changed": true,
+      "about": "6: D = localhost:<port> uses S = http"
+    },
+    {
+      "name": "attribute-syntax",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: quoted, unquoted and spaced values, missing whitespace, slashes and FF as separators"
+    },
+    {
+      "name": "attribute-first-wins",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: only the first attribute of a name counts; the tokenizer drops later duplicates"
+    },
+    {
+      "name": "attribute-names",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.1: attribute names run to whitespace, /, > or = and compare after ASCII lowercasing only"
+    },
+    {
+      "name": "slot-elements",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.2: the slots are a and area href, form action and meta refresh content; namespaces are ignored"
+    },
+    {
+      "name": "meta-refresh-forms",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.2: the URL of the shared declarative refresh steps over the raw content bytes"
+    },
+    {
+      "name": "meta-refresh-no-slot",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.2: no slot when the refresh steps end before a URL, and no match for a non-canonical URL"
+    },
+    {
+      "name": "rcdata",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: title and textarea switch to RCDATA until the appropriate end tag, end-tag attributes included"
+    },
+    {
+      "name": "rawtext",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: style, xmp, iframe, noembed and noframes switch to RAWTEXT; noscript does not switch"
+    },
+    {
+      "name": "plaintext",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: plaintext switches to PLAINTEXT, which never ends"
+    },
+    {
+      "name": "script-data",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: script switches to script data until </script>, whatever the namespace or self-closing flag"
+    },
+    {
+      "name": "script-escaped",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: the script data escaped and double escaped states"
+    },
+    {
+      "name": "comments",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: comments end at -->, --!>, or right after <!-- and <!---; the less-than sign states change nothing"
+    },
+    {
+      "name": "bogus-comments-and-doctype",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: DOCTYPE, <?, <!x, </ followed by a non-letter and <![CDATA[ all end at the next >"
+    },
+    {
+      "name": "svg-cdata-is-bogus-comment",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: <![CDATA[ starts a bogus comment even inside svg, ending at the first >"
+    },
+    {
+      "name": "markup-edges",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: < needs an ASCII letter to open a tag; a tag name runs to whitespace, / or >"
+    },
+    {
+      "name": "eof-in-tag",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: a start tag cut by the end of the input is never emitted"
+    },
+    {
+      "name": "eof-in-attribute-value",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: an attribute value left open at the end of the input drops its tag"
+    },
+    {
+      "name": "latin1-document",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: bytes >= 0x80 are ordinary characters, copied in T and pct-encoded byte by byte"
+    },
+    {
+      "name": "invalid-utf8-document",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: no decoding and no sniffing; a UTF-16 byte order mark before ASCII markup changes nothing"
+    },
+    {
+      "name": "utf8-bom-document",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: a UTF-8 byte order mark is three ordinary characters"
+    },
+    {
+      "name": "utf16le-document",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.1: a UTF-16 document stays unchanged"
+    },
+    {
+      "name": "utf16be-document",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.1: a UTF-16 document stays unchanged"
+    },
+    {
+      "name": "carriage-returns",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.1: CR is treated as LF; a CR inside C stops the match"
+    },
+    {
+      "name": "page-mixed",
+      "parameters": "public",
+      "changed": true,
+      "about": "6.3: a whole page; only matched candidates change, in document order"
+    },
+    {
+      "name": "page-without-links",
+      "parameters": "public",
+      "changed": false,
+      "about": "6.3: a page without urma:// slots is served unchanged"
+    }
+  ]
+}

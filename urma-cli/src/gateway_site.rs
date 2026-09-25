@@ -3,12 +3,14 @@ use crate::{
     gateway_host::{Host, Portal, SiteHost, authority, classify},
     gateway_http::{Refusal, Reply, Request, State},
     gateway_pages::{ListedName, Listing, ListingState, Subject, index_page, unavailable_page},
+    gateway_proof::{RootEvidence, evidence, with_root},
     gateway_route::{Currency, Route, route, split_target},
-    gateway_state::{Availability, Binding, Gateway, Network, Snapshot},
+    gateway_state::{Availability, Gateway, Network, Snapshot},
+    names_cli::resolution,
     web_cli::web_error,
 };
-use bitcoin::consensus::encode::serialize_hex;
-use serde_json::json;
+use bitcoin::{Txid, consensus::encode::serialize_hex};
+use serde_json::Value;
 use urma_names::state::{Resolution, Target};
 use urma_web::{
     error::WebError,
@@ -24,9 +26,8 @@ impl WellKnown {
 }
 
 struct Origin<'a> {
-    site: &'a SiteHost,
     network: &'a Network,
-    binding: &'a Binding,
+    root: Txid,
     verified: &'a Verified,
     provenance: Provenance,
 }
@@ -141,29 +142,31 @@ fn name_reply(
     subject.registry = Some(network.genesis.to_string());
     let snapshot = gateway.snapshot(network)?;
     subject.index = Some(snapshot.point());
-    gateway.current(network, &snapshot)?;
-    let binding = gateway.binding(site, network, snapshot)?;
-    let verified = gateway.publication(network, binding.root)?;
+    if split_target(&request.target).0 == WellKnown::PROOF {
+        return proof(gateway, site, network, &snapshot, subject);
+    }
+    let root = gateway.servable(site, network, &snapshot)?;
+    let verified = gateway.publication(network, root)?;
     let origin = Origin {
-        site,
         network,
-        binding: &binding,
+        root,
         verified: &verified,
-        provenance: Provenance {
-            subject: subject.clone(),
-            root: binding.root.to_string(),
-            author: verified.author.clone(),
-            payload_sha256: verified.payload_sha256.clone(),
-        },
+        provenance: provenance(subject, root, &verified),
     };
     serve_root(gateway, request, &origin)
 }
 
+fn provenance(subject: &Subject, root: Txid, verified: &Verified) -> Provenance {
+    Provenance {
+        subject: subject.clone(),
+        root: root.to_string(),
+        author: verified.author.clone(),
+        payload_sha256: verified.payload_sha256.clone(),
+    }
+}
+
 fn serve_root(gateway: &Gateway, request: &Request, origin: &Origin<'_>) -> Result<Reply, Refusal> {
     let path = split_target(&request.target).0;
-    if path == WellKnown::PROOF {
-        return proof(gateway, origin);
-    }
     match route(&origin.verified.package, &request.target) {
         Route::Serve(declared) => file(gateway, request, origin, &declared),
         Route::Redirect(location) => Ok(origin
@@ -177,10 +180,7 @@ fn serve_root(gateway: &Gateway, request: &Request, origin: &Origin<'_>) -> Resu
             .with("Location", location)),
         Route::Undeclared => Err(Refusal::new(
             State::Undeclared,
-            format!(
-                "{path} is not in the declared set of {}",
-                origin.binding.root
-            ),
+            format!("{path} is not in the declared set of {}", origin.root),
         )),
     }
 }
@@ -204,7 +204,7 @@ fn file(
     let served = match gateway.store.serve(origin.verified, &format!("/{path}")) {
         Ok(served) => served,
         Err(cause) => {
-            gateway.refetch(origin.network, origin.binding.root);
+            gateway.refetch(origin.network, origin.root);
             return Err(store_refusal(path, cause));
         }
     };
@@ -222,7 +222,6 @@ fn file(
     let serving = Serving {
         portal: &gateway.portal,
         max_age: gateway.settings.max_age,
-        html_memory: gateway.settings.html_memory,
     };
     let declared = Declared {
         path: path.to_owned(),
@@ -233,65 +232,61 @@ fn file(
     match serving.file(&origin.provenance, declared, request) {
         Ok(reply) => Ok(reply),
         Err(refusal) => {
-            gateway.refetch(origin.network, origin.binding.root);
+            gateway.refetch(origin.network, origin.root);
             Err(refusal)
         }
     }
 }
 
-fn proof(gateway: &Gateway, origin: &Origin<'_>) -> Result<Reply, Refusal> {
-    let summary = gateway
+fn proof(
+    gateway: &Gateway,
+    site: &SiteHost,
+    network: &Network,
+    snapshot: &Snapshot,
+    subject: &Subject,
+) -> Result<Reply, Refusal> {
+    let document = evidence(
+        &gateway.portal,
+        resolution(&snapshot.index, &site.name)?,
+        &snapshot.tip_point(),
+    );
+    let root = match gateway.servable(site, network, snapshot) {
+        Ok(root) => root,
+        Err(refusal) => {
+            tracing::warn!(target: "urma_gateway", state = refusal.state.label(), reason = %refusal.detail, "proof answered without root: the name is not servable");
+            let mut reply = Reply::json(200, &document)?;
+            for (name, value) in subject.headers() {
+                reply = reply.with(name, value);
+            }
+            return Ok(reply);
+        }
+    };
+    let verified = gateway.publication(network, root)?;
+    let document = rooted(gateway, &verified, document)?;
+    Ok(provenance(subject, root, &verified).stamp(Reply::json(200, &document)?))
+}
+
+fn rooted(gateway: &Gateway, verified: &Verified, document: Value) -> Result<Value, Refusal> {
+    let publication = gateway
         .store
-        .summary(origin.verified)
+        .summary(verified)
         .map_err(|cause| store_refusal("publication summary", cause))?;
     let reveal = gateway
         .store
-        .transaction(&summary.root)
+        .transaction(&publication.root)
         .map_err(|cause| store_refusal("root reveal", cause))?;
     let commit = gateway
         .store
-        .transaction(&summary.commit)
+        .transaction(&publication.commit)
         .map_err(|cause| store_refusal("root commit", cause))?;
-    let bound = &origin.binding.bound;
-    let snapshot = &origin.binding.snapshot;
-    let value = json!({
-        "format": "URMA-PORTAL-PROOF-1",
-        "portal": gateway.portal.domain(),
-        "network": origin.network.name,
-        "suffix": origin.site.suffix.label(),
-        "registry": origin.network.genesis.to_string(),
-        "name": origin.site.name.as_str(),
-        "resolution": {
-            "status": "bound",
-            "height": snapshot.index.registry.height(),
-            "block_hash": snapshot.index.tip_hash(),
-            "chain_tip": snapshot.tip,
-            "synced_at": snapshot.synced,
-            "owner": bound.owner.to_string(),
-            "target": origin.binding.root.to_string(),
-            "claim_txid": bound.claim_txid.to_string(),
-            "last_txid": bound.last_txid.to_string(),
-            "expiry": bound.expiry,
+    Ok(with_root(
+        document,
+        RootEvidence {
+            publication: &publication,
+            commit_hex: serialize_hex(&commit),
+            reveal_hex: serialize_hex(&reveal),
         },
-        "publication": {
-            "root": summary.root,
-            "commit": summary.commit,
-            "author": summary.author,
-            "label": summary.label,
-            "entry": summary.entry,
-            "payload_sha256": summary.payload_sha256,
-            "payload_length": summary.payload_length,
-            "root_reveal_hex": serialize_hex(&reveal),
-            "root_commit_hex": serialize_hex(&commit),
-            "files": summary.files,
-            "pinned": summary.pinned,
-        },
-        "serving": {
-            "transform": Serving::TRANSFORM,
-            "rule": "text/html responses get links-v1 and carry URMA-Transform and URMA-Original-SHA256 (the declared bytes); URMA-SHA256 always names the bytes served",
-        },
-    });
-    Ok(origin.provenance.stamp(Reply::json(200, &value)?))
+    ))
 }
 
 fn listings(gateway: &Gateway) -> Result<Vec<Listing>, Refusal> {

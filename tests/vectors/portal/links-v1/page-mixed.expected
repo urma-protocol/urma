@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<meta http-equiv="refresh" content="30; url=https://helloworld.tltc.urma-portal.rosint.org/next.html">
+<link rel="stylesheet" href="urma://helloworld.tltc/style.css">
+</head><body>
+<a href="https://helloworld.tltc.urma-portal.rosint.org/about.html?x=1&amp;y=2#team">About</a>
+<a href='https://urma.tltc.urma-portal.rosint.org/'>Explicit</a>
+<a href=https://urma.tltc.urma-portal.rosint.org/>Unquoted</a>
+<a
+   class="x"   href="urma://HelloWorld.tltc/">Upper host</a>
+<map name="m"><area shape="rect" coords="0,0,1,1" href="https://urma-portal.rosint.org/unavailable?u=urma%3A%2F%2Fe5ef78d5fe042c2b7c646d9ab03256a4c0d479a8032adca1e88425f99e4fef1a.tltc%2Fx"></map>
+<form action="https://urma-portal.rosint.org/unavailable?u=urma%3A%2F%2F1111111111111111111111111111111111111111111111111111111111111111.helloworld.tltc%2Fsearch" method="get"></form>
+<img src="urma://helloworld.tltc/logo.png">
+<a href="relative.html" data-x="urma://helloworld.tltc/">Relative</a>
+<script>location.href = "urma://helloworld.tltc/";</script>
+<p>urma://helloworld.tltc/ in text</p>
+</body></html>

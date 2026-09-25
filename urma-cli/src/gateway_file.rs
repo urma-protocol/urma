@@ -36,7 +36,6 @@ pub(crate) struct Declared {
 pub(crate) struct Serving<'a> {
     pub(crate) portal: &'a Portal,
     pub(crate) max_age: u64,
-    pub(crate) html_memory: usize,
 }
 
 enum Linked {
@@ -91,13 +90,9 @@ impl Serving<'_> {
         if !is_entry_mime(mime) {
             return Linked::Verbatim(bytes);
         }
-        match transform(&bytes, self.portal, self.html_memory) {
-            Ok(Transformed::Rewritten(rewritten)) => Linked::Rewritten(rewritten),
-            Ok(Transformed::Unchanged) => Linked::Unchanged(bytes),
-            Err(cause) => {
-                tracing::warn!(target: "urma_gateway", error = %cause, "links-v1 transform failed; serving the verified original bytes without URMA-Transform");
-                Linked::Verbatim(bytes)
-            }
+        match transform(&bytes, self.portal) {
+            Transformed::Rewritten(rewritten) => Linked::Rewritten(rewritten),
+            Transformed::Unchanged => Linked::Unchanged(bytes),
         }
     }
 }

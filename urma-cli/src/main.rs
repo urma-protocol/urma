@@ -17,6 +17,7 @@ mod gateway_host;
 mod gateway_http;
 mod gateway_links;
 mod gateway_pages;
+mod gateway_proof;
 mod gateway_route;
 mod gateway_site;
 mod gateway_state;

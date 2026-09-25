@@ -8,6 +8,8 @@ mod gateway_http;
 mod gateway_links;
 #[path = "../src/gateway_pages.rs"]
 mod gateway_pages;
+#[path = "../src/gateway_proof.rs"]
+mod gateway_proof;
 #[path = "../src/gateway_route.rs"]
 mod gateway_route;
 
@@ -18,17 +20,19 @@ use gateway_host::{
     Host, HostError, LinkScheme, Portal, PublicPort, SiteHost, Suffix, authority, classify, is_txid,
 };
 use gateway_http::{HttpLimits, Method, Refusal, Reply, Request, State, accept_loop};
-use gateway_links::{Rewrite, Transformed, rewrite, transform};
+use gateway_links::{Transformed, transform};
 use gateway_pages::{
     IndexPoint, ListedName, Listing, ListingState, Subject, index_page, unavailable_page,
 };
+use gateway_proof::{RootEvidence, evidence, with_root};
 use gateway_route::{Currency, Freshness, Route, Scan, route, split_target, standing};
-use serde_json::json;
+use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     io::{Read, Write},
     net::{Shutdown, SocketAddr, TcpListener, TcpStream},
+    path::{Path, PathBuf},
     time::{Duration, Instant},
 };
 use urma_chain::observation::Chain;
@@ -36,7 +40,10 @@ use urma_names::{
     name::Name,
     state::{Bound, Resolution, Target},
 };
-use urma_web::package::{FileEntry, Package, PinnedEntry};
+use urma_web::{
+    package::{FileEntry, Package, PinnedEntry},
+    store::{StoredFile, StoredPin, StoredPublication},
+};
 
 const ROSINT: &str = "4c53ebbea660c206c4a09d4ccc48479950d7300e39876c9772b2f72ca232d1e3";
 const OTHER: &str = "1111111111111111111111111111111111111111111111111111111111111111";
@@ -44,7 +51,6 @@ const ROOT: &str = "e5ef78d5fe042c2b7c646d9ab03256a4c0d479a8032adca1e88425f99e4f
 const AUTHOR: &str = "986514fb8d4da75550980a77764dfd1dcadf76ca374192560e0b690183fcf251";
 const PAYLOAD: &str = "9e33a615b5343d6d81b8a686ac6eb0d7675ede101d5dccd4806706375eaecac0";
 const BLOCK: &str = "0000000000000a1b2c3d4e5f60718293a4b5c6d7e8f9011223344556677889900";
-const MEMORY: usize = 16 * 1024 * 1024;
 const SITE_CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; font-src 'self'; connect-src 'self'; worker-src 'self'; frame-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'self'";
 const PORTAL_CSP: &str = "default-src 'none'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const HSTS: &str = "max-age=31536000; includeSubDomains";
@@ -97,10 +103,6 @@ fn site(name: &str, suffix: Suffix) -> Result<Host> {
         name: Name::parse(name)?,
         suffix,
     }))
-}
-
-fn to(url: &str) -> Rewrite {
-    Rewrite::To(url.to_owned())
 }
 
 #[test]
@@ -256,24 +258,34 @@ fn portals_validate_their_domain_and_format_origins() -> Result<()> {
         )
         .is_err()
     );
+    for (domain, scheme) in [
+        ("localhost", LinkScheme::Https),
+        ("portal.example", LinkScheme::Http),
+    ] {
+        assert!(
+            portal(domain, scheme, PublicPort::Explicit(8080)).is_err(),
+            "{domain} {scheme:?}"
+        );
+    }
     let public = public()?;
     assert_eq!(public.domain(), "portal.example");
+    assert_eq!(public.authority(), "portal.example");
     assert_eq!(public.registries().len(), 1);
     assert_eq!(public.apex_origin(), "https://portal.example");
     assert_eq!(
         public.site_origin(&Name::parse("urma")?, Suffix::Tltc),
         "https://urma.tltc.portal.example"
     );
-    assert!(public.serves(Suffix::Tltc));
-    assert!(!public.serves(Suffix::Ltc));
     assert!(public.is_registry(Suffix::Tltc, ROSINT));
     assert!(!public.is_registry(Suffix::Tltc, OTHER));
     assert!(!public.is_registry(Suffix::Ltc, ROSINT));
     let local = local()?;
+    assert_eq!(local.domain(), "localhost");
+    assert_eq!(local.authority(), "localhost:8080");
     assert_eq!(local.apex_origin(), "http://localhost:8080");
     assert_eq!(
-        local.unavailable("urma://x y&z"),
-        "http://localhost:8080/unavailable?u=urma%3A%2F%2Fx+y%26z"
+        local.unavailable(b"urma://x y&z~*+\xc8\x99"),
+        "http://localhost:8080/unavailable?u=urma%3A%2F%2Fx%20y%26z~%2A%2B%C8%99"
     );
     assert!(is_txid(ROOT));
     assert!(!is_txid(&ROOT.to_uppercase()));
@@ -281,223 +293,159 @@ fn portals_validate_their_domain_and_format_origins() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn name_links_map_to_name_hosts_keeping_path_query_and_fragment() -> Result<()> {
-    let portal = public()?;
-    let explicit = format!("urma://{ROSINT}.urma.tltc/how.html");
-    let cases = [
-        (
-            "urma://helloworld.tltc/",
-            "https://helloworld.tltc.portal.example/",
-        ),
-        (
-            "urma://helloworld.tltc",
-            "https://helloworld.tltc.portal.example/",
-        ),
-        (
-            "urma://helloworld.tltc/a/b.html?x=1&y=2#part",
-            "https://helloworld.tltc.portal.example/a/b.html?x=1&y=2#part",
-        ),
-        (
-            "urma://helloworld.tltc?x=1",
-            "https://helloworld.tltc.portal.example/?x=1",
-        ),
-        (
-            "urma://helloworld.tltc#top",
-            "https://helloworld.tltc.portal.example/#top",
-        ),
-        (
-            explicit.as_str(),
-            "https://urma.tltc.portal.example/how.html",
-        ),
-    ];
-    for (link, expected) in cases {
-        assert_eq!(rewrite(link, &portal), to(expected), "{link}");
+fn vectors() -> PathBuf {
+    Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/..")).join("tests/vectors/portal/links-v1")
+}
+
+fn vector_portal(parameters: &Value) -> Result<Portal> {
+    let written = parameters["D"].as_str().context("parameter D")?;
+    let (domain, port) = match written.split_once(':') {
+        Some((domain, port)) => (domain, PublicPort::Explicit(port.parse()?)),
+        None => (written, PublicPort::Default),
+    };
+    let scheme = match parameters["S"].as_str().context("parameter S")? {
+        "https" => LinkScheme::Https,
+        "http" => LinkScheme::Http,
+        other => anyhow::bail!("unknown scheme {other}"),
+    };
+    let mut registries = BTreeMap::new();
+    for suffix in Suffix::ALL {
+        match &parameters["G"][suffix.label()] {
+            Value::Null => {}
+            genesis => {
+                registries.insert(suffix, genesis.as_str().context("G")?.parse::<Txid>()?);
+            }
+        }
     }
-    assert_eq!(
-        rewrite("urma://urma.tltc/how.html", &local()?),
-        to("http://urma.tltc.localhost:8080/how.html")
-    );
-    Ok(())
+    let portal = Portal::new(domain, scheme, port, registries)?;
+    assert_eq!(portal.authority(), written);
+    Ok(portal)
 }
 
 #[test]
-fn txid_foreign_registry_and_unserved_network_links_go_to_unavailable() -> Result<()> {
-    let portal = public()?;
-    assert_eq!(
-        rewrite(&format!("urma://{ROOT}.tltc/x"), &portal),
-        to(&format!(
-            "https://portal.example/unavailable?u=urma%3A%2F%2F{ROOT}.tltc%2Fx"
-        ))
-    );
-    for link in [
-        format!("urma://{OTHER}.helloworld.tltc/"),
-        "urma://helloworld.ltc/".to_owned(),
-        format!("urma://{ROSINT}.helloworld.ltc/"),
-        format!("urma://{ROOT}.btc/"),
-    ] {
-        let encoded: String = url::form_urlencoded::byte_serialize(link.as_bytes()).collect();
+fn links_v1_vectors_match_byte_for_byte() -> Result<()> {
+    let directory = vectors();
+    let manifest: Value = serde_json::from_slice(&std::fs::read(directory.join("manifest.json"))?)?;
+    let mut portals = BTreeMap::new();
+    for (label, parameters) in manifest["parameters"].as_object().context("parameters")? {
+        portals.insert(label.as_str(), vector_portal(parameters)?);
+    }
+    let cases = manifest["cases"].as_array().context("cases")?;
+    for case in cases {
+        let name = case["name"].as_str().context("case name")?;
+        let label = case["parameters"].as_str().context("case parameters")?;
+        let portal = portals.get(label).context("unknown parameters")?;
+        let input = std::fs::read(directory.join(format!("{name}.html")))?;
+        let expected = std::fs::read(directory.join(format!("{name}.expected")))?;
+        let output = match transform(&input, portal) {
+            Transformed::Unchanged => input.clone(),
+            Transformed::Rewritten(bytes) => {
+                assert_ne!(bytes, input, "{name}: a rewrite must change bytes");
+                bytes
+            }
+        };
         assert_eq!(
-            rewrite(&link, &portal),
-            to(&format!("https://portal.example/unavailable?u={encoded}")),
-            "{link}"
+            output.escape_ascii().to_string(),
+            expected.escape_ascii().to_string(),
+            "{name}"
         );
+        assert_eq!(case["changed"], json!(expected != input), "{name}");
     }
+    let mut inputs = 0;
+    for entry in std::fs::read_dir(&directory)? {
+        if entry?.path().extension() == Some("html".as_ref()) {
+            inputs += 1;
+        }
+    }
+    assert_eq!(inputs, cases.len(), "every input is listed in the manifest");
+    assert!(cases.len() >= 40, "{} cases", cases.len());
     Ok(())
 }
 
-#[test]
-fn non_canonical_and_other_values_are_left_untouched() -> Result<()> {
-    let portal = public()?;
-    let upper_genesis = format!("urma://{}.helloworld.tltc/", ROSINT.to_uppercase());
-    for value in [
-        "urma://HelloWorld.tltc/",
-        "URMA://helloworld.tltc/",
-        "Urma://helloworld.tltc/",
-        "urma://user@helloworld.tltc/",
-        "urma://helloworld.tltc:8080/",
-        "urma://hello%77orld.tltc/",
-        "urma://helloworld..tltc/",
-        "urma://helloworld.tltc./",
-        "urma://.helloworld.tltc/",
-        "urma:///path",
-        "urma://",
-        "urma://helloworld.com/",
-        "urma://-bad.tltc/",
-        "urma://a.b.tltc/",
-        "urma://a.b.c.tltc/",
-        " urma://helloworld.tltc/",
-        "urma:helloworld.tltc",
-        "style.css",
-        "/about.html",
-        "https://example.com/",
-        "#top",
-        "",
-        upper_genesis.as_str(),
-    ] {
-        assert_eq!(rewrite(value, &portal), Rewrite::Keep, "{value:?}");
+fn stored_publication() -> StoredPublication {
+    StoredPublication {
+        format: "URMA-WEB-STORE-2".into(),
+        network: "litecoin-testnet".into(),
+        root: ROOT.into(),
+        commit: OTHER.into(),
+        author: AUTHOR.into(),
+        label: "URMA".into(),
+        entry: "index.html".into(),
+        payload_sha256: PAYLOAD.into(),
+        payload_length: 586,
+        files: vec![StoredFile {
+            path: "index.html".into(),
+            mime: "text/html".into(),
+            sha256: PAYLOAD.into(),
+            length: 120,
+        }],
+        pinned: vec![StoredPin {
+            path: "media/film.mp4".into(),
+            mime: "video/mp4".into(),
+            root_txid: ROSINT.into(),
+            sha256: PAYLOAD.into(),
+            length: 4096,
+        }],
+        tip_height: 4898690,
+        tip_hash: BLOCK.into(),
     }
-    Ok(())
 }
 
 #[test]
-fn transform_rewrites_only_navigation_attributes() -> Result<()> {
-    let portal = public()?;
-    let page = format!(
-        r##"<!doctype html>
-<html><head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="30; url=urma://helloworld.tltc/next.html">
-<link rel="stylesheet" href="urma://helloworld.tltc/style.css">
-</head><body>
-<a href="urma://helloworld.tltc/about.html?x=1&amp;y=2#team">About</a>
-<a href='urma://{ROSINT}.urma.tltc/'>Explicit</a>
-<a href=urma://urma.tltc>Unquoted</a>
-<a
-   class="x"   href="urma://HelloWorld.tltc/">Upper host</a>
-<map name="m"><area shape="rect" coords="0,0,1,1" href="urma://{ROOT}.tltc/x"></map>
-<form action="urma://{OTHER}.helloworld.tltc/search" method="get"></form>
-<img src="urma://helloworld.tltc/logo.png">
-<a href="relative.html" data-x="urma://helloworld.tltc/">Relative</a>
-<script>location.href = "urma://helloworld.tltc/";</script>
-<p>urma://helloworld.tltc/ in text</p>
-</body></html>
-"##
-    );
-    let expected = format!(
-        r##"<!doctype html>
-<html><head>
-<meta charset="utf-8">
-<meta http-equiv="refresh" content="30; url=https://helloworld.tltc.portal.example/next.html">
-<link rel="stylesheet" href="urma://helloworld.tltc/style.css">
-</head><body>
-<a href="https://helloworld.tltc.portal.example/about.html?x=1&amp;y=2#team">About</a>
-<a href='https://urma.tltc.portal.example/'>Explicit</a>
-<a href=https://urma.tltc.portal.example/>Unquoted</a>
-<a
-   class="x"   href="urma://HelloWorld.tltc/">Upper host</a>
-<map name="m"><area shape="rect" coords="0,0,1,1" href="https://portal.example/unavailable?u=urma%3A%2F%2F{ROOT}.tltc%2Fx"></map>
-<form action="https://portal.example/unavailable?u=urma%3A%2F%2F{OTHER}.helloworld.tltc%2Fsearch" method="get"></form>
-<img src="urma://helloworld.tltc/logo.png">
-<a href="relative.html" data-x="urma://helloworld.tltc/">Relative</a>
-<script>location.href = "urma://helloworld.tltc/";</script>
-<p>urma://helloworld.tltc/ in text</p>
-</body></html>
-"##
-    );
+fn proofs_follow_urma_portal_proof_1() -> Result<()> {
+    let resolver = json!({"network": "litecoin-testnet", "registry": ROSINT, "name": "urma"});
+    let tip = IndexPoint {
+        height: 4898702,
+        block_hash: BLOCK.into(),
+    };
+    let portal = portal(
+        "urma-portal.rosint.org",
+        LinkScheme::Https,
+        PublicPort::Default,
+    )?;
+    let unrooted = evidence(&portal, resolver.clone(), &tip);
     assert_eq!(
-        transform(page.as_bytes(), &portal, MEMORY)?,
-        Transformed::Rewritten(expected.into_bytes())
+        unrooted,
+        json!({
+            "format": "URMA-PORTAL-PROOF-1",
+            "portal": {
+                "domain": "urma-portal.rosint.org",
+                "transform": "links-v1",
+                "registries": {"ltc": null, "btc": null, "tltc": ROSINT, "tbtc": null},
+            },
+            "resolver": resolver,
+            "chain_tip": {"height": 4898702, "block_hash": BLOCK},
+        })
     );
-    Ok(())
-}
-
-#[test]
-fn transform_handles_uppercase_markup_and_refresh_forms() -> Result<()> {
-    let portal = local()?;
-    let cases = [
-        (
-            r#"<A HREF="urma://helloworld.tltc/x">x</A>"#,
-            r#"<A HREF="http://helloworld.tltc.localhost:8080/x">x</A>"#,
-        ),
-        (
-            r#"<meta http-equiv="Refresh" content="0;URL='urma://urma.tltc/how.html'">"#,
-            r#"<meta http-equiv="Refresh" content="0;URL='http://urma.tltc.localhost:8080/how.html'">"#,
-        ),
-        (
-            r#"<meta http-equiv="refresh" content="0; urma://urma.tltc/">"#,
-            r#"<meta http-equiv="refresh" content="0; http://urma.tltc.localhost:8080/">"#,
-        ),
-        (
-            r#"<meta http-equiv="refresh" content='1, url = "urma://urma.tltc/a" trailing'>"#,
-            r#"<meta http-equiv="refresh" content='1, url = "http://urma.tltc.localhost:8080/a" trailing'>"#,
-        ),
-        (
-            r#"<meta content="0; url=urma://urma.tltc/" http-equiv=REFRESH>"#,
-            r#"<meta content="0; url=http://urma.tltc.localhost:8080/" http-equiv=REFRESH>"#,
-        ),
-        (
-            r#"<form method="post" action="urma://urma.tltc?q=1"></form>"#,
-            r#"<form method="post" action="http://urma.tltc.localhost:8080/?q=1"></form>"#,
-        ),
-    ];
-    for (page, expected) in cases {
-        assert_eq!(
-            transform(page.as_bytes(), &portal, MEMORY)?,
-            Transformed::Rewritten(expected.as_bytes().to_vec()),
-            "{page}"
-        );
-    }
-    for page in [
-        r#"<meta http-equiv="content-type" content="0; url=urma://urma.tltc/">"#,
-        r#"<meta http-equiv="refresh" content="5">"#,
-        r#"<meta http-equiv="refresh" content="x; url=urma://urma.tltc/">"#,
-        r#"<meta name="refresh" content="0; url=urma://urma.tltc/">"#,
-        r#"<a href="urma&#58;//urma.tltc/">entity</a>"#,
-        r#"<a href>empty</a>"#,
-        r#"<button formaction="urma://urma.tltc/">button</button>"#,
-        r#"<link rel="next" href="urma://urma.tltc/">"#,
-    ] {
-        assert_eq!(
-            transform(page.as_bytes(), &portal, MEMORY)?,
-            Transformed::Unchanged,
-            "{page}"
-        );
-    }
-    Ok(())
-}
-
-#[test]
-fn transform_keeps_every_other_byte() -> Result<()> {
-    let portal = public()?;
-    let page = b"<!doctype html><title>\xff\xfe</title><!-- <a href=\"urma://helloworld.tltc/\"> -->\n<a  href = \"urma://helloworld.tltc/p\"  >p</a>\xc3\x28";
-    let expected = b"<!doctype html><title>\xff\xfe</title><!-- <a href=\"urma://helloworld.tltc/\"> -->\n<a  href = \"https://helloworld.tltc.portal.example/p\"  >p</a>\xc3\x28";
+    let publication = stored_publication();
+    let rooted = with_root(
+        unrooted.clone(),
+        RootEvidence {
+            publication: &publication,
+            commit_hex: "02aa".into(),
+            reveal_hex: "02bb".into(),
+        },
+    );
+    let mut expected = unrooted;
+    expected["root"] = json!({
+        "txid": ROOT,
+        "commit_hex": "02aa",
+        "reveal_hex": "02bb",
+        "author": AUTHOR,
+        "payload_sha256": PAYLOAD,
+        "payload_length": 586,
+        "fetched_at": {"height": 4898690, "block_hash": BLOCK},
+    });
+    expected["declared"] = json!({
+        "entry": "index.html",
+        "files": [{"path": "index.html", "mime": "text/html", "sha256": PAYLOAD, "length": 120}],
+        "pinned": [{"path": "media/film.mp4", "mime": "video/mp4", "root_txid": ROSINT, "sha256": PAYLOAD, "length": 4096}],
+    });
+    assert_eq!(rooted, expected);
     assert_eq!(
-        transform(page, &portal, MEMORY)?,
-        Transformed::Rewritten(expected.to_vec())
+        evidence(&local()?, json!({}), &tip)["portal"]["domain"],
+        "localhost:8080"
     );
-    let hello = b"<!doctype html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\">\n<title>Hello World</title>\n<link rel=\"stylesheet\" href=\"style.css\">\n</head>\n<body>\n<main>\n<h1>Hello World</h1>\n</main>\n</body>\n</html>\n";
-    assert_eq!(transform(hello, &portal, MEMORY)?, Transformed::Unchanged);
     Ok(())
 }
 
@@ -610,13 +558,13 @@ fn registry_standing_maps_to_http_statuses() -> Result<()> {
         answer(bound(Target::Publication(root), 100), 99),
         (200, "servable")
     );
-    let (kept, served) = standing(
+    let served = standing(
         "urma.tltc",
         registry,
         bound(Target::Publication(root), 100),
         99,
     )?;
-    assert_eq!((kept.expiry, served), (100, root));
+    assert_eq!(served, root);
     let suspended = standing("urma.tltc", registry, Resolution::Suspended, 1)
         .err()
         .context("suspended names are refused")?;
@@ -963,7 +911,6 @@ fn site_files_carry_the_verification_surface() -> Result<()> {
     let serving = Serving {
         portal: &portal,
         max_age: 60,
-        html_memory: MEMORY,
     };
     let css = declared("style.css", "text/css", b"body{}");
     let sha = css.sha256.clone();
@@ -1001,7 +948,6 @@ fn html_files_are_marked_links_v1_even_when_unchanged() -> Result<()> {
     let serving = Serving {
         portal: &portal,
         max_age: 60,
-        html_memory: MEMORY,
     };
     let plain = declared("index.html", "text/html", b"<p>hello</p>");
     let original = plain.sha256.clone();
@@ -1052,7 +998,6 @@ fn matching_validators_answer_304_and_bad_bytes_answer_502() -> Result<()> {
     let serving = Serving {
         portal: &portal,
         max_age: 60,
-        html_memory: MEMORY,
     };
     let css = declared("style.css", "text/css", b"body{}");
     let etag = format!("\"{}\"", css.sha256);

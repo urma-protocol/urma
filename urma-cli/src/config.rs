@@ -139,7 +139,6 @@ pub(crate) struct GatewaySettings {
     pub(crate) fetch_retry: Duration,
     pub(crate) fetch_queue: usize,
     pub(crate) cache_bytes: usize,
-    pub(crate) html_memory: usize,
     pub(crate) freshness: Freshness,
 }
 
@@ -203,7 +202,6 @@ pub(crate) fn gateway(choice: GatewayChoice) -> Result<GatewaySettings, Error> {
         fetch_retry: Duration::from_secs(60),
         fetch_queue: 32,
         cache_bytes: 256 * 1024 * 1024,
-        html_memory: 16 * 1024 * 1024,
         freshness: Freshness {
             max_lag: GatewaySettings::MAX_INDEX_LAG_BLOCKS,
             max_age: GatewaySettings::MAX_SCAN_AGE,
