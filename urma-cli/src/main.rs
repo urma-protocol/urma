@@ -129,7 +129,9 @@ fn run() -> Result<(), Error> {
     let cli = Cli::parse();
     config::set_verbosity(cli.verbosity);
     let log = logging::install(cli.verbosity, || git_terminal::LogWriter(std::io::stderr()))?;
-    progress(format!("Log: {}", log.display()));
+    if let Some(log) = log {
+        progress(format!("Log: {}", log.display()));
+    }
     let started = std::time::Instant::now();
     tracing::info!(target: "urma_cli", command = command_name(&cli.command), version = env!("CARGO_PKG_VERSION"), "Command started");
     let result = execute(cli.command);

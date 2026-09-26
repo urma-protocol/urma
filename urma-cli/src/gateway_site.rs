@@ -20,6 +20,8 @@ use urma_web::{
 struct WellKnown;
 
 impl WellKnown {
+    const LIVE: &'static str = "/.well-known/urma/live";
+    const READY: &'static str = "/.well-known/urma/ready";
     const PROOF: &'static str = "/.well-known/urma/proof";
     const ASK: &'static str = "/.well-known/urma/ask";
     const UNAVAILABLE: &'static str = "/unavailable";
@@ -87,6 +89,8 @@ fn apex(gateway: &Gateway, request: &Request) -> Result<Reply, Refusal> {
             200,
             unavailable_page(&gateway.portal, &parameters(query, "u")),
         )),
+        WellKnown::LIVE => Ok(Reply::text(200, "ok\n")),
+        WellKnown::READY => gateway.readiness(),
         WellKnown::ASK => ask(gateway, query),
         other => Err(Refusal::new(
             State::NotAPortalPage,

@@ -176,3 +176,23 @@ fn default_state_path_unique_logs_and_errors_are_retained() {
             && error.contains("debug")
     );
 }
+
+#[test]
+fn stderr_logging_retains_failure_without_creating_files() {
+    let temp = tempfile::tempdir().unwrap();
+    let config = temp.path().join("config.json");
+    fs::write(&config, "{}").unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_urma"))
+        .env("URMA_CONFIG", config)
+        .env("XDG_STATE_HOME", temp.path().join("state"))
+        .env("URMA_LOG_OUTPUT", "stderr")
+        .args(["git", "inspect", "--plan"])
+        .arg(temp.path().join("absent"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    let stderr = String::from_utf8(output.stderr).unwrap();
+    assert!(stderr.contains("Command started") && stderr.contains("Command failed"));
+    assert!(!stderr.contains("Log: "));
+    assert!(!temp.path().join("state/urma/logs").exists());
+}
