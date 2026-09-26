@@ -1,8 +1,9 @@
 use crate::{
     config::{self, GatewaySettings},
     gateway_host::{Portal, SiteHost, Suffix},
-    gateway_http::{Refusal, State},
+    gateway_http::{Refusal, Reply, State},
     gateway_pages::IndexPoint,
+    gateway_readiness::{NetworkHealth, ResolutionHealth, readiness_reply},
     gateway_route::{Currency, Scan, standing},
     names_cli::{load_index, sync_index},
     node_cli::{chain_name, connect},
@@ -258,48 +259,30 @@ impl Gateway {
         }
     }
 
-    /// Read only bounded local registry state. Never contact a provider or enumerate names.
-    pub(crate) fn readiness(&self) -> Result<crate::gateway_http::Reply, Refusal> {
-        let mut ready = true;
-        let mut networks = Vec::new();
-        for network in self.networks.values() {
-            let mut row = serde_json::json!({
-                "network": network.name,
-                "suffix": network.suffix.label(),
-                "registry": network.genesis.to_string(),
-                "state": "unavailable",
-            });
-            // A scan can publish a replacement while this request runs. Do not wait on it.
-            if let Ok(state) = network.state.try_read() {
-                if let Availability::Ready(snapshot) = &*state {
-                    row["index_height"] = snapshot.index.registry.height().into();
-                    row["chain_tip"] = snapshot.tip.into();
-                    row["scan_age_seconds"] = match snapshot.scan {
-                        Scan::Never => serde_json::Value::Null,
-                        Scan::At(at) => at.elapsed().as_secs().into(),
-                    };
-                    row["state"] = match self.currency(snapshot) {
-                        Currency::Current => "ready",
-                        Currency::Behind(_) => "index-behind",
+    pub(crate) fn readiness(&self) -> Result<Reply, Refusal> {
+        let networks = self.networks.values().map(|network| {
+            let state = match network.state.try_read() {
+                Ok(state) => match &*state {
+                    Availability::Pending(reason) => {
+                        tracing::debug!(target: "urma_gateway", network = %network.name, reason = %reason, "readiness has no loaded index");
+                        ResolutionHealth::Unavailable
                     }
-                    .into();
+                    Availability::Ready(snapshot) => ResolutionHealth::Loaded {
+                        index_height: snapshot.index.registry.height(),
+                        chain_tip: snapshot.tip,
+                        scan: snapshot.scan,
+                        currency: self.currency(snapshot),
+                    },
+                },
+                Err(cause) => {
+                    tracing::warn!(target: "urma_gateway", network = %network.name, error = %cause, "readiness snapshot unavailable");
+                    ResolutionHealth::Unavailable
                 }
-            }
-            ready &= row["state"] == "ready";
-            networks.push(row);
-        }
-        let reply = crate::gateway_http::Reply::json(
-            if ready { 200 } else { 503 },
-            &serde_json::json!({ "ready": ready, "networks": networks }),
-        )?;
-        Ok(if ready {
-            reply
-        } else {
-            reply.with(
-                "Retry-After",
-                self.settings.freshness.retry.as_secs().to_string(),
-            )
-        })
+            };
+            NetworkHealth { network: &network.name, suffix: network.suffix.label(),
+                registry: network.genesis, state }
+        });
+        readiness_reply(networks, self.settings.freshness.retry)
     }
 
     pub(crate) fn currency(&self, snapshot: &Snapshot) -> Currency {
@@ -577,114 +560,5 @@ impl Gateway {
             }
             std::thread::sleep(self.settings.rescan);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::{
-        gateway_host::{LinkScheme, PublicPort},
-        gateway_http::{Method, Request},
-    };
-    use std::time::Duration;
-    use urma_names::{
-        engine::Registry,
-        payload::{Genesis, Mode},
-    };
-
-    #[test]
-    fn readiness_tracks_local_freshness_while_liveness_survives() {
-        let temp = tempfile::tempdir().unwrap();
-        let genesis: Txid = "11".repeat(32).parse().unwrap();
-        let portal = Portal::new(
-            "localhost",
-            LinkScheme::Http,
-            PublicPort::Default,
-            BTreeMap::from([(Suffix::Tltc, genesis)]),
-        )
-        .unwrap();
-        let settings = config::gateway(crate::config::GatewayChoice {
-            bind: None,
-            scheme: Some(LinkScheme::Http),
-            public_port: None,
-            store: Some(temp.path().join("store")),
-            names_dir: Some(temp.path().join("names")),
-            rescan_seconds: None,
-            max_bytes: None,
-            workers: None,
-        })
-        .unwrap();
-        let (jobs, queue) = std::sync::mpsc::sync_channel(1);
-        let gateway = Gateway::open(portal, settings, jobs).unwrap();
-        let network = gateway.networks.get(&Suffix::Tltc).unwrap();
-        let request = |target: &str| {
-            crate::gateway_site::respond(
-                &gateway,
-                &Request {
-                    method: Method::Get,
-                    target: target.into(),
-                    host: "localhost".into(),
-                    validators: vec![],
-                },
-            )
-        };
-        let check = |expected: &str, status| {
-            let reply = request("/.well-known/urma/ready");
-            assert_eq!(reply.status, status);
-            let body: serde_json::Value = serde_json::from_slice(&reply.body).unwrap();
-            assert_eq!(body["networks"][0]["state"], expected);
-            assert_eq!(body["ready"], status == 200);
-            assert!(
-                reply
-                    .headers
-                    .iter()
-                    .any(|(name, value)| *name == "Cache-Control" && value == "no-store")
-            );
-            assert_eq!(request("/.well-known/urma/live").status, 200);
-            assert_eq!(request("/").status, 200);
-        };
-        check("unavailable", 503);
-        let registry = Registry::new(
-            genesis,
-            100,
-            Genesis {
-                mode: Mode::Open,
-                expiry_blocks: 100,
-                reveal_max_blocks: 10,
-                threshold: 0,
-                approvers: vec![],
-            },
-        )
-        .unwrap();
-        let set = |scan, tip| {
-            *network.state.write().unwrap() = Availability::Ready(Arc::new(Snapshot {
-                index: NamesIndex::new(
-                    "litecoin-testnet",
-                    "00".repeat(32),
-                    "22".repeat(32),
-                    registry.clone(),
-                ),
-                tip,
-                tip_hash: "33".repeat(32),
-                scan,
-            }));
-        };
-        set(Scan::Never, 100);
-        check("index-behind", 503);
-        set(Scan::At(Instant::now()), 102);
-        check("ready", 200); // Empty/unbound names are a valid resolver state.
-        set(Scan::At(Instant::now()), 103);
-        check("index-behind", 503);
-        set(Scan::At(Instant::now() - Duration::from_secs(600)), 100);
-        check("index-behind", 503);
-        // The probe does not wait for a rescan publishing a new snapshot.
-        let _lock = network.state.write().unwrap();
-        assert_eq!(request("/.well-known/urma/ready").status, 503);
-        assert_eq!(request("/.well-known/urma/live").status, 200);
-        assert!(matches!(
-            queue.try_recv(),
-            Err(std::sync::mpsc::TryRecvError::Empty)
-        ));
     }
 }

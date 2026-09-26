@@ -196,3 +196,58 @@ fn stderr_logging_retains_failure_without_creating_files() {
     assert!(!stderr.contains("Log: "));
     assert!(!temp.path().join("state/urma/logs").exists());
 }
+
+#[path = "../src/provider_warnings.rs"]
+mod provider_warnings;
+
+#[derive(Clone, Default)]
+struct DiagnosticBuffer(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for DiagnosticBuffer {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+#[test]
+fn warning_filter_reports_suppression_and_keeps_errors_and_recovery() {
+    use tracing_subscriber::{Layer, layer::SubscriberExt};
+    let buffer = DiagnosticBuffer::default();
+    let writer = buffer.clone();
+    let make_writer = move || writer.clone();
+    let subscriber = tracing_subscriber::registry().with(
+        tracing_subscriber::fmt::layer()
+            .with_ansi(false)
+            .with_writer(make_writer.clone())
+            .with_filter(provider_warnings::ProviderWarnings::new(
+                make_writer,
+                std::time::Duration::from_millis(100),
+            )),
+    );
+    tracing::subscriber::with_default(subscriber, || {
+        for index in 0..101 {
+            if index == 100 {
+                std::thread::sleep(std::time::Duration::from_millis(110));
+            }
+            tracing::warn!(target: "urma_runtime::transport", "provider unavailable");
+        }
+        tracing::warn!(target: "urma_runtime::transport", "provider stopped");
+        tracing::error!(target: "urma_runtime::transport", "fatal error");
+        tracing::warn!(target: "urma_gateway", "rescan failed");
+        tracing::info!(target: "urma_gateway", "registry index refreshed");
+    });
+    let text = String::from_utf8(buffer.0.lock().unwrap().clone()).unwrap();
+    assert_eq!(text.matches("provider unavailable").count(), 2);
+    assert!(text.contains("suppressed 99 repetitive warnings"));
+    for message in [
+        "provider stopped",
+        "fatal error",
+        "rescan failed",
+        "registry index refreshed",
+    ] {
+        assert!(text.contains(message), "{text}");
+    }
+}

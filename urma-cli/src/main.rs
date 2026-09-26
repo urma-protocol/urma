@@ -18,6 +18,7 @@ mod gateway_http;
 mod gateway_links;
 mod gateway_pages;
 mod gateway_proof;
+mod gateway_readiness;
 mod gateway_route;
 mod gateway_site;
 mod gateway_state;
@@ -33,6 +34,7 @@ mod names_approval;
 mod names_cli;
 mod names_flow;
 mod node_cli;
+mod provider_warnings;
 mod public_cli;
 mod wallet_cli;
 mod web_cli;
@@ -129,8 +131,9 @@ fn run() -> Result<(), Error> {
     let cli = Cli::parse();
     config::set_verbosity(cli.verbosity);
     let log = logging::install(cli.verbosity, || git_terminal::LogWriter(std::io::stderr()))?;
-    if let Some(log) = log {
-        progress(format!("Log: {}", log.display()));
+    match log {
+        logging::Destination::File(path) => progress(format!("Log: {}", path.display())),
+        logging::Destination::Console => {}
     }
     let started = std::time::Instant::now();
     tracing::info!(target: "urma_cli", command = command_name(&cli.command), version = env!("CARGO_PKG_VERSION"), "Command started");

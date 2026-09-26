@@ -10,6 +10,8 @@ mod gateway_links;
 mod gateway_pages;
 #[path = "../src/gateway_proof.rs"]
 mod gateway_proof;
+#[path = "../src/gateway_readiness.rs"]
+mod gateway_readiness;
 #[path = "../src/gateway_route.rs"]
 mod gateway_route;
 
@@ -1289,5 +1291,61 @@ fn http_layer_refuses_malformed_and_oversized_requests() -> Result<()> {
     assert!(method.contains("\r\nAllow: GET, HEAD\r\n"));
     let partial = exchange(address, b"GET / HTTP/1.1\r\nHost: x\r\n")?;
     assert_eq!(status_line(&partial), "HTTP/1.1 400 Bad Request");
+    Ok(())
+}
+
+#[test]
+fn readiness_fixtures_reuse_freshness_without_site_fetching() -> Result<()> {
+    use gateway_readiness::{NetworkHealth, ResolutionHealth, readiness_reply};
+    let now = Instant::now();
+    let freshness = Freshness {
+        max_lag: 2,
+        max_age: Duration::from_secs(600),
+        retry: Duration::from_secs(30),
+    };
+    for (scan, tip, expected) in [
+        (Scan::At(now), 102, "ready"),
+        (Scan::At(now), 103, "index-behind"),
+        (Scan::At(now - freshness.max_age), 100, "index-behind"),
+        (Scan::Never, 100, "index-behind"),
+    ] {
+        let reply = readiness_reply(
+            std::iter::once(NetworkHealth {
+                network: "litecoin-testnet",
+                suffix: "tltc",
+                registry: ROSINT.parse()?,
+                state: ResolutionHealth::Loaded {
+                    index_height: 100,
+                    chain_tip: tip,
+                    scan,
+                    currency: freshness.judge(100, tip, scan, now),
+                },
+            }),
+            freshness.retry,
+        )?;
+        let document: Value = serde_json::from_slice(&reply.body)?;
+        assert_eq!(document["networks"][0]["state"], expected);
+        assert_eq!(document["ready"], expected == "ready");
+        assert_eq!(reply.status, if expected == "ready" { 200 } else { 503 });
+        assert!(
+            reply
+                .headers
+                .iter()
+                .any(|(name, value)| *name == "Cache-Control" && value == "no-store")
+        );
+    }
+    let reply = readiness_reply(
+        std::iter::once(NetworkHealth {
+            network: "litecoin-testnet",
+            suffix: "tltc",
+            registry: ROSINT.parse()?,
+            state: ResolutionHealth::Unavailable,
+        }),
+        freshness.retry,
+    )?;
+    let document: Value = serde_json::from_slice(&reply.body)?;
+    assert_eq!(reply.status, 503);
+    assert_eq!(document["networks"][0]["state"], "unavailable");
+    assert_eq!(document["networks"][0].as_object().unwrap().len(), 4);
     Ok(())
 }

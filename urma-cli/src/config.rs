@@ -423,3 +423,23 @@ pub(crate) fn publication_fee_ceiling(requested: FeeCeiling, estimate: u64) -> u
         None => estimate,
     }
 }
+
+pub(crate) enum LogOutput {
+    File,
+    Console,
+}
+
+pub(crate) fn log_output() -> Result<LogOutput, Error> {
+    match std::env::var_os("URMA_LOG_OUTPUT") {
+        None => Ok(LogOutput::File),
+        Some(value) if value == "file" => Ok(LogOutput::File),
+        Some(value) if value == "stderr" => Ok(LogOutput::Console),
+        Some(value) => Err(Error::Invalid(format!(
+            "URMA_LOG_OUTPUT must be file or stderr, got {value:?}"
+        ))),
+    }
+}
+
+pub(crate) fn provider_warning_window() -> Duration {
+    Duration::from_secs(60)
+}
