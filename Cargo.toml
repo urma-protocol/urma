@@ -21,5 +21,7 @@ members = [
 version = "0.2.0"
 edition = "2024"
 license = "0BSD"
+authors = ["Zmole Cristian <urma@rosint.org>"]
+homepage = "https://urma.rosint.org"
 publish = ["crates-io"]
 repository = "https://github.com/urma-protocol/urma"

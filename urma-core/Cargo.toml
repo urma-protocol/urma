@@ -4,8 +4,10 @@ version.workspace = true
 edition.workspace = true
 publish.workspace = true
 repository.workspace = true
-readme = false
-include = ["Cargo.toml", "src/**/*.rs"]
+authors.workspace = true
+homepage.workspace = true
+readme = "README.md"
+include = ["Cargo.toml", "src/**/*.rs", "README.md", "LICENSE"]
 license.workspace = true
 description = "Canonical URMA V0 codecs, crypto and proof validation without I/O"
 
