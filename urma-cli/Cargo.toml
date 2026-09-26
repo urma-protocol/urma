@@ -16,7 +16,7 @@ name = "urma"
 path = "src/main.rs"
 
 [dependencies]
-urma-io = { version = "0.2.1", path = "../urma-io" }
+urma-io = { version = "0.2.2", path = "../urma-io" }
 bitcoin = { version = "0.32", features = ["rand-std"] }
 bitcoincore-rpc = "0.19"
 aes = "0.8"
@@ -41,21 +41,21 @@ zeroize = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
 
-urma-core = { version = "0.2.1", path = "../urma-core" }
-urma-profiles = { version = "0.2.1", path = "../urma-profiles" }
-urma-identity = { version = "0.2.1", path = "../urma-identity" }
-urma-wallet = { version = "0.2.1", path = "../urma-wallet" }
-urma-workflows = { version = "0.2.1", path = "../urma-workflows" }
+urma-core = { version = "0.2.2", path = "../urma-core" }
+urma-profiles = { version = "0.2.2", path = "../urma-profiles" }
+urma-identity = { version = "0.2.2", path = "../urma-identity" }
+urma-wallet = { version = "0.2.2", path = "../urma-wallet" }
+urma-workflows = { version = "0.2.2", path = "../urma-workflows" }
 
-urma-chain = { version = "0.2.1", path = "../urma-chain" }
+urma-chain = { version = "0.2.2", path = "../urma-chain" }
 
-urma-wire = { version = "0.2.1", path = "../urma-wire" }
-urma-runtime = { version = "0.2.1", path = "../urma-runtime" }
+urma-wire = { version = "0.2.2", path = "../urma-wire" }
+urma-runtime = { version = "0.2.2", path = "../urma-runtime" }
 
-urma-files = { version = "0.2.1", path = "../urma-files" }
-urma-git = { version = "0.2.1", path = "../urma-git" }
-urma-names = { version = "0.2.1", path = "../urma-names" }
-urma-web = { version = "0.2.1", path = "../urma-web" }
+urma-files = { version = "0.2.2", path = "../urma-files" }
+urma-git = { version = "0.2.2", path = "../urma-git" }
+urma-names = { version = "0.2.2", path = "../urma-names" }
+urma-web = { version = "0.2.2", path = "../urma-web" }
 
 [dev-dependencies]
 anyhow = "1"

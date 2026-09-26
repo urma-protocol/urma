@@ -12,8 +12,8 @@ include = ["Cargo.toml", "src/**/*.rs", "README.md", "LICENSE"]
 description = "URMA Git snapshots, publication and verified checkout"
 
 [dependencies]
-urma-profiles = { version = "0.2.1", path = "../urma-profiles" }
-urma-io = { version = "0.2.1", path = "../urma-io" }
+urma-profiles = { version = "0.2.2", path = "../urma-profiles" }
+urma-io = { version = "0.2.2", path = "../urma-io" }
 hex = "0.4"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -24,10 +24,10 @@ rustix = { version = "1", features = ["fs"] }
 tracing = "0.1"
 
 bitcoin = { version = "0.32", features = ["serde"] }
-urma-core = { version = "0.2.1", path = "../urma-core" }
-urma-chain = { version = "0.2.1", path = "../urma-chain" }
-urma-runtime = { version = "0.2.1", path = "../urma-runtime" }
-urma-identity = { version = "0.2.1", path = "../urma-identity" }
+urma-core = { version = "0.2.2", path = "../urma-core" }
+urma-chain = { version = "0.2.2", path = "../urma-chain" }
+urma-runtime = { version = "0.2.2", path = "../urma-runtime" }
+urma-identity = { version = "0.2.2", path = "../urma-identity" }
 
 [dev-dependencies]
 anyhow = "1"
