@@ -1,7 +1,82 @@
 # urma-cli
 
-The `urma` command-line program for identities, wallets, Wire records, archives and Git workflows.
+**Capture for journalism. Git for code beyond a single host. One command line.**
 
-This crate is part of the [URMA workspace](https://github.com/urma-protocol/urma). See the repository for the other components and project documentation.
+[crates.io](https://crates.io/crates/urma-cli) · [Source](https://github.com/urma-protocol/urma/tree/master/urma-cli) · [URMA](https://urma.rosint.org)
 
-Licensed under [0BSD](LICENSE).
+`urma-cli` installs **`urma`**, the command-line application for URMA publication, verification and recovery. It brings Capture, Git, archives, Wire, Names and Web workflows together with identity and wallet management.
+
+## Install
+
+In a Unix environment, with a current stable Rust toolchain:
+
+```sh
+cargo install urma-cli --locked
+urma --help
+```
+
+Git workflows also require the `git` executable. To install from a checkout of the URMA repository instead:
+
+```sh
+cargo install --path urma-cli --locked
+```
+
+## Find your workflow
+
+| Command | Purpose |
+| --- | --- |
+| `urma capture` | Preserve journalistic originals and explicit session context |
+| `urma git` | Publish committed snapshots, recover proofs and clone verified code |
+| `urma archive` | Encrypt, publish and restore files, directories and collections |
+| `urma wire` | Publish public text and read a locally indexed feed |
+| `urma key` | Manage identity vaults, recovery backups and archive recovery keys |
+| `urma wallet` | Inspect addresses, funds and fee estimates |
+| `urma web` | Pack, publish and retrieve site packages and pinned resources |
+| `urma names` | Request, review, approve and resolve registry-scoped names |
+| `urma gateway` | Serve registry names and verified site content over HTTP |
+| `urma expert` | Work with lower-level protocol tools |
+
+Use help to inspect inputs, network options and output paths before running an operation:
+
+```sh
+urma capture --help
+urma git --help
+urma web pack --help
+urma names resolve --help
+```
+
+These help commands do not publish records or spend funds. Defaults and limits are documented by the installed command's help, so this README does not duplicate values that can change.
+
+## Capture: preserve the originals
+
+The Capture workflow starts with `ingest`, which seals originals with explicit session context. `inspect` authenticates the catalog; `recover` restores a local capture. For chain publication, `plan` prepares the work without broadcasting, `publish` approves and submits it, and `resume` continues that publication. `recover-chain` discovers and restores previously published material.
+
+Keep the private recovery secret separately from the device or storage you may lose. Recovery needs both that secret and accessible records. The workflow authenticates recorded bytes and context; it cannot establish the truth of a scene by itself.
+
+## Git: keep another route to the code
+
+`prepare` freezes the committed HEAD snapshot, scans its content and quotes publication. `inspect` and `review` support checking the material before it becomes public. `publish` and `resume` handle publication; `watch` observes progress without submitting missing transactions.
+
+On the reading side, `recover` retrieves content and proofs, `clone` creates an editable repository, and `verify` checks retained proofs and Git content offline. This preserves a committed snapshot, not every branch and the repository's entire history.
+
+Start with the exact operation's help:
+
+```sh
+urma git prepare --help
+urma git clone --help
+urma git verify --help
+```
+
+## Publication and recovery
+
+Choose the network explicitly using the options available for the selected operation. Planning and inspection are separate from publication, which can spend network fees. Retain the prepared plan and progress state when continuing an interrupted publication.
+
+Private archives use recovery secrets distinct from identity-vault recovery phrases. Public records can expose their contents; inspect Git snapshots and other public material before approval. Access to retained records remains necessary even when the original application or host is gone.
+
+## Build an application
+
+The command line composes the [URMA Rust libraries](https://github.com/urma-protocol/urma#use-the-libraries). Use the relevant library directly when building another interface; `urma-cli` is the executable package.
+
+## License
+
+[0BSD](https://github.com/urma-protocol/urma/blob/master/LICENSE). Maintained by Zmole Cristian as part of [URMA](https://urma.rosint.org). [Project contact](mailto:urma@rosint.org).
