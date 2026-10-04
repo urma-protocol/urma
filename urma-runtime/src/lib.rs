@@ -19,7 +19,7 @@ mod disk_writer;
 pub mod endpoints;
 mod esplora;
 mod remote;
-mod transport;
+pub mod transport;
 
 pub mod publication;
 pub mod quote;

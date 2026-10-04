@@ -3,7 +3,9 @@ use crate::error::{Context, Error, bail, ensure};
 use crate::node::Node;
 use crate::publish::{MempoolCheck, test_accept};
 use crate::transaction::transaction;
-use bitcoin::{Amount, OutPoint, ScriptBuf, Transaction, TxOut, Txid, Witness, consensus::serialize};
+use bitcoin::{
+    Amount, OutPoint, ScriptBuf, Transaction, TxOut, Txid, Witness, consensus::serialize,
+};
 use serde_json::json;
 use std::num::NonZeroU64;
 use urma_identity::identity::IdentitySigner;
@@ -30,7 +32,10 @@ fn output(value: u64, script: &ScriptBuf) -> TxOut {
 }
 
 fn quote(request: &TransferRequest, own: &ScriptBuf, retained: u64) -> Result<u64, Error> {
-    let mut draft = transaction(OutPoint::null(), output(request.amount, &request.destination));
+    let mut draft = transaction(
+        OutPoint::null(),
+        output(request.amount, &request.destination),
+    );
     draft.output.push(output(retained, own));
     draft.input[0].witness = Witness::from_slice(&[vec![0; 73], vec![0; 33]]);
     let fee = u64::try_from(draft.vsize())?
@@ -64,7 +69,9 @@ pub fn prepare(
         .amount
         .checked_add(fee)
         .context("transfer amount overflow")?;
-    let minimum = spent.checked_add(retained).context("transfer amount overflow")?;
+    let minimum = spent
+        .checked_add(retained)
+        .context("transfer amount overflow")?;
     let funding = node.select_funding(signer, minimum)?;
     let (outpoint, previous) = funding.prevout()?;
     let change = previous

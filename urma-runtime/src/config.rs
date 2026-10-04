@@ -95,6 +95,38 @@ pub const BITCOIN_RETURN_SATS: u64 = 1_000;
 pub const BITCOIN_MAX_FEE_SATS: u64 = 500_000;
 pub const BITCOIN_MAX_FEE_RATE: u64 = 100;
 
+pub const PUBLIC_METHODS: [&str; 10] = [
+    "getblockhash",
+    "getblockchaininfo",
+    "getrawtransaction",
+    "getblockheader",
+    "getblock",
+    "getrawmempool",
+    "gettxout",
+    "addressutxos",
+    "testmempoolaccept",
+    "sendrawtransaction",
+];
+pub const ABSENT_TRANSACTION: &str = "transaction not found on selected network";
+pub const ABSENT_RECORD: &str = "transaction or block not found on selected network";
+pub const MAX_PROVIDERS: usize = 8;
+pub const TIP_RACE_WIDTH: usize = 2;
+pub const PROVIDER_BREAKER_FAILURES: u32 = 3;
+pub const PROVIDER_BREAKER_WINDOW: std::time::Duration = std::time::Duration::from_secs(30);
+pub const PROVIDER_RETRY_DEFAULT: std::time::Duration = std::time::Duration::from_secs(60);
+pub const PROVIDER_RETRY_MAX: std::time::Duration = std::time::Duration::from_secs(300);
+pub const PROVIDER_PACING: std::time::Duration = std::time::Duration::from_millis(300);
+pub const RPC_GATEWAY_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
+pub const RPC_GATEWAY_WINDOW_REQUESTS: u8 = 5;
+
+pub fn method_timeout(method: &str) -> std::time::Duration {
+    match method {
+        "getblock" => std::time::Duration::from_secs(60),
+        "getrawmempool" | "addressutxos" => std::time::Duration::from_secs(30),
+        _ => std::time::Duration::from_secs(12),
+    }
+}
+
 pub const STANDARD_TX_WEIGHT: u64 = 400_000;
 pub const PUBLICATION_BUFFER_WEIGHT: u64 = 7_960_000;
 pub const PUBLICATION_PENDING_COMMITS: usize = 24;

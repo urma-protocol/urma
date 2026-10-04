@@ -1,11 +1,13 @@
+use crate::config;
 use crate::error::{Context, Error, ensure};
 use crate::transaction::decode;
+use crate::transport::{BlockEncoding, Evidence, Provider};
 use crate::{endpoints::PublicEndpoint, esplora};
 use bitcoin::{Amount, BlockHash, Denomination, Txid};
 use serde_json::{Value, json};
 use std::{
-    cell::Cell,
     io::Read,
+    sync::Mutex,
     time::{Duration, Instant},
 };
 use urma_chain::{
@@ -14,13 +16,18 @@ use urma_chain::{
     validation::BlockValidationError,
 };
 
-pub(crate) struct Source {
+pub(crate) struct Remote {
     endpoint: PublicEndpoint,
-    network: Cell<NetworkState>,
-    last_request: Cell<Instant>,
-    retry_at: Cell<Instant>,
-    window_start: Cell<Instant>,
-    window_requests: Cell<u8>,
+    source: Mutex<Source>,
+}
+
+struct Source {
+    endpoint: PublicEndpoint,
+    network: NetworkState,
+    last_request: Instant,
+    retry_at: Instant,
+    window_start: Instant,
+    window_requests: u8,
 }
 
 #[derive(Clone, Copy)]
@@ -30,76 +37,115 @@ enum NetworkState {
     Rejected,
 }
 
-impl Source {
+impl Remote {
     pub(crate) fn new(endpoint: PublicEndpoint) -> Result<Self, Error> {
         endpoint.validate()?;
         Ok(Self {
-            endpoint,
-            network: Cell::new(NetworkState::Unchecked),
-            last_request: Cell::new(Instant::now()),
-            retry_at: Cell::new(Instant::now()),
-            window_start: Cell::new(Instant::now()),
-            window_requests: Cell::new(0),
+            endpoint: endpoint.clone(),
+            source: Mutex::new(Source {
+                endpoint,
+                network: NetworkState::Unchecked,
+                last_request: Instant::now(),
+                retry_at: Instant::now(),
+                window_start: Instant::now(),
+                window_requests: 0,
+            }),
         })
     }
+}
 
-    pub(crate) fn call(&self, chain: Chain, method: &str, args: &[Value]) -> Result<Value, Error> {
+impl Provider for Remote {
+    fn label(&self) -> String {
+        self.endpoint.url().to_owned()
+    }
+
+    fn evidence(&self) -> Evidence {
+        Evidence::PublicProviderObservation
+    }
+
+    fn block_encoding(&self) -> BlockEncoding {
+        match self.endpoint {
+            PublicEndpoint::Rpc(_) => BlockEncoding::Core,
+            PublicEndpoint::Esplora(_) => BlockEncoding::Esplora,
+        }
+    }
+
+    fn supports(&self, method: &str) -> bool {
+        match self.endpoint {
+            PublicEndpoint::Rpc(_) => method != "addressutxos",
+            PublicEndpoint::Esplora(_) => method != "testmempoolaccept",
+        }
+    }
+
+    fn call(&self, chain: Chain, method: &str, args: &[Value]) -> Result<Value, Error> {
+        let mut source = match self.source.lock() {
+            Ok(source) => source,
+            Err(poisoned) => {
+                tracing::error!(endpoint = %self.endpoint.url(), "public source lock poisoned");
+                poisoned.into_inner()
+            }
+        };
+        source.call(chain, method, args)
+    }
+}
+
+impl Source {
+    fn call(&mut self, chain: Chain, method: &str, args: &[Value]) -> Result<Value, Error> {
+        let now = Instant::now();
+        if now < self.retry_at {
+            return Err(Error::RateLimited(self.retry_at.duration_since(now)));
+        }
         ensure!(
-            Instant::now() >= self.retry_at.get(),
-            "public source cooling down after rate limit"
-        );
-        ensure!(
-            !matches!(self.network.get(), NetworkState::Rejected),
+            !matches!(self.network, NetworkState::Rejected),
             "public source network mismatch"
         );
-        if matches!(self.network.get(), NetworkState::Unchecked) {
+        if matches!(self.network, NetworkState::Unchecked) {
             let genesis = self.request("getblockhash", &[json!(0)])?;
             if genesis != json!(chain.genesis()?.0.to_string()) {
-                self.network.set(NetworkState::Rejected);
+                self.network = NetworkState::Rejected;
                 return Err(Error::Invalid("public source network mismatch".into()));
             }
             let tip = self.request("getblockchaininfo", &[])?;
             validate_shape("getblockchaininfo", &tip)?;
-            ensure!(
-                tip["initialblockdownload"] == false,
-                "public source is still synchronizing"
-            );
-            self.network.set(NetworkState::Verified);
+            self.network = NetworkState::Verified;
         }
         if method == "getblockhash" && args.first().context("missing block height")? == &json!(0) {
             return Ok(json!(chain.genesis()?.0.to_string()));
         }
-        let value = self.request(method, args)?;
-        validate_result(&self.endpoint, chain, method, args, &value)?;
-        Ok(value)
+        self.request(method, args)
     }
 
-    fn request(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
+    fn request(&mut self, method: &str, args: &[Value]) -> Result<Value, Error> {
         self.reserve_request()?;
-        pace(self.last_request.get());
-        self.last_request.set(Instant::now());
+        pace(self.last_request);
+        self.last_request = Instant::now();
         let result = self.request_unchecked(method, args);
         match result {
-            Err(Error::Io(cause)) if cause.kind() == std::io::ErrorKind::WouldBlock => {
-                self.retry_at.set(Instant::now() + Duration::from_secs(60));
-                Err(Error::Io(cause))
+            Err(Error::RateLimited(wait)) => {
+                self.retry_at = Instant::now() + wait;
+                Err(Error::RateLimited(wait))
             }
             Ok(value) => Ok(value),
             Err(cause) => Err(cause),
         }
     }
 
-    fn reserve_request(&self) -> Result<(), Error> {
+    fn reserve_request(&mut self) -> Result<(), Error> {
         if self.endpoint.url().contains(".gateway.tatum.io") {
-            if self.window_start.get().elapsed() >= Duration::from_secs(60) {
-                self.window_start.set(Instant::now());
-                self.window_requests.set(0);
+            let elapsed = self.window_start.elapsed();
+            if elapsed >= config::RPC_GATEWAY_WINDOW {
+                self.window_start = Instant::now();
+                self.window_requests = 0;
             }
-            ensure!(
-                self.window_requests.get() < 5,
-                "public RPC minute budget exhausted"
-            );
-            self.window_requests.set(self.window_requests.get() + 1);
+            if self.window_requests >= config::RPC_GATEWAY_WINDOW_REQUESTS {
+                let Some(remaining) = config::RPC_GATEWAY_WINDOW.checked_sub(elapsed) else {
+                    return Err(Error::Invalid(
+                        "public RPC window accounting overflow".into(),
+                    ));
+                };
+                return Err(Error::RateLimited(remaining));
+            }
+            self.window_requests += 1;
         }
         Ok(())
     }
@@ -114,13 +160,12 @@ impl Source {
                         .with_body(serde_json::to_vec(
                             &json!({"jsonrpc":"2.0","id":1,"method":method,"params":args}),
                         )?),
+                    config::method_timeout(method),
                 )?;
                 let response: Value = serde_json::from_slice(&bytes)?;
                 if !response["error"].is_null() {
                     if response["error"]["code"] == -5 {
-                        return Err(Error::Missing(
-                            "transaction not found on selected network".into(),
-                        ));
+                        return Err(Error::Missing(config::ABSENT_TRANSACTION.into()));
                     }
                     return Err(Error::Unsupported(format!(
                         "public RPC {method} failed (code {})",
@@ -136,22 +181,17 @@ impl Source {
     }
 }
 
-pub(crate) fn request(request: minreq::Request) -> Result<Vec<u8>, Error> {
+pub(crate) fn request(request: minreq::Request, timeout: Duration) -> Result<Vec<u8>, Error> {
     let request = request
-        .with_header("User-Agent", "urma/0.1")
-        .with_timeout(12)
+        .with_header("User-Agent", "urma/0.2")
+        .with_timeout(timeout.as_secs().max(1))
         .with_max_redirects(0);
     let response = request.send_lazy()?;
     if response.status_code == 429 {
-        return Err(Error::Io(std::io::Error::new(
-            std::io::ErrorKind::WouldBlock,
-            "public source rate limited; retry after one minute",
-        )));
+        return Err(Error::RateLimited(retry_after(&response)));
     }
     if response.status_code == 404 {
-        return Err(Error::Missing(
-            "transaction or block not found on selected network".into(),
-        ));
+        return Err(Error::Missing(config::ABSENT_RECORD.into()));
     }
     ensure!(
         response.status_code == 200,
@@ -167,18 +207,39 @@ pub(crate) fn request(request: minreq::Request) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 
-fn validate_result(
-    endpoint: &PublicEndpoint,
+fn retry_after(response: &minreq::ResponseLazy) -> Duration {
+    for (name, value) in &response.headers {
+        if name.eq_ignore_ascii_case("retry-after") {
+            return retry_after_value(value);
+        }
+    }
+    config::PROVIDER_RETRY_DEFAULT
+}
+
+fn retry_after_value(value: &str) -> Duration {
+    match value.trim().parse::<u64>() {
+        Ok(seconds) => {
+            Duration::from_secs(seconds).clamp(Duration::from_secs(1), config::PROVIDER_RETRY_MAX)
+        }
+        Err(error) => {
+            tracing::warn!(%error, value, "unparseable Retry-After header; using default cooldown");
+            config::PROVIDER_RETRY_DEFAULT
+        }
+    }
+}
+
+pub(crate) fn validate_result(
+    encoding: BlockEncoding,
     chain: Chain,
     method: &str,
     args: &[Value],
-    value: &Value,
-) -> Result<(), Error> {
-    validate_shape(method, value)?;
+    value: Value,
+) -> Result<Value, Error> {
+    validate_shape(method, &value)?;
     if method == "getrawtransaction"
         && args.get(1).context("missing transaction verbosity")? == &json!(true)
     {
-        validate_confirmations(value)?;
+        validate_confirmations(&value)?;
     }
     if method == "getrawtransaction"
         && args.get(1).context("missing transaction verbosity")? == &json!(false)
@@ -195,32 +256,42 @@ fn validate_result(
         let raw = raw.as_str().context("invalid broadcast transaction")?;
         let transaction = decode(raw, raw.len())?;
         ensure!(
-            value == &json!(transaction.compute_txid()),
+            value == json!(transaction.compute_txid()),
             "broadcast transaction ID mismatch"
         );
     }
     if method == "getblock" {
-        let raw = hex::decode(value.as_str().context("missing block bytes")?)?;
-        let expected_hash = args
-            .first()
-            .context("missing block hash")?
-            .as_str()
-            .context("invalid block hash")?
-            .parse()?;
-        let decoded = match endpoint {
-            PublicEndpoint::Rpc(_) => chain_decode::block(&raw, chain, expected_hash),
-            PublicEndpoint::Esplora(_) => chain_decode::esplora_block(&raw, chain, expected_hash),
-        };
-        decoded.map_err(|cause| match cause {
-            DecodeError::Integrity(BlockValidationError::HashMismatch) => {
-                Error::Invalid("public source block hash mismatch".into())
-            }
-            DecodeError::Integrity(BlockValidationError::MerkleRootMismatch) => {
-                Error::Invalid("public source block merkle root mismatch".into())
-            }
-            cause => Error::from(cause),
-        })?;
+        validate_block(encoding, chain, args, &value)?;
     }
+    Ok(value)
+}
+
+fn validate_block(
+    encoding: BlockEncoding,
+    chain: Chain,
+    args: &[Value],
+    value: &Value,
+) -> Result<(), Error> {
+    let raw = hex::decode(value.as_str().context("missing block bytes")?)?;
+    let expected_hash = args
+        .first()
+        .context("missing block hash")?
+        .as_str()
+        .context("invalid block hash")?
+        .parse()?;
+    let decoded = match encoding {
+        BlockEncoding::Core => chain_decode::block(&raw, chain, expected_hash),
+        BlockEncoding::Esplora => chain_decode::esplora_block(&raw, chain, expected_hash),
+    };
+    decoded.map_err(|cause| match cause {
+        DecodeError::Integrity(BlockValidationError::HashMismatch) => {
+            Error::Invalid("public source block hash mismatch".into())
+        }
+        DecodeError::Integrity(BlockValidationError::MerkleRootMismatch) => {
+            Error::Invalid("public source block merkle root mismatch".into())
+        }
+        cause => Error::from(cause),
+    })?;
     Ok(())
 }
 
@@ -290,7 +361,10 @@ fn validate_shape(method: &str, value: &Value) -> Result<(), Error> {
 
 fn validate_utxos(value: &Value) -> Result<(), Error> {
     let rows = value.as_array().context("invalid public UTXO list")?;
-    ensure!(rows.len() <= 1000, "UTXO client capacity exceeded");
+    ensure!(
+        rows.len() <= config::SOURCE_MAX_UTXOS,
+        "UTXO client capacity exceeded"
+    );
     for row in rows {
         row["txid"]
             .as_str()
@@ -333,7 +407,7 @@ fn validate_output(value: &Value) -> Result<(), Error> {
 }
 
 fn pace(last: Instant) {
-    let delay = match Duration::from_millis(300).checked_sub(last.elapsed()) {
+    let delay = match config::PROVIDER_PACING.checked_sub(last.elapsed()) {
         Some(delay) => delay,
         None => return,
     };

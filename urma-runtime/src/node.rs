@@ -2,7 +2,8 @@ use crate::config;
 use crate::error::{Context, Error, ensure};
 use crate::{
     endpoints::{self, PublicEndpoint},
-    transport::Pool,
+    remote::Remote,
+    transport::{BlockEncoding, Evidence, Provider, Router},
 };
 use bitcoin::{Transaction, Txid};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
@@ -31,7 +32,7 @@ pub struct Node {
 
 enum Backend {
     Local(Client),
-    Public(Pool),
+    Routed(Router),
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -87,24 +88,37 @@ impl Node {
         chain: Chain,
         endpoints: Vec<PublicEndpoint>,
     ) -> Result<Self, Error> {
-        let sources = Pool::new(endpoints)?;
+        let mut providers: Vec<Box<dyn Provider>> = Vec::new();
+        for endpoint in endpoints {
+            providers.push(Box::new(Remote::new(endpoint)?));
+        }
+        Self::with_providers(chain, providers)
+    }
+
+    pub fn with_providers(chain: Chain, providers: Vec<Box<dyn Provider>>) -> Result<Self, Error> {
+        let router = Router::new(providers)?;
+        tracing::debug!(providers = ?router.labels(), evidence = router.evidence().label(), "routed public node");
         let node = Self {
             chain,
-            backend: Backend::Public(sources),
+            backend: Backend::Routed(router),
         };
         node.verify_network()?;
         Ok(node)
     }
 
     pub fn is_public(&self) -> bool {
-        matches!(self.backend, Backend::Public(_))
+        matches!(self.backend, Backend::Routed(_))
+    }
+
+    pub fn evidence(&self) -> Evidence {
+        match &self.backend {
+            Backend::Local(_) => Evidence::LocalValidatingNode,
+            Backend::Routed(router) => router.evidence(),
+        }
     }
 
     pub fn inclusion_evidence(&self) -> &'static str {
-        match &self.backend {
-            Backend::Local(_) => "local_validating_node",
-            Backend::Public(_) => "public_provider_observation",
-        }
+        self.evidence().label()
     }
 
     pub fn chain(&self) -> Chain {
@@ -122,11 +136,19 @@ impl Node {
 
     pub fn block(&self, height: u64) -> Result<bitcoin::Block, Error> {
         let hash = self.block_hash(height)?;
-        let value = self.call("getblock", &[json!(hash), json!(0)])?;
+        let args = [json!(hash), json!(0)];
+        let (value, encoding) = match &self.backend {
+            Backend::Local(client) => (client.call("getblock", &args)?, BlockEncoding::Core),
+            Backend::Routed(router) => {
+                let answer = router.answer(self.chain, "getblock", &args)?;
+                tracing::debug!(provider = %answer.label, height, "block served by provider");
+                (answer.value, answer.encoding)
+            }
+        };
         let raw = hex::decode(value.as_str().context("missing block bytes")?)?;
-        let decoded = match &self.backend {
-            Backend::Local(_) => chain_decode::block(&raw, self.chain, hash),
-            Backend::Public(_) => chain_decode::esplora_block(&raw, self.chain, hash),
+        let decoded = match encoding {
+            BlockEncoding::Core => chain_decode::block(&raw, self.chain, hash),
+            BlockEncoding::Esplora => chain_decode::esplora_block(&raw, self.chain, hash),
         };
         let block = decoded.map_err(|cause| match cause {
             DecodeError::Integrity(BlockValidationError::HashMismatch) => {
@@ -156,12 +178,12 @@ impl Node {
     pub fn call(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
         match &self.backend {
             Backend::Local(client) => Ok(client.call(method, args)?),
-            Backend::Public(sources) => sources.call(self.chain, method, args),
+            Backend::Routed(router) => router.call(self.chain, method, args),
         }
     }
 
     pub fn require_txindex(&self) -> Result<(), Error> {
-        if matches!(self.backend, Backend::Public(_)) {
+        if matches!(self.backend, Backend::Routed(_)) {
             return self.verify_network();
         }
         let indexes = self.call("getindexinfo", &[json!("txindex")])?;
@@ -266,7 +288,7 @@ impl Node {
 
     pub fn utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
         self.verify_network()?;
-        if matches!(self.backend, Backend::Public(_)) {
+        if matches!(self.backend, Backend::Routed(_)) {
             return self.public_utxos(signer);
         }
         let script = urma_wallet::signing::script(signer)?;

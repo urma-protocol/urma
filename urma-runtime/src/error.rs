@@ -12,6 +12,7 @@ pub enum Error {
     Unsupported(String),
     Capacity(String),
     Missing(String),
+    RateLimited(std::time::Duration),
     Context { message: String, cause: Box<Error> },
     Io(std::io::Error),
     Json(serde_json::Error),
@@ -57,6 +58,11 @@ impl Display for Error {
             | Self::Missing(message)
             | Self::Unsupported(message)
             | Self::Capacity(message) => formatter.write_str(message),
+            Self::RateLimited(wait) => write!(
+                formatter,
+                "public provider rate limited; retry after {} s",
+                wait.as_secs()
+            ),
             Self::Context { message, cause } => write!(formatter, "{message}: {cause}"),
             Self::Io(cause) => Display::fmt(cause, formatter),
             Self::Json(cause) => Display::fmt(cause, formatter),
