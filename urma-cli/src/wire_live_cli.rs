@@ -167,8 +167,8 @@ impl Reader for NodeReader {
     fn block_hash(&self, height: u64) -> Result<BlockHash, Error> {
         self.0.block_hash(height)
     }
-    fn block(&self, height: u64) -> Result<Block, Error> {
-        self.0.block(height)
+    fn block(&self, height: u64) -> Result<(Block, BlockHash), Error> {
+        self.0.block_at(height)
     }
     fn transaction(&self, txid: Txid) -> Result<Transaction, Error> {
         self.0.transaction(txid)

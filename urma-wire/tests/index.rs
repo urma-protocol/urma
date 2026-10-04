@@ -25,7 +25,7 @@ impl Reader for UnavailableReader {
         unreachable!()
     }
 
-    fn block(&self, _height: u64) -> Result<Block, Self::Error> {
+    fn block(&self, _height: u64) -> Result<(Block, BlockHash), Self::Error> {
         unreachable!()
     }
 
@@ -82,8 +82,33 @@ fn source_failures_retain_the_reader_error() {
     assert_eq!(source.kind(), std::io::ErrorKind::ConnectionRefused);
 }
 
-struct BlockReader(Block);
+struct BlockReader {
+    block: Block,
+    claimed: BlockHash,
+}
 impl Reader for BlockReader {
+    type Error = std::io::Error;
+    fn genesis(&self) -> Result<BlockHash, Self::Error> {
+        Ok(self.claimed)
+    }
+    fn tip_height(&self) -> Result<u64, Self::Error> {
+        Ok(0)
+    }
+    fn block_hash(&self, _: u64) -> Result<BlockHash, Self::Error> {
+        Ok(self.claimed)
+    }
+    fn block(&self, _: u64) -> Result<(Block, BlockHash), Self::Error> {
+        urma_chain::validation::validate_block_integrity(&self.block, self.claimed)
+            .map_err(|cause| std::io::Error::new(std::io::ErrorKind::InvalidData, cause))?;
+        Ok((self.block.clone(), self.claimed))
+    }
+    fn transaction(&self, _: Txid) -> Result<Transaction, Self::Error> {
+        unreachable!()
+    }
+}
+
+struct LyingReader(Block);
+impl Reader for LyingReader {
     type Error = std::io::Error;
     fn genesis(&self) -> Result<BlockHash, Self::Error> {
         Ok(self.0.block_hash())
@@ -94,8 +119,8 @@ impl Reader for BlockReader {
     fn block_hash(&self, _: u64) -> Result<BlockHash, Self::Error> {
         Ok(self.0.block_hash())
     }
-    fn block(&self, _: u64) -> Result<Block, Self::Error> {
-        Ok(self.0.clone())
+    fn block(&self, _: u64) -> Result<(Block, BlockHash), Self::Error> {
+        Ok((self.0.clone(), BlockHash::all_zeros()))
     }
     fn transaction(&self, _: Txid) -> Result<Transaction, Self::Error> {
         unreachable!()
@@ -103,17 +128,19 @@ impl Reader for BlockReader {
 }
 
 #[test]
-fn sync_checks_block_body_and_witness_before_checkpointing() {
+fn sync_takes_the_reader_verified_hash_and_refuses_an_unverified_pair() {
     use bitcoin::{Network, Witness, blockdata::constants::genesis_block};
-    use urma_chain::validation::BlockValidationError;
     let dir = tempfile::tempdir().unwrap();
     let valid = genesis_block(Network::Regtest);
     let path = dir.path().join("valid.json");
+    let reader = BlockReader {
+        block: valid.clone(),
+        claimed: valid.block_hash(),
+    };
+    assert_eq!(index::sync(&reader, &path, 0, 1).unwrap().scanned, 1);
     assert_eq!(
-        index::sync(&BlockReader(valid.clone()), &path, 0, 1)
-            .unwrap()
-            .scanned,
-        1
+        Index::load(&path).unwrap().blocks[0].hash,
+        valid.block_hash().to_string()
     );
     for witness in [false, true] {
         let mut block = valid.clone();
@@ -122,18 +149,23 @@ fn sync_checks_block_body_and_witness_before_checkpointing() {
         } else {
             block.txdata[0].output[0].value = bitcoin::Amount::ZERO;
         }
+        let claimed = block.block_hash();
         let path = dir.path().join(format!("invalid-{witness}.json"));
-        let failure = match index::sync(&BlockReader(block), &path, 0, 1) {
+        let failure = match index::sync(&BlockReader { block, claimed }, &path, 0, 1) {
             Ok(_) => panic!("invalid block indexed"),
             Err(cause) => cause,
         };
-        assert!(matches!(
-            failure,
-            SyncError::Wire(Error::Block(
-                BlockValidationError::MerkleRootMismatch
-                    | BlockValidationError::WitnessCommitmentMismatch
-            ))
-        ));
+        let SyncError::Source(source) = failure else {
+            panic!("reader validation failure was reclassified");
+        };
+        assert_eq!(source.kind(), std::io::ErrorKind::InvalidData);
         assert!(Index::load(&path).unwrap().blocks.is_empty());
     }
+    let path = dir.path().join("lying.json");
+    let failure = match index::sync(&LyingReader(valid), &path, 0, 1) {
+        Ok(_) => panic!("mismatched block and hash indexed"),
+        Err(cause) => cause,
+    };
+    assert!(matches!(failure, SyncError::Wire(Error::Invalid(_))));
+    assert!(Index::load(&path).unwrap().blocks.is_empty());
 }

@@ -195,6 +195,10 @@ impl Node {
     }
 
     pub fn block(&self, height: u64) -> Result<bitcoin::Block, Error> {
+        Ok(self.block_at(height)?.0)
+    }
+
+    pub fn block_at(&self, height: u64) -> Result<(bitcoin::Block, bitcoin::BlockHash), Error> {
         let hash = self.block_hash(height)?;
         let args = [json!(hash), json!(0)];
         let (value, encoding) = match &self.backend {
@@ -219,7 +223,7 @@ impl Node {
             }
             cause => Error::from(cause),
         })?;
-        Ok(block)
+        Ok((block, hash))
     }
 
     pub fn confirmations(&self, txid: Txid) -> Result<u32, Error> {

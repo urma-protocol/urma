@@ -106,4 +106,11 @@ fn a_dropping_peer_is_replaced_by_a_good_peer_inside_the_fetch() {
     assert_eq!(again, raw);
     assert_eq!(good.getdata.load(std::sync::atomic::Ordering::Acquire), 1);
     assert!(provider.ready());
+    assert!(
+        dropping
+            .getheaders
+            .load(std::sync::atomic::Ordering::Acquire)
+            >= 1
+    );
+    assert!(good.getheaders.load(std::sync::atomic::Ordering::Acquire) >= 1);
 }

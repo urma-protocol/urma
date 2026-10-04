@@ -121,9 +121,13 @@ pub fn sync<R: Reader>(
         if scanned >= max_blocks {
             break;
         }
-        let block = reader.block(height).map_err(SyncError::Source)?;
-        let expected = reader.block_hash(height).map_err(SyncError::Source)?;
-        urma_chain::validation::validate_block_integrity(&block, expected).map_err(Error::from)?;
+        let (block, hash) = reader.block(height).map_err(SyncError::Source)?;
+        if block.block_hash() != hash {
+            return Err(Error::Invalid(
+                "reader returned a block whose hash differs from its verified hash".into(),
+            )
+            .into());
+        }
         let previous_checkpoint = index.blocks.last();
         for previous in previous_checkpoint.iter() {
             if block.header.prev_blockhash.to_string() != previous.hash {
@@ -131,13 +135,13 @@ pub fn sync<R: Reader>(
             }
         }
         let entries = read_entries(reader, &block, height)?;
-        if reader.block_hash(height).map_err(SyncError::Source)? != block.block_hash() {
+        if reader.block_hash(height).map_err(SyncError::Source)? != hash {
             return Err(Error::Invalid("source reorg during index; retry".into()).into());
         }
         index.entries.extend(entries);
         index.blocks.push(Checkpoint {
             height,
-            hash: block.block_hash().to_string(),
+            hash: hash.to_string(),
         });
         index.persist(path)?;
         scanned += 1;
