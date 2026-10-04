@@ -73,6 +73,16 @@ Choose the network explicitly using the options available for the selected opera
 
 Private archives use recovery secrets distinct from identity-vault recovery phrases. Public records can expose their contents; inspect Git snapshots and other public material before approval. Access to retained records remains necessary even when the original application or host is gone.
 
+## Chain sources
+
+Without any configuration `urma` reads the chain through the public providers of [urma-runtime](https://crates.io/crates/urma-runtime): Electrum servers first, then an Esplora explorer, then a JSON-RPC gateway, each checked against the selected network's genesis block. No local node, API key or paid plan is involved; `--testnet` switches the provider set with the network.
+
+Electrum certificates are pinned on first use under `~/.local/share/urma/electrum-pins/` (`$XDG_DATA_HOME/urma/electrum-pins/` when set), one `<host>_<port>.sha256` file per server. A server whose certificate changed is refused until its pin file is removed; confirm the new fingerprint with the operator before removing it.
+
+To use your own node instead, set `rpc_url` and `node_auth_file` in `~/.config/urma/config.json`, or export `URMA_RPC_URL` and `URMA_NODE_AUTH_FILE`. Both must be present; the node must listen on a loopback address with cookie authentication. `urma expert` commands always require the local node.
+
+Command output names the evidence behind chain observations. `chain_evidence` in JSON reports, `source` in observation journals and the `Observation source` line of Git recovery carry one of three labels: `local_validating_node` means your node validated the blocks; `light_client_inclusion` means a proof-of-work header chain includes the transaction; `public_provider_observation` means third-party servers reported inclusion and the bytes were verified against the requested ids, but no block was validated locally. Record signatures are verified at every tier; the label states only what confirmation counts rest on.
+
 ## Build an application
 
 The command line composes the [URMA Rust libraries](https://github.com/urma-protocol/urma#use-the-libraries). Use the relevant library directly when building another interface; `urma-cli` is the executable package.
