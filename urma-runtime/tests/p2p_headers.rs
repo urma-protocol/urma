@@ -56,6 +56,13 @@ fn embedded_checkpoints_hash_to_their_cross_checked_blocks() {
         assert_eq!(chain_state.tip_height(), checkpoint.height);
         assert_eq!(chain_state.tip_hash(), header.block_hash());
         assert_eq!(chain_state.locator(), vec![header.block_hash()]);
+        let cache = dir
+            .path()
+            .join(format!("{}-headers.bin", chain.label().replace(' ', "-")));
+        std::fs::write(&cache, vec![7u8; 160]).unwrap();
+        let recovered = HeaderChain::open(chain, dir.path()).unwrap();
+        assert_eq!(recovered.tip_hash(), header.block_hash());
+        assert!(!cache.exists());
     }
     assert!(HeaderChain::open(Chain::BitcoinRegtest, std::env::temp_dir().as_path()).is_err());
 }

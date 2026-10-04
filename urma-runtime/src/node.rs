@@ -89,9 +89,10 @@ impl Node {
     #[cfg(not(target_arch = "wasm32"))]
     pub fn public_in(chain: Chain, cache_dir: &std::path::Path) -> Result<Self, Error> {
         let pins = std::sync::Arc::new(Pins::in_directory(cache_dir)?);
+        let light = providers::light_clients(chain, cache_dir)?;
         Self::with_providers(
             chain,
-            providers::assemble(chain, endpoints::defaults(chain), pins)?,
+            providers::assemble(endpoints::defaults(chain), pins, light)?,
         )
     }
 

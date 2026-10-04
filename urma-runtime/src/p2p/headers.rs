@@ -63,9 +63,22 @@ impl HeaderChain {
             path,
         };
         if fresh.path.try_exists()? {
-            fresh.load()?;
+            match fresh.load() {
+                Ok(()) => (),
+                Err(error) => {
+                    tracing::warn!(%error, path = %fresh.path.display(), "header cache rejected; restarting from the checkpoint");
+                    fresh.reset()?;
+                }
+            }
         }
         Ok(fresh)
+    }
+
+    fn reset(&mut self) -> Result<(), Error> {
+        self.headers.truncate(1);
+        self.index = HashMap::from([(self.headers[0].block_hash(), 0)]);
+        std::fs::remove_file(&self.path)?;
+        Ok(())
     }
 
     fn load(&mut self) -> Result<(), Error> {
