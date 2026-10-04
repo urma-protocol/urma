@@ -116,4 +116,9 @@ fn prepare_then_review_never_trips_over_its_own_lock_while_processes_spawn() {
     stop.store(true, Ordering::Release);
     let spawned = forker.join().unwrap();
     assert!(spawned > 0);
+    mock.confirm_all();
+    let state = mock.state.lock().unwrap();
+    assert!(state.submissions.is_empty());
+    assert!(state.transactions.is_empty());
+    assert!(state.methods.iter().any(|method| method == "scantxoutset"));
 }
