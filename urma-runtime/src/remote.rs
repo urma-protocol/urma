@@ -327,9 +327,7 @@ fn block_hash(value: &Value) -> Result<(), Error> {
 }
 
 fn validate_confirmations(value: &Value) -> Result<(), Error> {
-    let count = value["confirmations"]
-        .as_i64()
-        .context("invalid public confirmation count")?;
+    let count = config::confirmations(value)?;
     if count > 0 {
         block_hash(&value["blockhash"])?;
     }

@@ -192,7 +192,16 @@ impl Router {
             "{method} on {chain:?}: {}. Retry or configure a local node; check --testnet for test data.",
             failures.join("; ")
         );
-        if absent == candidates.len() {
+        if absent > 0 {
+            if absent < candidates.len() {
+                tracing::warn!(
+                    method,
+                    absent,
+                    failed = candidates.len() - absent,
+                    %message,
+                    "record absent from every provider that answered; other providers failed"
+                );
+            }
             return Err(Error::Missing(message));
         }
         Err(Error::Unsupported(message))

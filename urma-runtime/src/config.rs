@@ -124,6 +124,9 @@ pub const ELECTRUM_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::f
 pub const ELECTRUM_MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 pub const ELECTRUM_UNSPENT_CACHE: std::time::Duration = std::time::Duration::from_secs(30);
 pub const WALLET_VERIFY_OUTPUTS: usize = 64;
+pub const SUBMISSION_ACK_WINDOW: std::time::Duration = std::time::Duration::from_secs(180);
+pub const SUBMISSION_PRESENCE_CHECKS: u32 = 3;
+pub const SUBMISSION_PRESENCE_DELAY: std::time::Duration = std::time::Duration::from_secs(4);
 pub const ELECTRUM_PROBE_METHODS: [&str; 5] = [
     "server.features",
     "blockchain.transaction.id_from_pos",

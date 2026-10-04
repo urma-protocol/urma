@@ -9,6 +9,7 @@ use std::{
 use urma_chain::observation::Chain;
 use urma_runtime::{
     error::Error,
+    node::{Node, Presence},
     transport::{BlockEncoding, Evidence, Provider, Router},
 };
 
@@ -83,12 +84,21 @@ fn offline() -> Error {
     Error::Unsupported("source offline".into())
 }
 
+fn timed_out() -> Error {
+    Error::Io(std::io::Error::new(
+        std::io::ErrorKind::TimedOut,
+        "the timeout of the request was reached",
+    ))
+}
+
 #[test]
-fn missing_is_not_reported_for_failed_or_malformed_providers() {
+fn absent_wins_when_every_answering_provider_says_absent() {
     assert!(Router::new(Vec::new()).is_err());
     for (responses, absent) in [
         (vec![missing(), missing()], true),
-        (vec![missing(), offline()], false),
+        (vec![missing(), offline()], true),
+        (vec![timed_out(), missing(), timed_out()], true),
+        (vec![offline(), timed_out()], false),
         (
             vec![Error::Missing("public RPC omitted result".into())],
             false,
@@ -237,6 +247,93 @@ fn tip_race_is_bounded_and_only_for_tip_queries() {
         .call(Chain::LitecoinTestnet, "getblockchaininfo", &[])
         .unwrap();
     assert_eq!(c_calls.load(Ordering::SeqCst), 0);
+}
+
+#[test]
+fn a_verbose_transaction_without_a_confirmation_count_is_unconfirmed() {
+    let router = Router::new(vec![
+        Fake::new("gateway", vec![Ok(json!({"txid":"00","hex":"00"}))]).boxed(),
+    ])
+    .unwrap();
+    let value = router
+        .call(
+            Chain::LitecoinTestnet,
+            "getrawtransaction",
+            &[json!("00"), json!(true)],
+        )
+        .unwrap();
+    assert_eq!(urma_runtime::config::confirmations(&value).unwrap(), 0);
+}
+
+fn regtest_payment() -> (String, String) {
+    use bitcoin::{Amount, OutPoint, ScriptBuf, Transaction, TxIn, TxOut, absolute, hashes::Hash};
+    let transaction = Transaction {
+        version: bitcoin::transaction::Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint {
+                txid: bitcoin::Txid::from_byte_array([5; 32]),
+                vout: 0,
+            },
+            ..TxIn::default()
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(1_000),
+            script_pubkey: ScriptBuf::new(),
+        }],
+    };
+    (
+        hex::encode(bitcoin::consensus::serialize(&transaction)),
+        transaction.compute_txid().to_string(),
+    )
+}
+
+fn genesis() -> Value {
+    json!(Chain::BitcoinRegtest.genesis().unwrap().0.to_string())
+}
+
+#[test]
+fn an_acknowledged_broadcast_counts_as_mempool_while_providers_lag() {
+    let (raw, txid) = regtest_payment();
+    let electrum = Fake::new(
+        "electrum",
+        vec![
+            Ok(genesis()),
+            Err(Error::Unsupported("electrum broadcast failed".into())),
+            Err(missing()),
+        ],
+    );
+    let explorer = Fake::new("explorer", vec![Ok(json!(txid)), Err(timed_out())]);
+    let node = Node::with_providers(
+        Chain::BitcoinRegtest,
+        vec![electrum.boxed(), explorer.boxed()],
+    )
+    .unwrap();
+    assert_eq!(
+        node.call("sendrawtransaction", &[json!(raw)]).unwrap(),
+        json!(txid)
+    );
+    let presence = node.presence(txid.parse().unwrap()).unwrap();
+    assert_eq!(presence, Presence::Mempool);
+}
+
+#[test]
+fn presence_after_submission_checks_again_before_declaring_missing() {
+    let (_raw, txid) = regtest_payment();
+    let provider = Fake::new(
+        "provider",
+        vec![
+            Ok(genesis()),
+            Err(missing()),
+            Ok(json!({"txid":txid,"hex":"00"})),
+            Ok(json!([txid])),
+        ],
+    );
+    let node = Node::with_providers(Chain::BitcoinRegtest, vec![provider.boxed()]).unwrap();
+    let presence = node
+        .presence_after_submission(txid.parse().unwrap())
+        .unwrap();
+    assert_eq!(presence, Presence::Mempool);
 }
 
 #[test]

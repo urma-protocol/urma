@@ -12,7 +12,12 @@ use bitcoin::{Transaction, Txid};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use std::{collections::hash_map::Entry, path::PathBuf};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    path::PathBuf,
+    sync::{Mutex, MutexGuard},
+    time::Instant,
+};
 use urma_chain::{
     decode::{self as chain_decode, DecodeError},
     observation::Chain,
@@ -32,6 +37,7 @@ pub struct Node {
     chain: Chain,
     backend: Backend,
     light: providers::LightClient,
+    acknowledged: Mutex<HashMap<Txid, Instant>>,
 }
 
 enum Backend {
@@ -93,6 +99,7 @@ impl Node {
             chain: config.chain,
             backend: Backend::Local(client),
             light: providers::LightClient::Absent,
+            acknowledged: Mutex::new(HashMap::new()),
         };
         node.verify_network()?;
         Ok(node)
@@ -136,6 +143,7 @@ impl Node {
             chain,
             backend: Backend::Routed(router),
             light: providers::LightClient::Absent,
+            acknowledged: Mutex::new(HashMap::new()),
         };
         node.verify_network()?;
         Ok(node)
@@ -242,7 +250,60 @@ impl Node {
     pub fn call(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
         match &self.backend {
             Backend::Local(client) => Ok(client.call(method, args)?),
-            Backend::Routed(router) => router.call(self.chain, method, args),
+            Backend::Routed(router) => {
+                let value = router.call(self.chain, method, args)?;
+                if method == "sendrawtransaction" {
+                    self.remember_acknowledged(&value)?;
+                }
+                Ok(value)
+            }
+        }
+    }
+
+    fn acknowledged(&self) -> MutexGuard<'_, HashMap<Txid, Instant>> {
+        match self.acknowledged.lock() {
+            Ok(acknowledged) => acknowledged,
+            Err(poisoned) => {
+                tracing::error!("broadcast acknowledgment table lock poisoned");
+                poisoned.into_inner()
+            }
+        }
+    }
+
+    fn remember_acknowledged(&self, value: &Value) -> Result<(), Error> {
+        let txid: Txid = value
+            .as_str()
+            .context("broadcast acknowledgment without a txid")?
+            .parse()?;
+        let now = Instant::now();
+        let mut acknowledged = self.acknowledged();
+        acknowledged
+            .retain(|_txid, when| now.duration_since(*when) < config::SUBMISSION_ACK_WINDOW);
+        acknowledged.insert(txid, now);
+        tracing::debug!(%txid, "broadcast acknowledged by a public provider");
+        Ok(())
+    }
+
+    fn recently_acknowledged(&self, txid: Txid) -> bool {
+        let acknowledged = self.acknowledged();
+        let Some(when) = acknowledged.get(&txid) else {
+            return false;
+        };
+        when.elapsed() < config::SUBMISSION_ACK_WINDOW
+    }
+
+    pub fn presence_after_submission(&self, txid: Txid) -> Result<Presence, Error> {
+        let mut checks = 0;
+        loop {
+            checks += 1;
+            let presence = self.presence(txid)?;
+            if !matches!(presence, Presence::Missing)
+                || checks >= config::SUBMISSION_PRESENCE_CHECKS
+            {
+                return Ok(presence);
+            }
+            tracing::warn!(%txid, checks, "submitted transaction not yet visible; checking again");
+            std::thread::sleep(config::SUBMISSION_PRESENCE_DELAY);
         }
     }
 
@@ -308,6 +369,10 @@ impl Node {
                 return Ok(Presence::Missing);
             }
             Err(Error::Missing(message)) => {
+                if self.recently_acknowledged(txid) {
+                    tracing::warn!(%message, %txid, "providers lag behind an acknowledged broadcast; treating as mempool");
+                    return Ok(Presence::Mempool);
+                }
                 tracing::warn!(%message, "transaction absent from public sources");
                 return Ok(Presence::Missing);
             }

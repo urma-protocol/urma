@@ -14,7 +14,7 @@ use std::{
     net::{TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
     },
     thread,
 };
@@ -28,11 +28,14 @@ use urma_runtime::{
     transport::{Evidence, Provider},
 };
 
+const MEMPOOL_TXID: &str = "4444444444444444444444444444444444444444444444444444444444444444";
+
 struct Fixture {
     funding: Transaction,
     header: Header,
     signer: Keypair,
     flood: AtomicBool,
+    close_after: AtomicUsize,
 }
 
 impl Fixture {
@@ -79,6 +82,7 @@ impl Fixture {
             header,
             signer,
             flood: AtomicBool::new(false),
+            close_after: AtomicUsize::new(0),
         }
     }
 
@@ -132,6 +136,9 @@ impl Fixture {
                 } else {
                     Ok(json!(hex::encode(serialize(&self.funding))))
                 }
+            }
+            "blockchain.transaction.get" if params[0] == json!(MEMPOOL_TXID) => {
+                Ok(json!({"txid":MEMPOOL_TXID,"hex":"00","size":1}))
             }
             "blockchain.transaction.get" => Err(json!({
                 "code":2,
@@ -199,7 +206,13 @@ impl Drop for Mock {
 fn serve(mut stream: TcpStream, fixture: &Fixture, log: &Mutex<Vec<String>>) {
     let mut reader = BufReader::new(stream.try_clone().unwrap());
     let mut first = true;
+    let mut served = 0;
     loop {
+        let close_after = fixture.close_after.load(Ordering::Acquire);
+        if close_after > 0 && served >= close_after {
+            return;
+        }
+        served += 1;
         let mut line = String::new();
         if reader.read_line(&mut line).unwrap() == 0 {
             return;
@@ -483,6 +496,50 @@ fn spendable_summary_is_verified_per_output_only_within_the_bound() {
     assert_eq!(large.outputs.len(), 65);
     assert_eq!(count(&mock.methods(), "blockchain.transaction.get"), before);
     assert_eq!(node.available_utxos(&fixture.signer).unwrap().len(), 65);
+}
+
+#[test]
+fn a_mempool_transaction_maps_to_zero_confirmations() {
+    let fixture = Arc::new(Fixture::new());
+    let mock = Mock::start(fixture.clone());
+    let provider = mock.provider();
+    let verbose = provider
+        .call(
+            Chain::BitcoinRegtest,
+            "getrawtransaction",
+            &[json!(MEMPOOL_TXID), json!(true)],
+        )
+        .unwrap();
+    assert_eq!(verbose, json!({"confirmations":0}));
+    drop(provider);
+    let node =
+        Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
+    let routed = node
+        .call("getrawtransaction", &[json!(MEMPOOL_TXID), json!(true)])
+        .unwrap();
+    assert_eq!(routed["confirmations"], 0);
+}
+
+#[test]
+fn a_closed_socket_is_reconnected_and_the_request_retried_once() {
+    let fixture = Arc::new(Fixture::new());
+    fixture.close_after.store(3, Ordering::Release);
+    let mock = Mock::start(fixture.clone());
+    let provider = mock.provider();
+    let first = provider
+        .call(Chain::BitcoinRegtest, "getblockchaininfo", &[])
+        .unwrap();
+    assert_eq!(first["blocks"], 1);
+    let second = provider
+        .call(Chain::BitcoinRegtest, "getblockchaininfo", &[])
+        .unwrap();
+    assert_eq!(second["blocks"], 1);
+    assert_eq!(count(&mock.methods(), "server.version"), 2);
+    fixture.close_after.store(1, Ordering::Release);
+    let refused = provider
+        .call(Chain::BitcoinRegtest, "getblockchaininfo", &[])
+        .unwrap_err();
+    assert!(matches!(refused, Error::Io(_)));
 }
 
 #[test]

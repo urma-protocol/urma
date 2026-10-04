@@ -208,7 +208,7 @@ pub(crate) fn advance(node: &Node, raw: &str, report: &mut PublishReport) -> Res
             });
             return Ok(false);
         }
-        presence = node.presence(txid)?;
+        presence = node.presence_after_submission(txid)?;
     }
     report.transactions.push(TransactionStatus {
         txid: txid.to_string(),

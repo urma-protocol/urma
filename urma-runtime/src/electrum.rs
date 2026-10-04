@@ -133,7 +133,12 @@ impl Session {
         let count = (&mut self.stream)
             .take(bound)
             .read_until(b'\n', &mut buffer)?;
-        ensure!(count > 0, "electrum server closed the connection");
+        if count == 0 {
+            return Err(Error::Io(std::io::Error::new(
+                std::io::ErrorKind::UnexpectedEof,
+                "electrum server closed the connection",
+            )));
+        }
         ensure!(buffer.len() <= limit, "electrum reply exceeds capacity");
         ensure!(
             buffer.last() == Some(&b'\n'),
@@ -199,7 +204,7 @@ impl Electrum {
     fn session<T>(
         &self,
         chain: Chain,
-        work: impl FnOnce(&mut Session) -> Result<T, Error>,
+        work: impl Fn(&mut Session) -> Result<T, Error>,
     ) -> Result<T, Error> {
         let mut link = match self.link.lock() {
             Ok(link) => link,
@@ -208,27 +213,35 @@ impl Electrum {
                 poisoned.into_inner()
             }
         };
-        if matches!(*link, Link::Closed) {
-            let mut session = Session::open(&self.target, &self.pins)?;
-            match self.handshake(&mut session, chain) {
-                Ok(()) => *link = Link::Open(session),
-                Err(error) => {
-                    tracing::warn!(endpoint = %self.endpoint.url(), %error, "electrum handshake failed");
-                    return Err(error);
+        let mut fresh = false;
+        loop {
+            if matches!(*link, Link::Closed) {
+                let mut session = Session::open(&self.target, &self.pins)?;
+                match self.handshake(&mut session, chain) {
+                    Ok(()) => *link = Link::Open(session),
+                    Err(error) => {
+                        tracing::warn!(endpoint = %self.endpoint.url(), %error, "electrum handshake failed");
+                        return Err(error);
+                    }
                 }
+                fresh = true;
             }
-        }
-        let Link::Open(session) = &mut *link else {
-            return Err(Error::Invalid("electrum link closed during request".into()));
-        };
-        match work(session) {
-            Ok(value) => Ok(value),
-            Err(Error::Io(cause)) => {
-                tracing::warn!(endpoint = %self.endpoint.url(), error = %cause, "electrum connection dropped");
-                *link = Link::Closed;
-                Err(Error::Io(cause))
+            let Link::Open(session) = &mut *link else {
+                return Err(Error::Invalid("electrum link closed during request".into()));
+            };
+            match work(session) {
+                Ok(value) => return Ok(value),
+                Err(Error::Io(cause)) if fresh => {
+                    tracing::warn!(endpoint = %self.endpoint.url(), error = %cause, "electrum connection dropped on a fresh session");
+                    *link = Link::Closed;
+                    return Err(Error::Io(cause));
+                }
+                Err(Error::Io(cause)) => {
+                    tracing::warn!(endpoint = %self.endpoint.url(), error = %cause, "electrum connection dropped; reconnecting and retrying once");
+                    *link = Link::Closed;
+                }
+                Err(error) => return Err(error),
             }
-            Err(error) => Err(error),
         }
     }
 
@@ -505,7 +518,9 @@ impl Electrum {
             "{method} is not a read-only electrum probe"
         );
         let timeout = config::method_timeout("addressutxos");
-        self.session(chain, |session| session.request(method, params, timeout))
+        self.session(chain, |session| {
+            session.request(method, params.clone(), timeout)
+        })
     }
 }
 
