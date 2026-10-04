@@ -2,11 +2,12 @@ use crate::config::{P2P_BLOCK_TIMEOUT_SECS, P2P_TIP_REFRESH_SECS};
 use crate::error::{Context, Error, ensure};
 use crate::light::{LightSync, Progress};
 use crate::p2p::blocks::BlockCache;
-use crate::p2p::headers::HeaderChain;
+use crate::p2p::headers::{Anchor, HeaderChain};
 use crate::p2p::worker::{self, Command, Freshness, Shared, Status, locked};
 use crate::transport::{BlockEncoding, Evidence, Provider};
 use bitcoin::BlockHash;
 use serde_json::{Value, json};
+use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
@@ -27,9 +28,19 @@ pub struct P2pProvider {
 
 impl P2pProvider {
     pub fn new(chain: Chain, cache_dir: &Path) -> Result<Self, Error> {
-        let headers = HeaderChain::open(chain, cache_dir)?;
+        Self::with_peers(chain, cache_dir, Anchor::embedded(chain)?, Vec::new())
+    }
+
+    pub fn with_peers(
+        chain: Chain,
+        cache_dir: &Path,
+        anchor: Anchor,
+        pinned: Vec<SocketAddr>,
+    ) -> Result<Self, Error> {
+        let headers = HeaderChain::open_at(chain, cache_dir, anchor)?;
         let shared = Arc::new(Shared {
             chain,
+            pinned,
             headers: Mutex::new(headers),
             blocks: Mutex::new(BlockCache::new()),
             status: Mutex::new(Status {
@@ -91,6 +102,11 @@ impl P2pProvider {
 
     pub fn synced(&self) -> bool {
         locked(&self.shared.status, "status").synced
+    }
+
+    pub fn ready(&self) -> bool {
+        let status = locked(&self.shared.status, "status");
+        status.synced && status.peers > 0
     }
 
     fn command(&self, command: Command) -> Result<(), Error> {
@@ -213,9 +229,9 @@ impl Provider for P2pProvider {
         match method {
             "getblock" | "getblockheader" => {
                 self.ignite();
-                self.synced()
+                self.ready()
             }
-            "getblockchaininfo" | "getblockhash" => self.synced(),
+            "getblockchaininfo" | "getblockhash" => self.ready(),
             _other => false,
         }
     }

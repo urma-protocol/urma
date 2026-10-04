@@ -7,6 +7,7 @@ use crate::p2p::headers::{Extension, HeaderChain};
 use crate::p2p::peers::Peers;
 use bitcoin::BlockHash;
 use std::collections::HashSet;
+use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -38,6 +39,7 @@ pub(super) struct Status {
 
 pub(super) struct Shared {
     pub(super) chain: Chain,
+    pub(super) pinned: Vec<SocketAddr>,
     pub(super) headers: Mutex<HeaderChain>,
     pub(super) blocks: Mutex<BlockCache>,
     pub(super) status: Mutex<Status>,
@@ -58,7 +60,7 @@ pub(super) fn locked<'a, T>(mutex: &'a Mutex<T>, what: &str) -> MutexGuard<'a, T
 }
 
 pub(super) fn run(shared: Arc<Shared>, commands: Receiver<Command>) {
-    let mut peers = Peers::new(shared.chain);
+    let mut peers = Peers::new(shared.chain, shared.pinned.clone());
     loop {
         if shared.stop.load(Ordering::Acquire) {
             return;
@@ -108,7 +110,6 @@ fn now_unix() -> Result<u32, Error> {
 }
 
 fn serve(shared: &Shared, peers: &mut Peers, command: Command) {
-    maintain_peers(shared, peers);
     match command {
         Command::Refresh { reply } => {
             let outcome = match sync_round(shared, peers) {
@@ -143,13 +144,8 @@ fn sync_round(shared: &Shared, peers: &mut Peers) -> bool {
                 peers.ban_peer(index);
             }
             Err(error) => {
-                tracing::warn!(peer = %peers.connected[index].address, %error, "peer dropped during header sync; refilling peers");
+                tracing::warn!(peer = %peers.connected[index].address, %error, "peer dropped during header sync");
                 peers.drop_peer(index);
-                if peers.count() == 0 {
-                    let height = locked(&shared.headers, "headers").tip_height();
-                    peers.discover();
-                    peers.top_up(height);
-                }
             }
         }
     }
@@ -217,12 +213,11 @@ fn fetch_block(shared: &Shared, peers: &mut Peers, hash: BlockHash) -> Result<Ve
                 .find(|index| !lacking.contains(&peers.connected[*index].address))
         };
         let Some(index) = usable(peers) else {
-            peers.discover();
-            peers.top_up(tip);
-            failures.push(format!(
-                "attempt {attempt}: no connected peer left to ask; refilled"
-            ));
-            continue;
+            locked(&shared.status, "status").peers = peers.count();
+            return Err(Error::Unsupported(format!(
+                "block {hash}: no connected peer after {attempt} attempts: {}",
+                failures.join("; ")
+            )));
         };
         let address = peers.connected[index].address;
         match fetch_from(shared, peers, index, hash, height) {

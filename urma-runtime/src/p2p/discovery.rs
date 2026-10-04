@@ -100,6 +100,13 @@ impl Discovery {
         }
     }
 
+    pub fn readmit(&mut self, addresses: Vec<SocketAddr>) {
+        for address in &addresses {
+            self.tried.remove(address);
+        }
+        self.offer_seeded(addresses);
+    }
+
     pub fn offer_gossip(&mut self, address: SocketAddr) {
         if self.admissible(&address) {
             self.pool.push_back(address);

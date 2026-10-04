@@ -37,13 +37,32 @@ pub fn checkpoint(chain: Chain) -> Result<&'static Checkpoint, Error> {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Anchor {
+    pub height: u64,
+    pub header: Header,
+    pub next_hash: BlockHash,
+}
+
+impl Anchor {
+    pub fn embedded(chain: Chain) -> Result<Self, Error> {
+        let checkpoint = checkpoint(chain)?;
+        Ok(Self {
+            height: checkpoint.height,
+            header: deserialize(&hex::decode(checkpoint.header)?)?,
+            next_hash: checkpoint.next_hash.parse()?,
+        })
+    }
+}
+
 impl HeaderChain {
     pub fn open(chain: Chain, cache_dir: &Path) -> Result<Self, Error> {
-        let anchor = checkpoint(chain)?;
-        let header: Header = deserialize(&hex::decode(anchor.header)?)?;
-        let next: BlockHash = anchor.next_hash.parse()?;
+        Self::open_at(chain, cache_dir, Anchor::embedded(chain)?)
+    }
+
+    pub fn open_at(chain: Chain, cache_dir: &Path, anchor: Anchor) -> Result<Self, Error> {
         let path = cache_dir.join(format!("{}-headers.bin", chain.label().replace(' ', "-")));
-        Self::anchored(chain, path, anchor.height, header, next)
+        Self::anchored(chain, path, anchor.height, anchor.header, anchor.next_hash)
     }
 
     pub fn anchored(

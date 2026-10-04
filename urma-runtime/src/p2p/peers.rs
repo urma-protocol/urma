@@ -19,6 +19,7 @@ struct Resolution {
 pub(super) struct Peers {
     chain: Chain,
     discovery: Discovery,
+    pinned: Vec<SocketAddr>,
     answers: Receiver<Resolution>,
     asker: SyncSender<Resolution>,
     inflight: usize,
@@ -26,11 +27,12 @@ pub(super) struct Peers {
 }
 
 impl Peers {
-    pub(super) fn new(chain: Chain) -> Self {
+    pub(super) fn new(chain: Chain, pinned: Vec<SocketAddr>) -> Self {
         let (asker, answers) = mpsc::sync_channel(64);
         Self {
             chain,
             discovery: Discovery::new(),
+            pinned,
             answers,
             asker,
             inflight: 0,
@@ -45,6 +47,10 @@ impl Peers {
             return;
         }
         self.discovery.mark_seeded(now);
+        if !self.pinned.is_empty() {
+            self.discovery.readmit(self.pinned.clone());
+            return;
+        }
         let params = self.chain.params();
         for seed in params.dns_seeds {
             let asker = self.asker.clone();
