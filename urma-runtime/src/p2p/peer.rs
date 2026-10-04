@@ -207,7 +207,15 @@ impl Peer {
     }
 
     pub(super) fn request_block(&mut self, hash: BlockHash) -> Result<Vec<u8>, Error> {
-        self.send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(hash)]))?;
+        self.ask_block(hash)?;
+        self.await_block(hash)
+    }
+
+    pub(super) fn ask_block(&mut self, hash: BlockHash) -> Result<(), Error> {
+        self.send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(hash)]))
+    }
+
+    pub(super) fn await_block(&mut self, hash: BlockHash) -> Result<Vec<u8>, Error> {
         let deadline = Instant::now() + Duration::from_secs(P2P_BLOCK_TIMEOUT_SECS);
         self.wait(deadline, |peer, message| match message {
             Message::Block(raw) => {

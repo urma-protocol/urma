@@ -1,5 +1,6 @@
 use crate::config::{
     P2P_FETCH_ATTEMPTS, P2P_IDLE_POLL_MILLIS, P2P_MAX_HEADERS_PER_MESSAGE, P2P_MIN_PEERS,
+    P2P_PREFETCH_BLOCKS,
 };
 use crate::error::Error;
 use crate::p2p::blocks::{BlockCache, Held};
@@ -253,13 +254,74 @@ fn fetch_from(
     height: u64,
 ) -> Result<Vec<u8>, Error> {
     let raw = peers.connected[index].request_block(hash)?;
-    let block = decode::esplora_block(&raw, shared.chain, hash)?;
+    admit_block(shared, &raw, hash, height)?;
+    prefetch(shared, peers, height, index);
+    Ok(raw)
+}
+
+fn admit_block(shared: &Shared, raw: &[u8], hash: BlockHash, height: u64) -> Result<(), Error> {
+    let block = decode::esplora_block(raw, shared.chain, hash)?;
     let expected = locked(&shared.headers, "headers").header_at(height)?;
     if block.header != expected {
         return Err(Error::Invalid(
             "peer block header differs from the verified header".into(),
         ));
     }
-    locked(&shared.blocks, "blocks").insert(hash, height, raw.clone());
-    Ok(raw)
+    locked(&shared.blocks, "blocks").insert(hash, height, raw.to_vec());
+    Ok(())
+}
+
+fn prefetch_targets(shared: &Shared, served: u64) -> Vec<(u64, BlockHash)> {
+    let headers = locked(&shared.headers, "headers");
+    let blocks = locked(&shared.blocks, "blocks");
+    let mut targets = Vec::new();
+    let tip = headers.tip_height();
+    let last = (served + P2P_PREFETCH_BLOCKS).min(tip);
+    for height in served + 1..=last {
+        let hash = match headers.hash_at(height) {
+            Ok(hash) => hash,
+            Err(error) => {
+                tracing::warn!(height, %error, "prefetch stopped at a header the chain no longer holds");
+                break;
+            }
+        };
+        match blocks.get(hash) {
+            Held::Cached(_raw) => continue,
+            Held::Absent => targets.push((height, hash)),
+        }
+    }
+    targets
+}
+
+fn prefetch(shared: &Shared, peers: &mut Peers, served: u64, served_by: usize) {
+    let targets = prefetch_targets(shared, served);
+    let mut asked = Vec::new();
+    for (slot, (height, hash)) in targets.into_iter().enumerate() {
+        if slot >= peers.count() {
+            break;
+        }
+        let index = (served_by + 1 + slot) % peers.count();
+        match peers.connected[index].ask_block(hash) {
+            Ok(()) => asked.push((index, height, hash)),
+            Err(error) => {
+                tracing::warn!(peer = %peers.connected[index].address, %error, "prefetch request failed");
+            }
+        }
+    }
+    let mut dropped = Vec::new();
+    for (index, height, hash) in asked {
+        let answer = peers.connected[index].await_block(hash);
+        match answer.and_then(|raw| admit_block(shared, &raw, hash, height)) {
+            Ok(()) => tracing::debug!(height, "block prefetched"),
+            Err(error) => {
+                tracing::warn!(peer = %peers.connected[index].address, %error, height, "prefetch failed; peer dropped");
+                dropped.push(index);
+            }
+        }
+    }
+    dropped.sort_unstable();
+    for index in dropped.into_iter().rev() {
+        peers.drop_peer(index);
+    }
+    locked(&shared.status, "status").peers = peers.count();
 }

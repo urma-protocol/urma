@@ -174,6 +174,8 @@ pub const P2P_LITECOIN_NODE_MWEB: u64 = 1 << 24;
 pub const P2P_SEED_INTERVAL_SECS: u64 = 60;
 pub const P2P_SEED_TIMEOUT_SECS: u64 = 3;
 pub const P2P_FETCH_ATTEMPTS: usize = 4;
+pub const P2P_POW_WORKERS: usize = 4;
+pub const P2P_PREFETCH_BLOCKS: u64 = 4;
 
 pub struct Checkpoint {
     pub height: u64,

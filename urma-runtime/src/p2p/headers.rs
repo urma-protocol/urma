@@ -1,6 +1,7 @@
 use crate::config::{
     Checkpoint, LITECOIN_MAINNET_CHECKPOINT, LITECOIN_TESTNET_CHECKPOINT, P2P_HEADER_CACHE_MAX,
     P2P_HEADER_CACHE_REVALIDATE, P2P_LOCATOR_LINEAR, P2P_MAX_FUTURE_SECS, P2P_MEDIAN_TIME_SPAN,
+    P2P_POW_WORKERS,
 };
 use crate::error::{Context, Error, ensure};
 use bitcoin::BlockHash;
@@ -133,11 +134,8 @@ impl HeaderChain {
                     self.path.display()
                 );
             }
-            if offset >= revalidate_from {
-                check_header_pow(header, self.chain)
-                    .map_err(|cause| Error::Invalid(cause.to_string()))?;
-            }
         }
+        prove_batch(self.chain, &headers[revalidate_from.max(1)..])?;
         self.index = headers
             .iter()
             .enumerate()
@@ -249,6 +247,7 @@ impl HeaderChain {
             "header chain would exceed the client capacity"
         );
         let base = fork + known;
+        prove_batch(self.chain, fresh)?;
         if base == self.headers.len() - 1 {
             self.append(fresh, now)?;
             return Ok(Extension::Appended(fresh.len()));
@@ -308,7 +307,6 @@ impl HeaderChain {
             header.prev_blockhash == last.block_hash(),
             "peer header does not extend its predecessor"
         );
-        check_header_pow(header, self.chain).map_err(|cause| Error::Invalid(cause.to_string()))?;
         if window.len() == 1 {
             ensure!(
                 header.block_hash() == self.trusted_next,
@@ -337,6 +335,51 @@ impl HeaderChain {
         );
         Ok(())
     }
+}
+
+pub fn prove_batch(chain: Chain, headers: &[Header]) -> Result<(), Error> {
+    if headers.is_empty() {
+        return Ok(());
+    }
+    let workers = std::thread::available_parallelism()?
+        .get()
+        .min(P2P_POW_WORKERS)
+        .min(headers.len());
+    let chunk = headers.len().div_ceil(workers);
+    let verdicts: Vec<Result<(), (usize, String)>> = std::thread::scope(|scope| {
+        let mut handles = Vec::new();
+        for (slot, part) in headers.chunks(chunk).enumerate() {
+            handles.push(scope.spawn(move || {
+                for (offset, header) in part.iter().enumerate() {
+                    check_header_pow(header, chain)
+                        .map_err(|cause| (slot * chunk + offset, cause.to_string()))?;
+                }
+                Ok(())
+            }));
+        }
+        let mut verdicts = Vec::new();
+        for handle in handles {
+            match handle.join() {
+                Ok(verdict) => verdicts.push(verdict),
+                Err(panic) => {
+                    tracing::error!(?panic, "header proof worker panicked");
+                    verdicts.push(Err((usize::MAX, "header proof worker panicked".into())));
+                }
+            }
+        }
+        verdicts
+    });
+    for verdict in verdicts {
+        match verdict {
+            Ok(()) => (),
+            Err((offset, cause)) => {
+                return Err(Error::Invalid(format!(
+                    "header at batch offset {offset} fails proof of work: {cause}"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn median_time(window: &[Header]) -> u32 {

@@ -88,6 +88,33 @@ fn a_synced_client_without_peers_fails_fast_and_withdraws_from_routing() {
 }
 
 #[test]
+fn a_sequential_walk_prefetches_ahead_and_serves_the_rest_from_cache() {
+    let blocks = Arc::new(regtest_chain(8));
+    let peers: Vec<MockPeer> = (0..4)
+        .map(|_index| mock_peer::spawn(blocks.clone(), Behaviour::Serve))
+        .collect();
+    let dir = tempfile::tempdir().unwrap();
+    let handles: Vec<&MockPeer> = peers.iter().collect();
+    let provider = provider(dir.path(), &blocks, &handles);
+    assert_eq!(provider.progress().peers_connected, 4);
+    assert_eq!(provider.progress().headers_synced, 7);
+    for height in 1..=6 {
+        assert_eq!(
+            getblock(&provider, &blocks[height]).unwrap(),
+            serialize(&blocks[height]),
+            "height {height}"
+        );
+    }
+    let per_peer: Vec<usize> = peers
+        .iter()
+        .map(|peer| peer.getdata.load(std::sync::atomic::Ordering::Acquire))
+        .collect();
+    let total: usize = per_peer.iter().sum();
+    assert_eq!(total, 7, "getdata per peer {per_peer:?}");
+    assert_eq!(per_peer, vec![3, 2, 1, 1]);
+}
+
+#[test]
 fn a_dropping_peer_is_replaced_by_a_good_peer_inside_the_fetch() {
     let blocks = Arc::new(regtest_chain(6));
     let dropping = mock_peer::spawn(blocks.clone(), Behaviour::EofOnGetData);
@@ -101,10 +128,19 @@ fn a_dropping_peer_is_replaced_by_a_good_peer_inside_the_fetch() {
         dropping.getdata.load(std::sync::atomic::Ordering::Acquire),
         1
     );
-    assert_eq!(good.getdata.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(
+        good.getdata.load(std::sync::atomic::Ordering::Acquire),
+        2,
+        "one fetch plus one prefetch of the next block"
+    );
     let again = getblock(&provider, &blocks[3]).unwrap();
     assert_eq!(again, raw);
-    assert_eq!(good.getdata.load(std::sync::atomic::Ordering::Acquire), 1);
+    assert_eq!(
+        getblock(&provider, &blocks[4]).unwrap(),
+        serialize(&blocks[4]),
+        "the prefetched block is served from cache"
+    );
+    assert_eq!(good.getdata.load(std::sync::atomic::Ordering::Acquire), 2);
     assert!(provider.ready());
     assert!(
         dropping
