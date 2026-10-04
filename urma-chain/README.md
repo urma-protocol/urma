@@ -20,6 +20,9 @@ cargo add urma-chain
 | [`transaction`](https://docs.rs/urma-chain/latest/urma_chain/transaction/) | Bounded transaction decoding. |
 | [`decode`](https://docs.rs/urma-chain/latest/urma_chain/decode/) | Decoding URMA records from transaction envelopes. |
 | [`validation`](https://docs.rs/urma-chain/latest/urma_chain/validation/) | Chain and proof-of-work validation helpers. |
+| [`pow`](https://docs.rs/urma-chain/latest/urma_chain/pow/) | Header proof of work per chain (scrypt for Litecoin, sha256d for Bitcoin), Core retarget rules and chainwork. |
+
+`Chain::params()` carries the peer-to-peer magic, default port, DNS seeds, proof-of-work limit and retarget schedule for each supported chain. `pow::expected_bits` reproduces Litecoin Core's `GetNextWorkRequired`, including the 2016-block lookback, the testnet minimum-difficulty rules and 256-bit wraparound of the intermediate product. Header validation is light-client validation: it proves work and continuity, not transaction consensus.
 
 ## Where it fits
 

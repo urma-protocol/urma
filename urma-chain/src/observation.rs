@@ -1,5 +1,27 @@
+use crate::config;
 use bitcoin::{BlockHash, Txid};
 use serde::{Deserialize, Serialize};
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PowFunction {
+    Sha256d,
+    Scrypt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ChainParams {
+    pub magic: [u8; 4],
+    pub port: u16,
+    pub dns_seeds: &'static [&'static str],
+    pub pow: PowFunction,
+    pub pow_limit_bits: u32,
+    pub retarget_interval: u64,
+    pub retarget_lookback: u64,
+    pub target_timespan: u32,
+    pub target_spacing: u32,
+    pub allow_min_difficulty: bool,
+    pub retargets: bool,
+}
 
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -65,6 +87,15 @@ impl Chain {
             Self::LitecoinTestnet => "Litecoin testnet",
             Self::BitcoinRegtest => "Bitcoin regtest",
             Self::BitcoinTestnet4 => "Bitcoin testnet4",
+        }
+    }
+
+    pub fn params(self) -> &'static ChainParams {
+        match self {
+            Self::LitecoinMainnet => &config::LITECOIN_MAINNET,
+            Self::LitecoinTestnet => &config::LITECOIN_TESTNET,
+            Self::BitcoinRegtest => &config::BITCOIN_REGTEST,
+            Self::BitcoinTestnet4 => &config::BITCOIN_TESTNET4,
         }
     }
 
