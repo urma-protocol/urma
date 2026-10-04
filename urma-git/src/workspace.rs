@@ -27,12 +27,26 @@ pub fn lock(directory: &Path) -> Result<File, Error> {
         .truncate(false)
         .mode(0o600)
         .open(path)?;
-    file.try_lock().map_err(|cause| {
+    process_lock(&file).map_err(|cause| {
         Error::Io(std::io::Error::other(format!(
             "another operation is using this plan: {cause}"
         )))
     })?;
     Ok(file)
+}
+
+fn process_lock(file: &File) -> Result<(), std::io::Error> {
+    use std::os::unix::io::AsRawFd;
+    let mut region: libc::flock = unsafe { std::mem::zeroed() };
+    region.l_type = i16::try_from(libc::F_WRLCK).map_err(std::io::Error::other)?;
+    region.l_whence = i16::try_from(libc::SEEK_SET).map_err(std::io::Error::other)?;
+    region.l_start = 0;
+    region.l_len = 0;
+    let outcome = unsafe { libc::fcntl(file.as_raw_fd(), libc::F_SETLK, &region) };
+    if outcome == -1 {
+        return Err(std::io::Error::last_os_error());
+    }
+    Ok(())
 }
 
 pub fn ensure_unpublished(directory: &Path) -> Result<(), Error> {

@@ -1586,6 +1586,7 @@ dependencies = [
  "anyhow",
  "bitcoin",
  "hex",
+ "libc",
  "regex",
  "rustix",
  "serde",

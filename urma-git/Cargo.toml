@@ -21,6 +21,7 @@ sha2 = "0.10"
 tempfile = "3"
 regex = "1"
 rustix = { version = "1", features = ["fs"] }
+libc = "0.2"
 tracing = "0.1"
 
 bitcoin = { version = "0.32", features = ["serde"] }
