@@ -1,9 +1,12 @@
-use crate::config::{P2P_IDLE_POLL_MILLIS, P2P_MAX_HEADERS_PER_MESSAGE, P2P_MIN_PEERS};
+use crate::config::{
+    P2P_FETCH_ATTEMPTS, P2P_IDLE_POLL_MILLIS, P2P_MAX_HEADERS_PER_MESSAGE, P2P_MIN_PEERS,
+};
 use crate::error::Error;
 use crate::p2p::blocks::{BlockCache, Held};
 use crate::p2p::headers::{Extension, HeaderChain};
 use crate::p2p::peers::Peers;
 use bitcoin::BlockHash;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -82,11 +85,13 @@ fn maintain_peers(shared: &Shared, peers: &mut Peers) {
     peers.absorb_gossip();
     if peers.count() < P2P_MIN_PEERS {
         let height = locked(&shared.headers, "headers").tip_height();
-        match peers.seed() {
-            Ok(()) => (),
-            Err(error) => tracing::warn!(%error, "peer discovery incomplete"),
-        }
+        peers.discover();
         peers.top_up(height);
+        tracing::debug!(
+            connected = peers.count(),
+            pooled = peers.pool_size(),
+            "peer set maintained"
+        );
     }
     let mut status = locked(&shared.status, "status");
     status.peers = peers.count();
@@ -138,8 +143,13 @@ fn sync_round(shared: &Shared, peers: &mut Peers) -> bool {
                 peers.ban_peer(index);
             }
             Err(error) => {
-                tracing::warn!(peer = %peers.connected[index].address, %error, "peer dropped during header sync");
+                tracing::warn!(peer = %peers.connected[index].address, %error, "peer dropped during header sync; refilling peers");
                 peers.drop_peer(index);
+                if peers.count() == 0 {
+                    let height = locked(&shared.headers, "headers").tip_height();
+                    peers.discover();
+                    peers.top_up(height);
+                }
             }
         }
     }
@@ -198,37 +208,44 @@ fn fetch_block(shared: &Shared, peers: &mut Peers, hash: BlockHash) -> Result<Ve
         Held::Absent => (),
     }
     let mut failures = Vec::new();
-    for round in 0..2 {
-        if round == 1 {
+    let mut lacking = HashSet::new();
+    for attempt in 0..P2P_FETCH_ATTEMPTS {
+        let usable = |peers: &Peers| {
+            peers
+                .order_for_block(height, tip)
+                .into_iter()
+                .find(|index| !lacking.contains(&peers.connected[*index].address))
+        };
+        let Some(index) = usable(peers) else {
+            peers.discover();
             peers.top_up(tip);
-        }
-        let mut index = 0;
-        let order = peers.order_for_block(height, tip);
-        while index < order.len() && order[index] < peers.count() {
-            match fetch_from(shared, peers, order[index], hash, height) {
-                Ok(raw) => return Ok(raw),
-                Err(Error::Missing(message)) => {
-                    tracing::warn!(peer = %peers.connected[order[index]].address, %message, "peer lacks the requested block");
-                    failures.push(message);
-                    index += 1;
-                }
-                Err(error @ Error::Invalid(_)) => {
-                    tracing::warn!(peer = %peers.connected[order[index]].address, %error, "peer banned for an invalid block");
-                    failures.push(error.to_string());
-                    peers.ban_peer(order[index]);
-                    break;
-                }
-                Err(error) => {
-                    tracing::warn!(peer = %peers.connected[order[index]].address, %error, "peer dropped during block fetch");
-                    failures.push(error.to_string());
-                    peers.drop_peer(order[index]);
-                    break;
-                }
+            failures.push(format!(
+                "attempt {attempt}: no connected peer left to ask; refilled"
+            ));
+            continue;
+        };
+        let address = peers.connected[index].address;
+        match fetch_from(shared, peers, index, hash, height) {
+            Ok(raw) => return Ok(raw),
+            Err(Error::Missing(message)) => {
+                tracing::warn!(peer = %address, %message, "peer lacks the requested block");
+                failures.push(message);
+                lacking.insert(address);
+            }
+            Err(error @ Error::Invalid(_)) => {
+                tracing::warn!(peer = %address, %error, "peer banned for an invalid block");
+                failures.push(error.to_string());
+                peers.ban_peer(index);
+            }
+            Err(error) => {
+                tracing::warn!(peer = %address, %error, attempt, "peer dropped during block fetch; retrying with another peer");
+                failures.push(error.to_string());
+                peers.drop_peer(index);
             }
         }
     }
     Err(Error::Unsupported(format!(
-        "block {hash} unavailable from connected peers: {}",
+        "block {hash} unavailable after {P2P_FETCH_ATTEMPTS} peer attempts: {}",
         failures.join("; ")
     )))
 }

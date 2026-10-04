@@ -1,62 +1,137 @@
 use crate::config::{
-    P2P_ADDRESS_POOL, P2P_CONNECT_ATTEMPTS_PER_ROUND, P2P_LIMITED_PEER_DEPTH, P2P_MAX_PEERS,
+    P2P_CONNECT_ATTEMPTS_PER_ROUND, P2P_LIMITED_PEER_DEPTH, P2P_MIN_PEERS, P2P_SEED_TIMEOUT_SECS,
+    P2P_TOP_UP_BUDGET_SECS,
 };
-use crate::error::{Error, ensure};
+use crate::error::Error;
+use crate::p2p::discovery::{Discovery, Next};
 use crate::p2p::peer::Peer;
 use rand::seq::SliceRandom;
-use std::collections::{HashSet, VecDeque};
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{SocketAddr, ToSocketAddrs};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
+use std::time::{Duration, Instant};
 use urma_chain::observation::Chain;
+
+struct Resolution {
+    seed: &'static str,
+    outcome: Result<Vec<SocketAddr>, std::io::Error>,
+}
 
 pub(super) struct Peers {
     chain: Chain,
-    candidates: VecDeque<SocketAddr>,
-    tried: HashSet<SocketAddr>,
-    banned: HashSet<IpAddr>,
+    discovery: Discovery,
+    answers: Receiver<Resolution>,
+    asker: SyncSender<Resolution>,
+    inflight: usize,
     pub(super) connected: Vec<Peer>,
 }
 
 impl Peers {
     pub(super) fn new(chain: Chain) -> Self {
+        let (asker, answers) = mpsc::sync_channel(64);
         Self {
             chain,
-            candidates: VecDeque::new(),
-            tried: HashSet::new(),
-            banned: HashSet::new(),
+            discovery: Discovery::new(),
+            answers,
+            asker,
+            inflight: 0,
             connected: Vec::new(),
         }
     }
 
-    pub(super) fn seed(&mut self) -> Result<(), Error> {
-        let params = self.chain.params();
-        let mut found = Vec::new();
-        for seed in params.dns_seeds {
-            match (*seed, params.port).to_socket_addrs() {
-                Ok(addresses) => found.extend(addresses),
-                Err(error) => tracing::warn!(seed, %error, "dns seed did not resolve"),
-            }
-        }
-        found.shuffle(&mut rand::thread_rng());
-        for address in found {
-            self.offer(address);
-        }
-        ensure!(
-            !self.candidates.is_empty(),
-            "no peer addresses resolved from the {} dns seeds",
-            self.chain.label()
-        );
-        Ok(())
-    }
-
-    fn offer(&mut self, address: SocketAddr) {
-        if self.candidates.len() >= P2P_ADDRESS_POOL
-            || self.tried.contains(&address)
-            || self.banned.contains(&address.ip())
-            || self.candidates.contains(&address)
-        {
+    pub(super) fn discover(&mut self) {
+        let now = Instant::now();
+        self.collect(Duration::ZERO);
+        if !self.discovery.seeding_due(now) {
             return;
         }
-        self.candidates.push_back(address);
+        self.discovery.mark_seeded(now);
+        let params = self.chain.params();
+        for seed in params.dns_seeds {
+            let asker = self.asker.clone();
+            let port = params.port;
+            let spawned = std::thread::Builder::new()
+                .name("urma-dns".into())
+                .spawn(move || {
+                    let outcome = (*seed, port)
+                        .to_socket_addrs()
+                        .map(|addresses| addresses.collect());
+                    match asker.send(Resolution { seed, outcome }) {
+                        Ok(()) => (),
+                        Err(error) => tracing::warn!(seed, %error, "dns answer arrived after discovery closed"),
+                    }
+                });
+            match spawned {
+                Ok(_handle) => self.inflight += 1,
+                Err(error) => tracing::warn!(seed, %error, "dns resolver thread could not start"),
+            }
+        }
+        self.collect(Duration::from_secs(P2P_SEED_TIMEOUT_SECS));
+        if self.discovery.drought_warns(Instant::now()) {
+            tracing::warn!(
+                chain = self.chain.label(),
+                "no peer addresses resolved from any dns seed for a whole interval"
+            );
+        }
+    }
+
+    pub(super) fn pool_size(&self) -> usize {
+        self.discovery.len()
+    }
+
+    fn collect(&mut self, patience: Duration) {
+        let mut arrived = Vec::new();
+        for resolution in self.answers.try_iter() {
+            arrived.push(resolution);
+        }
+        for resolution in arrived {
+            self.inflight -= 1;
+            self.admit(resolution);
+        }
+        let deadline = Instant::now() + patience;
+        while self.inflight > 0 {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return;
+            };
+            match self.answers.recv_timeout(remaining) {
+                Ok(resolution) => {
+                    self.inflight -= 1;
+                    self.admit(resolution);
+                }
+                Err(RecvTimeoutError::Timeout) => {
+                    tracing::warn!(
+                        pending = self.inflight,
+                        "dns seeds still unanswered after the discovery window; continuing without them"
+                    );
+                    return;
+                }
+                Err(RecvTimeoutError::Disconnected) => {
+                    tracing::error!("dns answer channel closed while answers were pending");
+                    return;
+                }
+            }
+        }
+    }
+
+    fn admit(&mut self, resolution: Resolution) {
+        match resolution.outcome {
+            Ok(mut addresses) => {
+                addresses.shuffle(&mut rand::thread_rng());
+                tracing::debug!(
+                    seed = resolution.seed,
+                    count = addresses.len(),
+                    "dns seed resolved"
+                );
+                self.discovery.offer_seeded(addresses);
+            }
+            Err(error) => match self.discovery.is_empty() && self.inflight == 0 {
+                true => {
+                    tracing::warn!(seed = resolution.seed, %error, "last dns seed failed with an empty peer pool")
+                }
+                false => {
+                    tracing::debug!(seed = resolution.seed, %error, "dns seed did not resolve; other seeds or pooled addresses remain")
+                }
+            },
+        }
     }
 
     pub(super) fn absorb_gossip(&mut self) {
@@ -66,22 +141,32 @@ impl Peers {
         }
         learned.shuffle(&mut rand::thread_rng());
         for address in learned {
-            self.offer(address);
+            self.discovery.offer_gossip(address);
         }
     }
 
     pub(super) fn top_up(&mut self, our_height: u64) {
+        let started = Instant::now();
         let mut attempts = 0;
-        while self.connected.len() < P2P_MAX_PEERS && attempts < P2P_CONNECT_ATTEMPTS_PER_ROUND {
-            let Some(address) = self.candidates.pop_front() else {
+        while self.connected.len() < P2P_MIN_PEERS
+            && attempts < P2P_CONNECT_ATTEMPTS_PER_ROUND
+            && started.elapsed() < Duration::from_secs(P2P_TOP_UP_BUDGET_SECS)
+        {
+            let Next::Address(address) = self.discovery.next() else {
                 break;
             };
             attempts += 1;
-            self.tried.insert(address);
             match Peer::connect(self.chain, address, our_height) {
                 Ok(peer) => {
                     tracing::info!(peer = %address, services = %peer.services, height = peer.start_height, "peer connected");
                     self.connected.push(peer);
+                }
+                Err(Error::Io(error))
+                    if error.kind() == std::io::ErrorKind::NetworkUnreachable
+                        && address.is_ipv6() =>
+                {
+                    tracing::warn!(peer = %address, %error, "ipv6 unreachable; skipping ipv6 peers for this session");
+                    self.discovery.unreachable_v6();
                 }
                 Err(error) => tracing::warn!(peer = %address, %error, "peer connection refused"),
             }
@@ -105,7 +190,7 @@ impl Peers {
 
     pub(super) fn ban_peer(&mut self, index: usize) {
         let peer = self.connected.remove(index);
-        self.banned.insert(peer.address.ip());
+        self.discovery.ban(peer.address.ip());
     }
 
     pub(super) fn order_for_block(&self, height: u64, tip: u64) -> Vec<usize> {

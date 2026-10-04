@@ -150,8 +150,9 @@ pub const P2P_PROTOCOL_VERSION: u32 = 70015;
 pub const P2P_USER_AGENT: &str = "/urma:0.2.2/";
 pub const P2P_MIN_PEERS: usize = 4;
 pub const P2P_MAX_PEERS: usize = 8;
-pub const P2P_CONNECT_ATTEMPTS_PER_ROUND: usize = 16;
-pub const P2P_CONNECT_TIMEOUT_SECS: u64 = 5;
+pub const P2P_CONNECT_ATTEMPTS_PER_ROUND: usize = 8;
+pub const P2P_CONNECT_TIMEOUT_SECS: u64 = 2;
+pub const P2P_TOP_UP_BUDGET_SECS: u64 = 6;
 pub const P2P_HANDSHAKE_TIMEOUT_SECS: u64 = 15;
 pub const P2P_READ_TIMEOUT_SECS: u64 = 20;
 pub const P2P_BLOCK_TIMEOUT_SECS: u64 = 60;
@@ -170,6 +171,9 @@ pub const P2P_LIMITED_PEER_DEPTH: u64 = 288;
 pub const P2P_IDLE_POLL_MILLIS: u64 = 250;
 pub const P2P_LOCATOR_LINEAR: usize = 10;
 pub const P2P_LITECOIN_NODE_MWEB: u64 = 1 << 24;
+pub const P2P_SEED_INTERVAL_SECS: u64 = 60;
+pub const P2P_SEED_TIMEOUT_SECS: u64 = 3;
+pub const P2P_FETCH_ATTEMPTS: usize = 4;
 
 pub struct Checkpoint {
     pub height: u64,
