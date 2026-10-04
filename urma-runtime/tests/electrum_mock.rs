@@ -347,6 +347,11 @@ fn node_routes_through_electrum_and_reports_provider_evidence() {
         Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
     assert!(node.is_public());
     assert_eq!(node.inclusion_evidence(), "public_provider_observation");
+    assert_eq!(node.provider_labels(), vec![mock.endpoint.url().to_owned()]);
+    let observed = node.observe("getblockchaininfo", &[]).unwrap();
+    assert_eq!(observed.provider, mock.endpoint.url());
+    assert_eq!(observed.evidence, Evidence::PublicProviderObservation);
+    assert_eq!(observed.value["blocks"], 1);
     assert_eq!(node.tip_height().unwrap(), 1);
     assert_eq!(
         node.presence(fixture.funding.compute_txid()).unwrap(),

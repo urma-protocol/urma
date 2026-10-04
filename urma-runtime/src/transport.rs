@@ -44,6 +44,7 @@ pub struct Answer {
     pub value: Value,
     pub label: String,
     pub encoding: BlockEncoding,
+    pub evidence: Evidence,
 }
 
 enum Outcome {
@@ -221,6 +222,7 @@ impl Router {
     fn attempt(&self, slot: &Slot, chain: Chain, method: &str, args: &[Value]) -> Outcome {
         let label = slot.provider.label();
         let encoding = slot.provider.block_encoding();
+        let evidence = slot.provider.evidence();
         let result = slot
             .provider
             .call(chain, method, args)
@@ -232,6 +234,7 @@ impl Router {
                     value,
                     label,
                     encoding,
+                    evidence,
                 })
             }
             Err(Error::Missing(message)) if absent_record(&message) => {

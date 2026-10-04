@@ -45,6 +45,12 @@ pub struct Utxo {
     pub height: u64,
 }
 
+pub struct Observed {
+    pub value: Value,
+    pub provider: String,
+    pub evidence: Evidence,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", rename_all = "snake_case")]
 pub enum Presence {
@@ -127,6 +133,31 @@ impl Node {
 
     pub fn inclusion_evidence(&self) -> &'static str {
         self.evidence().label()
+    }
+
+    pub fn provider_labels(&self) -> Vec<String> {
+        match &self.backend {
+            Backend::Local(_) => vec![config::LOCAL_PROVIDER_LABEL.to_owned()],
+            Backend::Routed(router) => router.labels(),
+        }
+    }
+
+    pub fn observe(&self, method: &str, args: &[Value]) -> Result<Observed, Error> {
+        match &self.backend {
+            Backend::Local(client) => Ok(Observed {
+                value: client.call(method, args)?,
+                provider: config::LOCAL_PROVIDER_LABEL.to_owned(),
+                evidence: Evidence::LocalValidatingNode,
+            }),
+            Backend::Routed(router) => {
+                let answer = router.answer(self.chain, method, args)?;
+                Ok(Observed {
+                    value: answer.value,
+                    provider: answer.label,
+                    evidence: answer.evidence,
+                })
+            }
+        }
     }
 
     pub fn chain(&self) -> Chain {
