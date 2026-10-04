@@ -20,6 +20,8 @@ mod disk_writer;
 pub mod electrum;
 pub mod endpoints;
 mod esplora;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod pinning;
 mod providers;
 mod remote;
 pub mod transport;

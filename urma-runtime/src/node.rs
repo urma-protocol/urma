@@ -1,7 +1,7 @@
 use crate::config;
-#[cfg(not(target_arch = "wasm32"))]
-use crate::electrum::Pins;
 use crate::error::{Context, Error, ensure};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::pinning::Pins;
 use crate::{
     endpoints::{self, PublicEndpoint},
     providers,

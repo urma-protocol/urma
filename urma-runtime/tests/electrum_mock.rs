@@ -20,10 +20,11 @@ use std::{
 };
 use urma_chain::observation::Chain;
 use urma_runtime::{
-    electrum::{Electrum, Pins},
+    electrum::Electrum,
     endpoints::PublicEndpoint,
     error::Error,
     node::{Node, Presence},
+    pinning::Pins,
     transport::{Evidence, Provider},
 };
 

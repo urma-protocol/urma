@@ -1664,11 +1664,13 @@ dependencies = [
 name = "urma-runtime"
 version = "0.2.2"
 dependencies = [
+ "bech32",
  "bitcoin",
  "bitcoincore-rpc",
  "hex",
  "minreq",
  "rand",
+ "ring",
  "rustls",
  "serde",
  "serde_json",

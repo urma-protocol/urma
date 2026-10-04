@@ -1,7 +1,9 @@
 #[cfg(not(target_arch = "wasm32"))]
-use crate::electrum::{Electrum, Pins};
+use crate::electrum::Electrum;
 use crate::endpoints::PublicEndpoint;
 use crate::error::Error;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::pinning::Pins;
 use crate::remote::Remote;
 use crate::transport::Provider;
 #[cfg(not(target_arch = "wasm32"))]

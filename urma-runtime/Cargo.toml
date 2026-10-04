@@ -15,6 +15,7 @@ description = "URMA publication planning, network transports and recovery"
 urma-io = { version = "0.2.2", path = "../urma-io" }
 minreq = { version = "2.14", features = ["https-rustls"] }
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
+ring = "0.17"
 bitcoin = { version = "0.32", features = ["serde", "rand-std"] }
 bitcoincore-rpc = "0.19"
 hex = "0.4"
@@ -30,3 +31,6 @@ urma-identity = { version = "0.2.2", path = "../urma-identity" }
 urma-wallet = { version = "0.2.2", path = "../urma-wallet" }
 rand = "0.8"
 zeroize = "1"
+
+[dev-dependencies]
+bech32 = "0.11"

@@ -1,6 +1,7 @@
 use crate::config;
 use crate::endpoints::{ElectrumTarget, PublicEndpoint, Wire};
 use crate::error::{Context, Error, ensure};
+use crate::pinning::{Pinned, Pins};
 use crate::transport::{BlockEncoding, Evidence, Provider};
 use bitcoin::{
     BlockHash, Txid,
@@ -8,141 +9,16 @@ use bitcoin::{
     consensus::deserialize,
     hashes::{Hash, sha256},
 };
-use rustls::{
-    Certificate, ClientConfig, ClientConnection, ServerName, StreamOwned,
-    client::{ServerCertVerified, ServerCertVerifier},
-};
+use rustls::{ClientConfig, ClientConnection, ServerName, StreamOwned};
 use serde_json::{Value, json};
-use sha2::{Digest, Sha256};
 use std::{
     collections::HashMap,
     io::{BufRead, BufReader, Read, Write},
     net::{TcpStream, ToSocketAddrs},
-    path::PathBuf,
     sync::{Arc, Mutex},
-    time::{Duration, SystemTime},
+    time::Duration,
 };
 use urma_chain::{decode as chain_decode, observation::Chain};
-
-pub struct Pins {
-    directory: PinDirectory,
-    memory: Mutex<HashMap<String, [u8; 32]>>,
-}
-
-enum PinDirectory {
-    Ephemeral,
-    Persistent(PathBuf),
-}
-
-impl Pins {
-    pub fn ephemeral() -> Self {
-        tracing::warn!(
-            "electrum certificate pins are not persisted; trust on first use lasts this session only"
-        );
-        Self {
-            directory: PinDirectory::Ephemeral,
-            memory: Mutex::new(HashMap::new()),
-        }
-    }
-
-    pub fn in_directory(cache_dir: &std::path::Path) -> Result<Self, Error> {
-        let directory = cache_dir.join("electrum-pins");
-        if !directory.try_exists()? {
-            std::fs::create_dir_all(cache_dir)?;
-            urma_io::create_private_directory(&directory)?;
-        }
-        Ok(Self {
-            directory: PinDirectory::Persistent(directory),
-            memory: Mutex::new(HashMap::new()),
-        })
-    }
-
-    pub fn check(&self, key: &str, digest: [u8; 32]) -> Result<(), Error> {
-        let mut memory = match self.memory.lock() {
-            Ok(memory) => memory,
-            Err(poisoned) => {
-                tracing::error!("electrum pin table lock poisoned");
-                poisoned.into_inner()
-            }
-        };
-        let known = match memory.get(key) {
-            Some(pinned) => Some(*pinned),
-            None => self.load(key)?,
-        };
-        match known {
-            Some(pinned) => {
-                ensure!(
-                    pinned == digest,
-                    "electrum server {key} presented a certificate that differs from its pinned certificate; refusing"
-                );
-                memory.insert(key.to_owned(), digest);
-                Ok(())
-            }
-            None => {
-                self.persist(key, digest)?;
-                memory.insert(key.to_owned(), digest);
-                tracing::warn!(
-                    server = key,
-                    pin = hex::encode(digest),
-                    "electrum certificate pinned on first use"
-                );
-                Ok(())
-            }
-        }
-    }
-
-    fn load(&self, key: &str) -> Result<Option<[u8; 32]>, Error> {
-        let PinDirectory::Persistent(directory) = &self.directory else {
-            return Ok(None);
-        };
-        let path = directory.join(format!("{key}.sha256"));
-        if !path.try_exists()? {
-            return Ok(None);
-        }
-        let text = String::from_utf8(urma_io::read_bounded(&path, 128)?)?;
-        let bytes = hex::decode(text.trim())?;
-        Ok(Some(<[u8; 32]>::try_from(bytes.as_slice())?))
-    }
-
-    fn persist(&self, key: &str, digest: [u8; 32]) -> Result<(), Error> {
-        let PinDirectory::Persistent(directory) = &self.directory else {
-            return Ok(());
-        };
-        let path = directory.join(format!("{key}.sha256"));
-        urma_io::write_new(&path, format!("{}\n", hex::encode(digest)).as_bytes())?;
-        Ok(())
-    }
-}
-
-struct Pinned {
-    pins: Arc<Pins>,
-    key: String,
-}
-
-impl ServerCertVerifier for Pinned {
-    fn verify_server_cert(
-        &self,
-        end_entity: &Certificate,
-        _intermediates: &[Certificate],
-        _server_name: &ServerName,
-        _scts: &mut dyn Iterator<Item = &[u8]>,
-        _ocsp_response: &[u8],
-        _now: SystemTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        let digest: [u8; 32] = Sha256::digest(&end_entity.0).into();
-        match self.pins.check(&self.key, digest) {
-            Ok(()) => Ok(ServerCertVerified::assertion()),
-            Err(error) => {
-                tracing::error!(server = %self.key, %error, "electrum certificate rejected");
-                Err(rustls::Error::General(error.to_string()))
-            }
-        }
-    }
-
-    fn request_scts(&self) -> bool {
-        false
-    }
-}
 
 enum Stream {
     Plain(TcpStream),
@@ -610,6 +486,17 @@ impl Electrum {
                 "electrum servers do not serve {other}"
             ))),
         }
+    }
+}
+
+impl Electrum {
+    pub fn probe(&self, chain: Chain, method: &str, params: Value) -> Result<Value, Error> {
+        ensure!(
+            config::ELECTRUM_PROBE_METHODS.contains(&method),
+            "{method} is not a read-only electrum probe"
+        );
+        let timeout = config::method_timeout("addressutxos");
+        self.session(chain, |session| session.request(method, params, timeout))
     }
 }
 

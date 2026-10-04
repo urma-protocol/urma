@@ -121,6 +121,13 @@ pub const RPC_GATEWAY_WINDOW_REQUESTS: u8 = 5;
 pub const ELECTRUM_PROTOCOL: &str = "1.4";
 pub const ELECTRUM_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const ELECTRUM_MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+pub const ELECTRUM_PROBE_METHODS: [&str; 5] = [
+    "server.features",
+    "blockchain.transaction.id_from_pos",
+    "blockchain.transaction.get",
+    "blockchain.scripthash.get_balance",
+    "blockchain.scripthash.listunspent",
+];
 
 pub fn method_timeout(method: &str) -> std::time::Duration {
     match method {
