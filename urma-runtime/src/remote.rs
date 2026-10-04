@@ -17,12 +17,26 @@ use urma_chain::{
 };
 
 pub(crate) struct Remote {
-    endpoint: PublicEndpoint,
+    kind: Http,
     source: Mutex<Source>,
 }
 
+#[derive(Clone)]
+enum Http {
+    Rpc(String),
+    Esplora(String),
+}
+
+impl Http {
+    fn url(&self) -> &str {
+        match self {
+            Self::Rpc(url) | Self::Esplora(url) => url,
+        }
+    }
+}
+
 struct Source {
-    endpoint: PublicEndpoint,
+    kind: Http,
     network: NetworkState,
     last_request: Instant,
     retry_at: Instant,
@@ -40,10 +54,19 @@ enum NetworkState {
 impl Remote {
     pub(crate) fn new(endpoint: PublicEndpoint) -> Result<Self, Error> {
         endpoint.validate()?;
+        let kind = match endpoint {
+            PublicEndpoint::Rpc(url) => Http::Rpc(url),
+            PublicEndpoint::Esplora(url) => Http::Esplora(url),
+            PublicEndpoint::Electrum(url) => {
+                return Err(Error::Invalid(format!(
+                    "{url} is an electrum endpoint, not an HTTP source"
+                )));
+            }
+        };
         Ok(Self {
-            endpoint: endpoint.clone(),
+            kind: kind.clone(),
             source: Mutex::new(Source {
-                endpoint,
+                kind,
                 network: NetworkState::Unchecked,
                 last_request: Instant::now(),
                 retry_at: Instant::now(),
@@ -56,7 +79,7 @@ impl Remote {
 
 impl Provider for Remote {
     fn label(&self) -> String {
-        self.endpoint.url().to_owned()
+        self.kind.url().to_owned()
     }
 
     fn evidence(&self) -> Evidence {
@@ -64,16 +87,16 @@ impl Provider for Remote {
     }
 
     fn block_encoding(&self) -> BlockEncoding {
-        match self.endpoint {
-            PublicEndpoint::Rpc(_) => BlockEncoding::Core,
-            PublicEndpoint::Esplora(_) => BlockEncoding::Esplora,
+        match self.kind {
+            Http::Rpc(_) => BlockEncoding::Core,
+            Http::Esplora(_) => BlockEncoding::Esplora,
         }
     }
 
     fn supports(&self, method: &str) -> bool {
-        match self.endpoint {
-            PublicEndpoint::Rpc(_) => method != "addressutxos",
-            PublicEndpoint::Esplora(_) => method != "testmempoolaccept",
+        match self.kind {
+            Http::Rpc(_) => method != "addressutxos",
+            Http::Esplora(_) => method != "testmempoolaccept",
         }
     }
 
@@ -81,7 +104,7 @@ impl Provider for Remote {
         let mut source = match self.source.lock() {
             Ok(source) => source,
             Err(poisoned) => {
-                tracing::error!(endpoint = %self.endpoint.url(), "public source lock poisoned");
+                tracing::error!(endpoint = %self.kind.url(), "public source lock poisoned");
                 poisoned.into_inner()
             }
         };
@@ -131,7 +154,7 @@ impl Source {
     }
 
     fn reserve_request(&mut self) -> Result<(), Error> {
-        if self.endpoint.url().contains(".gateway.tatum.io") {
+        if self.kind.url().contains(".gateway.tatum.io") {
             let elapsed = self.window_start.elapsed();
             if elapsed >= config::RPC_GATEWAY_WINDOW {
                 self.window_start = Instant::now();
@@ -151,9 +174,9 @@ impl Source {
     }
 
     fn request_unchecked(&self, method: &str, args: &[Value]) -> Result<Value, Error> {
-        match &self.endpoint {
-            PublicEndpoint::Esplora(url) => esplora::call(url, method, args),
-            PublicEndpoint::Rpc(url) => {
+        match &self.kind {
+            Http::Esplora(url) => esplora::call(url, method, args),
+            Http::Rpc(url) => {
                 let bytes = request(
                     minreq::post(url)
                         .with_header("Content-Type", "application/json")

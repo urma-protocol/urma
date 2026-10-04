@@ -43,6 +43,7 @@ pub enum Error {
     ProofOfWork(bitcoin::block::ValidationError),
     Rpc(bitcoincore_rpc::Error),
     Http(minreq::Error),
+    Tls(rustls::Error),
     Persist(tempfile::PersistError),
     Ip(std::net::AddrParseError),
 }
@@ -93,6 +94,7 @@ impl Display for Error {
             Self::ProofOfWork(cause) => Display::fmt(cause, formatter),
             Self::Rpc(cause) => Display::fmt(cause, formatter),
             Self::Http(cause) => Display::fmt(cause, formatter),
+            Self::Tls(cause) => Display::fmt(cause, formatter),
             Self::Persist(cause) => Display::fmt(cause, formatter),
             Self::Ip(cause) => Display::fmt(cause, formatter),
         }
@@ -135,6 +137,7 @@ impl std::error::Error for Error {
             Self::ProofOfWork(cause) => Some(cause),
             Self::Rpc(cause) => Some(cause),
             Self::Http(cause) => Some(cause),
+            Self::Tls(cause) => Some(cause),
             Self::Persist(cause) => Some(cause),
             Self::Ip(cause) => Some(cause),
             Self::Context { cause, .. } => Some(cause.as_ref()),
@@ -286,6 +289,11 @@ impl From<bitcoincore_rpc::Error> for Error {
 impl From<minreq::Error> for Error {
     fn from(error: minreq::Error) -> Self {
         Self::Http(error)
+    }
+}
+impl From<rustls::Error> for Error {
+    fn from(error: rustls::Error) -> Self {
+        Self::Tls(error)
     }
 }
 impl From<tempfile::PersistError> for Error {

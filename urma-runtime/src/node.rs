@@ -1,8 +1,10 @@
 use crate::config;
+#[cfg(not(target_arch = "wasm32"))]
+use crate::electrum::Pins;
 use crate::error::{Context, Error, ensure};
 use crate::{
     endpoints::{self, PublicEndpoint},
-    remote::Remote,
+    providers,
     transport::{BlockEncoding, Evidence, Provider, Router},
 };
 use bitcoin::{Transaction, Txid};
@@ -84,15 +86,20 @@ impl Node {
         Self::with_public_sources(chain, endpoints::defaults(chain))
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn public_in(chain: Chain, cache_dir: &std::path::Path) -> Result<Self, Error> {
+        let pins = std::sync::Arc::new(Pins::in_directory(cache_dir)?);
+        Self::with_providers(
+            chain,
+            providers::assemble(chain, endpoints::defaults(chain), pins)?,
+        )
+    }
+
     pub fn with_public_sources(
         chain: Chain,
         endpoints: Vec<PublicEndpoint>,
     ) -> Result<Self, Error> {
-        let mut providers: Vec<Box<dyn Provider>> = Vec::new();
-        for endpoint in endpoints {
-            providers.push(Box::new(Remote::new(endpoint)?));
-        }
-        Self::with_providers(chain, providers)
+        Self::with_providers(chain, providers::ephemeral(chain, endpoints)?)
     }
 
     pub fn with_providers(chain: Chain, providers: Vec<Box<dyn Provider>>) -> Result<Self, Error> {

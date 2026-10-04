@@ -118,6 +118,9 @@ pub const PROVIDER_RETRY_MAX: std::time::Duration = std::time::Duration::from_se
 pub const PROVIDER_PACING: std::time::Duration = std::time::Duration::from_millis(300);
 pub const RPC_GATEWAY_WINDOW: std::time::Duration = std::time::Duration::from_secs(60);
 pub const RPC_GATEWAY_WINDOW_REQUESTS: u8 = 5;
+pub const ELECTRUM_PROTOCOL: &str = "1.4";
+pub const ELECTRUM_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+pub const ELECTRUM_MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 
 pub fn method_timeout(method: &str) -> std::time::Duration {
     match method {

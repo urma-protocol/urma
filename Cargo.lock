@@ -1669,6 +1669,7 @@ dependencies = [
  "hex",
  "minreq",
  "rand",
+ "rustls",
  "serde",
  "serde_json",
  "sha2",

@@ -16,8 +16,11 @@ mod disk_order;
 pub mod disk_plan;
 pub mod disk_publish;
 mod disk_writer;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod electrum;
 pub mod endpoints;
 mod esplora;
+mod providers;
 mod remote;
 pub mod transport;
 
