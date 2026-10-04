@@ -1,5 +1,6 @@
 use crate::config;
 use crate::error::{Context, Error, ensure};
+use crate::light::LightSync;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::pinning::Pins;
 use crate::{
@@ -30,6 +31,7 @@ pub struct NodeConfig {
 pub struct Node {
     chain: Chain,
     backend: Backend,
+    light: providers::LightClient,
 }
 
 enum Backend {
@@ -83,6 +85,7 @@ impl Node {
         let node = Self {
             chain: config.chain,
             backend: Backend::Local(client),
+            light: providers::LightClient::Absent,
         };
         node.verify_network()?;
         Ok(node)
@@ -96,10 +99,20 @@ impl Node {
     pub fn public_in(chain: Chain, cache_dir: &std::path::Path) -> Result<Self, Error> {
         let pins = std::sync::Arc::new(Pins::in_directory(cache_dir)?);
         let light = providers::light_clients(chain, cache_dir)?;
-        Self::with_providers(
+        let mut node = Self::with_providers(
             chain,
-            providers::assemble(endpoints::defaults(chain), pins, light)?,
-        )
+            providers::assemble(endpoints::defaults(chain), pins, &light)?,
+        )?;
+        node.light = light;
+        Ok(node)
+    }
+
+    pub fn light_client_progress(&self) -> LightSync {
+        self.light.state()
+    }
+
+    pub fn warm_light_client(&self) -> Result<(), Error> {
+        self.light.warm()
     }
 
     pub fn with_public_sources(
@@ -115,6 +128,7 @@ impl Node {
         let node = Self {
             chain,
             backend: Backend::Routed(router),
+            light: providers::LightClient::Absent,
         };
         node.verify_network()?;
         Ok(node)

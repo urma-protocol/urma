@@ -39,6 +39,7 @@ pub mod container;
 pub mod error;
 mod http;
 pub mod journal;
+pub mod light;
 pub mod litecoin;
 pub mod multipart;
 pub mod relay;

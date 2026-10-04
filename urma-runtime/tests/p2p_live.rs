@@ -11,6 +11,7 @@ fn prove(chain: Chain) {
     assert_eq!(provider.evidence(), Evidence::LightClientInclusion);
     assert_eq!(provider.block_encoding(), BlockEncoding::Esplora);
     assert!(!provider.supports("getrawtransaction"));
+    provider.warm().unwrap();
     while !provider.synced() {
         assert!(
             started.elapsed() < Duration::from_secs(600),

@@ -1,5 +1,6 @@
 use crate::config::{P2P_BLOCK_TIMEOUT_SECS, P2P_TIP_REFRESH_SECS};
 use crate::error::{Context, Error, ensure};
+use crate::light::{LightSync, Progress};
 use crate::p2p::blocks::BlockCache;
 use crate::p2p::headers::HeaderChain;
 use crate::p2p::worker::{self, Command, Freshness, Shared, Status, locked};
@@ -10,22 +11,18 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::thread::JoinHandle;
 use std::time::Duration;
 use urma_chain::observation::Chain;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Progress {
-    pub headers_synced: u64,
-    pub headers_target: u64,
-    pub peers_connected: usize,
+enum Engine {
+    Cold,
+    Running(SyncSender<Command>),
 }
 
 pub struct P2pProvider {
     chain: Chain,
     shared: Arc<Shared>,
-    commands: Mutex<SyncSender<Command>>,
-    _worker: JoinHandle<()>,
+    engine: Mutex<Engine>,
 }
 
 impl P2pProvider {
@@ -43,17 +40,34 @@ impl P2pProvider {
             }),
             stop: AtomicBool::new(false),
         });
-        let (sender, receiver) = mpsc::sync_channel(16);
-        let background = shared.clone();
-        let worker = std::thread::Builder::new()
-            .name("urma-p2p".into())
-            .spawn(move || worker::run(background, receiver))?;
         Ok(Self {
             chain,
             shared,
-            commands: Mutex::new(sender),
-            _worker: worker,
+            engine: Mutex::new(Engine::Cold),
         })
+    }
+
+    pub fn warm(&self) -> Result<(), Error> {
+        let mut engine = locked(&self.engine, "engine");
+        match &*engine {
+            Engine::Running(_commands) => return Ok(()),
+            Engine::Cold => (),
+        }
+        let (sender, receiver) = mpsc::sync_channel(16);
+        let background = self.shared.clone();
+        std::thread::Builder::new()
+            .name("urma-p2p".into())
+            .spawn(move || worker::run(background, receiver))?;
+        *engine = Engine::Running(sender);
+        tracing::debug!(chain = self.chain.label(), "light client worker started");
+        Ok(())
+    }
+
+    fn ignite(&self) {
+        match self.warm() {
+            Ok(()) => (),
+            Err(error) => tracing::warn!(%error, "light client worker could not start"),
+        }
     }
 
     pub fn progress(&self) -> Progress {
@@ -63,6 +77,15 @@ impl P2pProvider {
             headers_synced: headers.synced_count(),
             headers_target: status.target.max(headers.tip_height()) - headers.start_height(),
             peers_connected: status.peers,
+            synced: status.synced,
+        }
+    }
+
+    pub fn state(&self) -> LightSync {
+        let progress = self.progress();
+        match &*locked(&self.engine, "engine") {
+            Engine::Cold => LightSync::Cold(progress),
+            Engine::Running(_commands) => LightSync::Running(progress),
         }
     }
 
@@ -71,7 +94,14 @@ impl P2pProvider {
     }
 
     fn command(&self, command: Command) -> Result<(), Error> {
-        let sender = locked(&self.commands, "commands").clone();
+        let sender = match &*locked(&self.engine, "engine") {
+            Engine::Cold => {
+                return Err(Error::Unsupported(
+                    "light client worker has not been started".into(),
+                ));
+            }
+            Engine::Running(sender) => sender.clone(),
+        };
         sender
             .send(command)
             .map_err(|error| Error::Unsupported(format!("light client worker stopped: {error}")))
@@ -180,10 +210,14 @@ impl Provider for P2pProvider {
     }
 
     fn supports(&self, method: &str) -> bool {
-        matches!(
-            method,
-            "getblockchaininfo" | "getblockhash" | "getblockheader" | "getblock"
-        ) && self.synced()
+        match method {
+            "getblock" | "getblockheader" => {
+                self.ignite();
+                self.synced()
+            }
+            "getblockchaininfo" | "getblockhash" => self.synced(),
+            _other => false,
+        }
     }
 
     fn call(&self, chain: Chain, method: &str, args: &[Value]) -> Result<Value, Error> {
@@ -201,6 +235,28 @@ impl Provider for P2pProvider {
                 "the peer-to-peer light client does not serve {other}"
             ))),
         }
+    }
+}
+
+impl Provider for Arc<P2pProvider> {
+    fn label(&self) -> String {
+        P2pProvider::label(self)
+    }
+
+    fn evidence(&self) -> Evidence {
+        P2pProvider::evidence(self)
+    }
+
+    fn block_encoding(&self) -> BlockEncoding {
+        P2pProvider::block_encoding(self)
+    }
+
+    fn supports(&self, method: &str) -> bool {
+        P2pProvider::supports(self, method)
+    }
+
+    fn call(&self, chain: Chain, method: &str, args: &[Value]) -> Result<Value, Error> {
+        P2pProvider::call(self, chain, method, args)
     }
 }
 
