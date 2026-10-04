@@ -47,6 +47,13 @@ pub struct Utxo {
     pub height: u64,
 }
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct Spendable {
+    pub outputs: Vec<Utxo>,
+    pub reported: usize,
+    pub verified: bool,
+}
+
 pub struct Observed {
     pub value: Value,
     pub provider: String,
@@ -395,36 +402,64 @@ impl Node {
         Ok(outputs)
     }
 
-    pub fn available_utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
-        let expected = hex::encode(urma_wallet::signing::script(signer)?.as_bytes());
-        let mut available = Vec::new();
-        for output in self.utxos(signer)? {
-            let unspent = self.call(
-                "gettxout",
-                &[json!(output.txid), json!(output.vout), json!(true)],
-            )?;
-            if unspent.is_null() {
-                continue;
-            }
-            let confirmations = config::confirmations(&unspent)?;
-            if confirmations < 1 || (unspent["coinbase"] == true && confirmations < 100) {
-                continue;
-            }
-            ensure!(
-                unspent["scriptPubKey"]["hex"] == expected,
-                "live funding script disagrees with identity"
-            );
-            let amount = bitcoin::Amount::from_str_in(
-                &unspent["value"].to_string(),
-                bitcoin::Denomination::Bitcoin,
-            )?;
-            ensure!(
-                amount.to_sat() == output.value,
-                "live funding value disagrees with UTXO scan"
-            );
-            available.push(output);
+    fn verified_output(&self, output: &Utxo, expected: &str) -> Result<bool, Error> {
+        let unspent = self.call(
+            "gettxout",
+            &[json!(output.txid), json!(output.vout), json!(true)],
+        )?;
+        if unspent.is_null() {
+            return Ok(false);
         }
-        Ok(available)
+        let confirmations = config::confirmations(&unspent)?;
+        if confirmations < 1 || (unspent["coinbase"] == true && confirmations < 100) {
+            return Ok(false);
+        }
+        ensure!(
+            unspent["scriptPubKey"]["hex"] == expected,
+            "live funding script disagrees with identity"
+        );
+        let amount = bitcoin::Amount::from_str_in(
+            &unspent["value"].to_string(),
+            bitcoin::Denomination::Bitcoin,
+        )?;
+        ensure!(
+            amount.to_sat() == output.value,
+            "live funding value disagrees with UTXO scan"
+        );
+        Ok(true)
+    }
+
+    pub fn spendable(&self, signer: &impl IdentitySigner) -> Result<Spendable, Error> {
+        let expected = hex::encode(urma_wallet::signing::script(signer)?.as_bytes());
+        let outputs = self.utxos(signer)?;
+        let reported = outputs.len();
+        if reported > config::WALLET_VERIFY_OUTPUTS {
+            tracing::warn!(
+                reported,
+                bound = config::WALLET_VERIFY_OUTPUTS,
+                "spendable set exceeds the per-output verification bound; summary follows the provider's unspent rows"
+            );
+            return Ok(Spendable {
+                outputs,
+                reported,
+                verified: false,
+            });
+        }
+        let mut available = Vec::new();
+        for output in outputs {
+            if self.verified_output(&output, &expected)? {
+                available.push(output);
+            }
+        }
+        Ok(Spendable {
+            outputs: available,
+            reported,
+            verified: true,
+        })
+    }
+
+    pub fn available_utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
+        Ok(self.spendable(signer)?.outputs)
     }
 
     pub fn select_funding(
@@ -432,8 +467,9 @@ impl Node {
         signer: &impl IdentitySigner,
         minimum: u64,
     ) -> Result<Funding, Error> {
-        for output in self.available_utxos(signer)? {
-            if output.value < minimum {
+        let expected = hex::encode(urma_wallet::signing::script(signer)?.as_bytes());
+        for output in self.utxos(signer)? {
+            if output.value < minimum || !self.verified_output(&output, &expected)? {
                 continue;
             }
             let block = self.call("getblockhash", &[json!(output.height)])?;

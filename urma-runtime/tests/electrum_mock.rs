@@ -31,6 +31,8 @@ use urma_runtime::{
 struct Fixture {
     funding: Transaction,
     header: Header,
+    signer: Keypair,
+    flood: AtomicBool,
 }
 
 impl Fixture {
@@ -56,6 +58,10 @@ impl Fixture {
                     value: Amount::from_sat(5_000),
                     script_pubkey: urma_wallet::signing::script(&signer).unwrap(),
                 },
+                TxOut {
+                    value: Amount::from_sat(1_000),
+                    script_pubkey: urma_wallet::signing::script(&signer).unwrap(),
+                },
             ],
         };
         let header = Header {
@@ -68,7 +74,26 @@ impl Fixture {
             bits: CompactTarget::from_consensus(0x207fffff),
             nonce: 1,
         };
-        Self { funding, header }
+        Self {
+            funding,
+            header,
+            signer,
+            flood: AtomicBool::new(false),
+        }
+    }
+
+    fn unspent_rows(&self) -> Value {
+        let txid = self.funding.compute_txid().to_string();
+        if self.flood.load(Ordering::Acquire) {
+            let rows: Vec<Value> = (0..65)
+                .map(|index| json!({"tx_hash":txid,"tx_pos":index,"height":1,"value":1_000}))
+                .collect();
+            return Value::Array(rows);
+        }
+        json!([
+            {"tx_hash":txid,"tx_pos":0,"height":1,"value":100_000_000},
+            {"tx_hash":txid,"tx_pos":1,"height":1,"value":5_000},
+        ])
     }
 
     fn address(&self) -> String {
@@ -113,7 +138,7 @@ impl Fixture {
                 "message":"No such mempool or blockchain transaction. Use gettransaction for wallet transactions."
             })),
             "blockchain.scripthash.listunspent" if params[0] == json!(self.scripthash()) => {
-                Ok(json!([{"tx_hash":txid,"tx_pos":0,"height":1,"value":100_000_000}]))
+                Ok(self.unspent_rows())
             }
             "blockchain.scripthash.listunspent" => Ok(json!([])),
             "blockchain.transaction.broadcast" => Ok(json!(txid)),
@@ -314,7 +339,7 @@ fn transactions_outputs_and_utxos_map_to_the_node_vocabulary() {
         .call(
             Chain::BitcoinRegtest,
             "gettxout",
-            &[txid.clone(), json!(1), json!(true)],
+            &[txid.clone(), json!(2), json!(true)],
         )
         .unwrap();
     assert!(spent.is_null());
@@ -327,7 +352,10 @@ fn transactions_outputs_and_utxos_map_to_the_node_vocabulary() {
         .unwrap();
     assert_eq!(
         rows,
-        json!([{"txid":txid,"vout":0,"value":100_000_000,"status":{"confirmed":true,"block_height":1}}])
+        json!([
+            {"txid":txid,"vout":0,"value":100_000_000,"status":{"confirmed":true,"block_height":1}},
+            {"txid":txid,"vout":1,"value":5_000,"status":{"confirmed":true,"block_height":1}},
+        ])
     );
     let broadcast = provider
         .call(
@@ -372,6 +400,89 @@ fn node_routes_through_electrum_and_reports_provider_evidence() {
             .contains("no public provider"),
         true
     );
+}
+
+fn count(methods: &[String], name: &str) -> usize {
+    methods.iter().filter(|method| method == &name).count()
+}
+
+#[test]
+fn a_gettxout_sequence_over_one_script_costs_one_listunspent() {
+    let fixture = Arc::new(Fixture::new());
+    let mock = Mock::start(fixture.clone());
+    let provider = mock.provider();
+    let txid = json!(fixture.funding.compute_txid().to_string());
+    for vout in [0, 1, 2] {
+        provider
+            .call(
+                Chain::BitcoinRegtest,
+                "gettxout",
+                &[txid.clone(), json!(vout), json!(true)],
+            )
+            .unwrap();
+    }
+    let methods = mock.methods();
+    assert_eq!(count(&methods, "blockchain.scripthash.listunspent"), 1);
+    assert_eq!(count(&methods, "blockchain.transaction.get"), 3);
+    provider
+        .call(
+            Chain::BitcoinRegtest,
+            "sendrawtransaction",
+            &[json!(hex::encode(serialize(&fixture.funding)))],
+        )
+        .unwrap();
+    provider
+        .call(
+            Chain::BitcoinRegtest,
+            "addressutxos",
+            &[json!(fixture.address())],
+        )
+        .unwrap();
+    assert_eq!(
+        count(&mock.methods(), "blockchain.scripthash.listunspent"),
+        2
+    );
+}
+
+#[test]
+fn funding_selection_verifies_outputs_lazily_in_value_order() {
+    let fixture = Arc::new(Fixture::new());
+    let mock = Mock::start(fixture.clone());
+    let node =
+        Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
+    let funding = node.select_funding(&fixture.signer, 1_000).unwrap();
+    assert_eq!(funding.vout, 1);
+    assert_eq!(funding.prevout().unwrap().1.value.to_sat(), 5_000);
+    let methods = mock.methods();
+    assert_eq!(count(&methods, "blockchain.scripthash.listunspent"), 1);
+    assert_eq!(count(&methods, "blockchain.transaction.get"), 2);
+    let large = node.select_funding(&fixture.signer, 10_000).unwrap();
+    assert_eq!(large.vout, 0);
+    assert!(node.select_funding(&fixture.signer, 200_000_000).is_err());
+}
+
+#[test]
+fn spendable_summary_is_verified_per_output_only_within_the_bound() {
+    let fixture = Arc::new(Fixture::new());
+    let mock = Mock::start(fixture.clone());
+    let node =
+        Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
+    let small = node.spendable(&fixture.signer).unwrap();
+    assert!(small.verified);
+    assert_eq!(small.reported, 2);
+    assert_eq!(small.outputs.len(), 2);
+    assert_eq!(count(&mock.methods(), "blockchain.transaction.get"), 2);
+    drop(node);
+    fixture.flood.store(true, Ordering::Release);
+    let node =
+        Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
+    let before = count(&mock.methods(), "blockchain.transaction.get");
+    let large = node.spendable(&fixture.signer).unwrap();
+    assert!(!large.verified);
+    assert_eq!(large.reported, 65);
+    assert_eq!(large.outputs.len(), 65);
+    assert_eq!(count(&mock.methods(), "blockchain.transaction.get"), before);
+    assert_eq!(node.available_utxos(&fixture.signer).unwrap().len(), 65);
 }
 
 #[test]

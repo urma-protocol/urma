@@ -104,14 +104,20 @@ pub(crate) fn run(command: WalletCommand) -> Result<Value, Error> {
             let vault = access.open()?;
             let signer = vault.keyring().active()?;
             let runtime = node.connect()?;
-            let utxos = runtime.available_utxos(&signer)?;
-            let spendable = utxos.iter().try_fold(0u64, |total, coin| {
+            let spendable = runtime.spendable(&signer)?;
+            let balance = spendable.outputs.iter().try_fold(0u64, |total, coin| {
                 total
                     .checked_add(coin.value)
                     .ok_or_else(|| Error::Capacity("balance overflow".into()))
             })?;
+            let verification = match spendable.verified {
+                true => "each output checked live against the source",
+                false => {
+                    "reported unspents only; the set exceeds the per-output verification bound"
+                }
+            };
             Ok(
-                json!({"author":signer.author().0.to_string(), "chain":node.chain()?, "receive_address":urma_wallet::address::receive_address(&signer, node.chain()?)?, "utxos":utxos, "spendable_confirmed_balance":spendable, "network_verified":true, "broadcast":false}),
+                json!({"author":signer.author().0.to_string(), "chain":node.chain()?, "receive_address":urma_wallet::address::receive_address(&signer, node.chain()?)?, "utxos":spendable.outputs, "spendable_confirmed_balance":balance, "reported_outputs":spendable.reported, "outputs_verified":spendable.verified, "verification":verification, "chain_evidence":runtime.inclusion_evidence(), "providers":runtime.provider_labels(), "network_verified":true, "broadcast":false}),
             )
         }
         WalletCommand::Send {

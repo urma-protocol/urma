@@ -16,7 +16,7 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     net::{TcpStream, ToSocketAddrs},
     sync::{Arc, Mutex},
-    time::Duration,
+    time::{Duration, Instant},
 };
 use urma_chain::{decode as chain_decode, observation::Chain};
 
@@ -61,6 +61,7 @@ impl Write for Stream {
 struct Session {
     stream: BufReader<Stream>,
     next_id: u64,
+    unspent: HashMap<String, (Instant, Vec<Value>)>,
 }
 
 impl Session {
@@ -89,6 +90,7 @@ impl Session {
         Ok(Self {
             stream: BufReader::new(stream),
             next_id: 1,
+            unspent: HashMap::new(),
         })
     }
 
@@ -340,17 +342,23 @@ impl Electrum {
         session: &mut Session,
         script: &bitcoin::Script,
     ) -> Result<Vec<Value>, Error> {
+        let key = scripthash(script);
+        let now = Instant::now();
+        let cached = session.unspent.get(&key);
+        for (fetched, rows) in cached.iter() {
+            if now.duration_since(*fetched) < config::ELECTRUM_UNSPENT_CACHE {
+                tracing::debug!(endpoint = %self.endpoint.url(), rows = rows.len(), "unspent list served from the session cache");
+                return Ok(rows.clone());
+            }
+        }
         let timeout = config::method_timeout("addressutxos");
-        let rows = session.request(
-            "blockchain.scripthash.listunspent",
-            json!([scripthash(script)]),
-            timeout,
-        )?;
+        let rows = session.request("blockchain.scripthash.listunspent", json!([key]), timeout)?;
         let rows = rows.as_array().context("electrum unspent list missing")?;
         ensure!(
             rows.len() <= config::SOURCE_MAX_UTXOS,
             "UTXO client capacity exceeded"
         );
+        session.unspent.insert(key, (now, rows.clone()));
         Ok(rows.clone())
     }
 
@@ -480,6 +488,7 @@ impl Electrum {
             "sendrawtransaction" => {
                 let raw = args.first().context("missing broadcast transaction")?;
                 let timeout = config::method_timeout(method);
+                session.unspent.clear();
                 session.request("blockchain.transaction.broadcast", json!([raw]), timeout)
             }
             other => Err(Error::Unsupported(format!(

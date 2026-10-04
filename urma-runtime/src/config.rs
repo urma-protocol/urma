@@ -122,6 +122,8 @@ pub const LOCAL_PROVIDER_LABEL: &str = "local validating node";
 pub const ELECTRUM_PROTOCOL: &str = "1.4";
 pub const ELECTRUM_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 pub const ELECTRUM_MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
+pub const ELECTRUM_UNSPENT_CACHE: std::time::Duration = std::time::Duration::from_secs(30);
+pub const WALLET_VERIFY_OUTPUTS: usize = 64;
 pub const ELECTRUM_PROBE_METHODS: [&str; 5] = [
     "server.features",
     "blockchain.transaction.id_from_pos",
