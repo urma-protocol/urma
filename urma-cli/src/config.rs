@@ -272,7 +272,7 @@ pub(crate) fn connection(chain: Chain) -> Result<Connection, Error> {
             rpc_url,
             cookie_file,
         })),
-        (None, None) => Ok(Connection::Public),
+        (None, None) => Ok(Connection::Public(data_directory()?.join("urma"))),
         (Some(rpc), None) => Err(Error::Invalid(format!(
             "local node {rpc} needs node_auth_file in config"
         ))),
@@ -304,7 +304,7 @@ pub(crate) fn credentials() -> Result<(PathBuf, PathBuf), Error> {
 
 pub(crate) enum Connection {
     Local(NodeConfig),
-    Public,
+    Public(PathBuf),
 }
 
 fn select<T>(first: Option<T>, second: Option<T>) -> Option<T> {
@@ -333,10 +333,10 @@ pub(crate) fn git_limits() -> Result<urma_git::inventory::Limits, Error> {
 pub(crate) fn expert_node() -> Result<NodeConfig, Error> {
     match connection(chain(false)?)? {
         Connection::Local(node) => Ok(node),
-        Connection::Public => Err(Error::Missing(
-            "this expert command needs a local node configured with rpc_url and node_auth_file"
-                .into(),
-        )),
+        Connection::Public(cache_dir) => Err(Error::Missing(format!(
+            "this expert command needs a local node configured with rpc_url and node_auth_file; public mode would pin into {}",
+            cache_dir.display()
+        ))),
     }
 }
 
