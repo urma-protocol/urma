@@ -143,6 +143,49 @@ pub const PUBLICATION_PENDING_COMMITS: usize = 24;
 pub const PUBLICATION_COMMIT_VBYTES: u64 = 90_000;
 pub const LITECOIN_DUST_RELAY_FEE: u64 = 30_000;
 
+pub const P2P_PROTOCOL_VERSION: u32 = 70015;
+pub const P2P_USER_AGENT: &str = "/urma:0.2.2/";
+pub const P2P_MIN_PEERS: usize = 4;
+pub const P2P_MAX_PEERS: usize = 8;
+pub const P2P_CONNECT_ATTEMPTS_PER_ROUND: usize = 16;
+pub const P2P_CONNECT_TIMEOUT_SECS: u64 = 5;
+pub const P2P_HANDSHAKE_TIMEOUT_SECS: u64 = 15;
+pub const P2P_READ_TIMEOUT_SECS: u64 = 20;
+pub const P2P_BLOCK_TIMEOUT_SECS: u64 = 60;
+pub const P2P_MAX_PAYLOAD_BYTES: usize = 8_000_000;
+pub const P2P_MAX_HEADERS_PER_MESSAGE: usize = 2000;
+pub const P2P_MAX_INVENTORY: usize = 50_000;
+pub const P2P_MAX_ADDRESSES: usize = 1000;
+pub const P2P_ADDRESS_POOL: usize = 1000;
+pub const P2P_HEADER_CACHE_MAX: usize = 1_000_000;
+pub const P2P_HEADER_CACHE_REVALIDATE: usize = 2016;
+pub const P2P_BLOCK_CACHE_BYTES: usize = 64 * 1024 * 1024;
+pub const P2P_TIP_REFRESH_SECS: u64 = 20;
+pub const P2P_MAX_FUTURE_SECS: u32 = 7200;
+pub const P2P_MEDIAN_TIME_SPAN: usize = 11;
+pub const P2P_LIMITED_PEER_DEPTH: u64 = 288;
+pub const P2P_IDLE_POLL_MILLIS: u64 = 250;
+pub const P2P_LOCATOR_LINEAR: usize = 10;
+pub const P2P_LITECOIN_NODE_MWEB: u64 = 1 << 24;
+
+pub struct Checkpoint {
+    pub height: u64,
+    pub header: &'static str,
+    pub next_hash: &'static str,
+}
+
+pub const LITECOIN_MAINNET_CHECKPOINT: Checkpoint = Checkpoint {
+    height: 3_187_295,
+    header: "14000020931d31f868aaaad00ab3d07bfb30e1adf261e843ea1efe367ea85ed4d50b0beccbee28d90e5dc1495e97786a8dc63e6b741e1ca8ef6226323ed5039c5d74fa7e73d7bd6adda82e1930924a09",
+    next_hash: "17976eb8639d9274e2f0b96314aa4cd259c976eecd7100c1c3bbf7c2ad31ed7a",
+};
+
+pub const LITECOIN_TESTNET_CHECKPOINT: Checkpoint = Checkpoint {
+    height: 4_904_927,
+    header: "000000206a866190a6c8e920929c51bc5b3318eb8fb68bd411ae365a5d922f33059816bc6c23b147db3e44528fd06f87e19e876788df08f5323a1ad46f2c863910ef02762125c06affff0f1ec0003c2f",
+    next_hash: "ed607657d250aa0a76e6a6e6c451bfa313f93c727a0bb96ba371e9007200e843",
+};
+
 pub fn publication_return(chain: urma_chain::observation::Chain) -> u64 {
     use urma_chain::observation::Chain;
     match chain {
