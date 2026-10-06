@@ -3,10 +3,11 @@ use crate::error::{Context, Error, ensure};
 use crate::light::LightSync;
 #[cfg(not(target_arch = "wasm32"))]
 use crate::pinning::Pins;
+use crate::transaction::decode;
 use crate::{
     endpoints::{self, PublicEndpoint},
     providers,
-    transport::{BlockEncoding, Evidence, Provider, Router, Standing},
+    transport::{BlockEncoding, Evidence, Preference, Provider, Router, Standing},
 };
 use bitcoin::{Transaction, Txid};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
@@ -37,7 +38,12 @@ pub struct Node {
     chain: Chain,
     backend: Backend,
     light: providers::LightClient,
-    acknowledged: Mutex<HashMap<Txid, Instant>>,
+    acknowledged: Mutex<HashMap<Txid, Acknowledged>>,
+}
+
+struct Acknowledged {
+    when: Instant,
+    provider: String,
 }
 
 enum Backend {
@@ -263,16 +269,18 @@ impl Node {
         match &self.backend {
             Backend::Local(client) => Ok(client.call(method, args)?),
             Backend::Routed(router) => {
-                let value = router.call(self.chain, method, args)?;
-                if method == "sendrawtransaction" {
-                    self.remember_acknowledged(&value)?;
+                if method != "sendrawtransaction" {
+                    return router.call(self.chain, method, args);
                 }
-                Ok(value)
+                let preference = self.parent_provider(args)?;
+                let answer = router.answer_preferring(&preference, self.chain, method, args)?;
+                self.remember_acknowledged(&answer.value, answer.label)?;
+                Ok(answer.value)
             }
         }
     }
 
-    fn acknowledged(&self) -> MutexGuard<'_, HashMap<Txid, Instant>> {
+    fn acknowledged(&self) -> MutexGuard<'_, HashMap<Txid, Acknowledged>> {
         match self.acknowledged.lock() {
             Ok(acknowledged) => acknowledged,
             Err(poisoned) => {
@@ -282,26 +290,52 @@ impl Node {
         }
     }
 
-    fn remember_acknowledged(&self, value: &Value) -> Result<(), Error> {
+    fn parent_provider(&self, args: &[Value]) -> Result<Preference, Error> {
+        let raw = args
+            .first()
+            .context("broadcast without a transaction")?
+            .as_str()
+            .context("broadcast transaction must be hex")?;
+        let transaction = decode(raw, usize::try_from(config::STANDARD_TX_WEIGHT)? * 2)?;
+        let acknowledged = self.acknowledged();
+        for input in &transaction.input {
+            let Some(parent) = acknowledged.get(&input.previous_output.txid) else {
+                continue;
+            };
+            if parent.when.elapsed() < config::SUBMISSION_ACK_WINDOW {
+                return Ok(Preference::Provider(parent.provider.clone()));
+            }
+        }
+        Ok(Preference::Any)
+    }
+
+    fn remember_acknowledged(&self, value: &Value, provider: String) -> Result<(), Error> {
         let txid: Txid = value
             .as_str()
             .context("broadcast acknowledgment without a txid")?
             .parse()?;
         let now = Instant::now();
         let mut acknowledged = self.acknowledged();
-        acknowledged
-            .retain(|_txid, when| now.duration_since(*when) < config::SUBMISSION_ACK_WINDOW);
-        acknowledged.insert(txid, now);
-        tracing::debug!(%txid, "broadcast acknowledged by a public provider");
+        acknowledged.retain(|_txid, parent| {
+            now.duration_since(parent.when) < config::SUBMISSION_ACK_WINDOW
+        });
+        tracing::debug!(%txid, %provider, "broadcast acknowledged by a public provider");
+        acknowledged.insert(
+            txid,
+            Acknowledged {
+                when: now,
+                provider,
+            },
+        );
         Ok(())
     }
 
     fn recently_acknowledged(&self, txid: Txid) -> bool {
         let acknowledged = self.acknowledged();
-        let Some(when) = acknowledged.get(&txid) else {
+        let Some(parent) = acknowledged.get(&txid) else {
             return false;
         };
-        when.elapsed() < config::SUBMISSION_ACK_WINDOW
+        parent.when.elapsed() < config::SUBMISSION_ACK_WINDOW
     }
 
     pub fn presence_after_submission(&self, txid: Txid) -> Result<Presence, Error> {

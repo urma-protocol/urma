@@ -48,6 +48,12 @@ pub struct Answer {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Preference {
+    Any,
+    Provider(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Standing {
     pub label: String,
     pub evidence: Evidence,
@@ -191,11 +197,34 @@ impl Router {
     }
 
     pub fn answer(&self, chain: Chain, method: &str, args: &[Value]) -> Result<Answer, Error> {
+        self.answer_preferring(&Preference::Any, chain, method, args)
+    }
+
+    pub fn answer_preferring(
+        &self,
+        preference: &Preference,
+        chain: Chain,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Answer, Error> {
         ensure!(
             config::PUBLIC_METHODS.contains(&method),
             "public transport supports chain reads and signed transaction submission only"
         );
-        let candidates = self.candidates(method, Instant::now());
+        let mut candidates = self.candidates(method, Instant::now());
+        match preference {
+            Preference::Provider(label) => {
+                let found = candidates
+                    .iter()
+                    .position(|index| self.slots[*index].provider.label() == *label);
+                for position in found.iter() {
+                    let index = candidates.remove(*position);
+                    candidates.insert(0, index);
+                    tracing::debug!(provider = %label, method, "preferring the provider that acknowledged the parent");
+                }
+            }
+            Preference::Any => (),
+        }
         ensure!(
             !candidates.is_empty(),
             "{method} on {chain:?}: no public provider is available for this method right now; retry shortly or configure a local node"

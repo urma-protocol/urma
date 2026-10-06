@@ -29,6 +29,7 @@ pub struct State {
     pub send_rejection: Option<String>,
     pub send_response_lost: bool,
     pub drop_after_send: bool,
+    pub preflight_lags_parents: bool,
     pub unavailable: bool,
     pub auto_confirm: bool,
     pub reorg: bool,
@@ -178,9 +179,10 @@ fn respond(
                 .map(|(id, _)| id)
                 .collect::<Vec<_>>()
         )),
-        "getrawtransaction" if args[0] == json!(funding.compute_txid()) => {
-            Ok(json!(hex::encode(serialize(funding))))
-        }
+        "getrawtransaction" if args[0] == json!(funding.compute_txid()) => Ok(match args[1] == true {
+            true => json!({"confirmations":100,"blockhash":hash}),
+            false => json!(hex::encode(serialize(funding))),
+        }),
         "getrawtransaction" => {
             if state.unavailable {
                 return Err((-28, "fixture source unavailable".into()));
@@ -199,10 +201,13 @@ fn respond(
             }
         }
         "testmempoolaccept" => {
-            let id = txid(args[0][0].as_str().unwrap());
-            Ok(match &state.preflight {
-                Some(reason) => json!([{"txid":id,"allowed":false,"reject-reason":reason}]),
-                None => json!([{"txid":id,"allowed":true}]),
+            let raw = args[0][0].as_str().unwrap();
+            let id = txid(raw);
+            let lagging = state.preflight_lags_parents && parent_unconfirmed(state, raw);
+            Ok(match (&state.preflight, lagging) {
+                (Some(reason), _) => json!([{"txid":id,"allowed":false,"reject-reason":reason}]),
+                (None, true) => json!([{"txid":id,"allowed":false,"reject-reason":"missing-inputs"}]),
+                (None, false) => json!([{"txid":id,"allowed":true}]),
             })
         }
         "sendrawtransaction" => {
@@ -224,4 +229,14 @@ fn respond(
         }
         other => panic!("unexpected RPC {other}"),
     }
+}
+
+fn parent_unconfirmed(state: &State, raw: &str) -> bool {
+    let transaction: Transaction = deserialize(&hex::decode(raw).unwrap()).unwrap();
+    transaction.input.iter().any(|input| {
+        state
+            .transactions
+            .get(&input.previous_output.txid.to_string())
+            == Some(&false)
+    })
 }

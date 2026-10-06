@@ -9,6 +9,44 @@ use urma_runtime::{
 };
 
 #[test]
+fn a_child_is_submitted_even_when_the_preflight_node_lags_its_parent() {
+    let directory = tempfile::tempdir().unwrap();
+    let mock = Mock::new(directory.path());
+    let plan = prepare_atomic(
+        &mock.node(),
+        &mock.signer,
+        &PublicRecord::Post("fixture".into()),
+        PlanLimits {
+            fee_rate: 1,
+            max_fee: 10_000,
+            max_records: 1,
+        },
+    )
+    .unwrap();
+    mock.state.lock().unwrap().preflight_lags_parents = true;
+    let journal = directory.path().join("progress.json");
+    let report = publish(&mock.node(), &plan, &plan.id().unwrap(), &journal).unwrap();
+    assert_eq!(report.transactions.len(), 2);
+    assert!(
+        report
+            .transactions
+            .iter()
+            .all(|status| matches!(status.presence, Presence::Mempool))
+    );
+    assert_eq!(
+        report.blocked_reason,
+        "awaiting confirmations for commit and reveal"
+    );
+    assert_eq!(
+        mock.state.lock().unwrap().submissions,
+        [
+            plan.records[0].commit.clone(),
+            plan.records[0].reveal.clone()
+        ]
+    );
+}
+
+#[test]
 fn an_unconfirmed_answer_is_mempool_presence_without_a_second_opinion() {
     let directory = tempfile::tempdir().unwrap();
     let mock = Mock::new(directory.path());

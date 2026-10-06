@@ -78,16 +78,20 @@ pub fn test_accept(node: &Node, raw: &str) -> Result<MempoolCheck, Error> {
 }
 
 pub(crate) fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
+    let transaction = decode(raw, usize::try_from(config::STANDARD_TX_WEIGHT)? * 2)?;
+    let txid = transaction.compute_txid();
+    let parent_pending = parent_in_mempool(node, &transaction)?;
     match test_accept(node, raw)? {
         MempoolCheck::Allowed => (),
+        MempoolCheck::Rejected(reason) if parent_pending && missing_inputs(&reason) => {
+            tracing::warn!(%reason, %txid, "preflight node has not seen the unconfirmed parent yet; submitting where the parent is known");
+        }
         MempoolCheck::Rejected(reason) => return Ok(reason),
         MempoolCheck::Unavailable(reason) => {
             tracing::warn!(%reason, "broadcast has no node mempool preflight evidence");
             tracing::debug!(target: "urma_progress", "Endpoint does not provide testmempoolaccept; acceptance is unverified until submission.");
         }
     }
-    let transaction = decode(raw, usize::try_from(config::STANDARD_TX_WEIGHT)? * 2)?;
-    let txid = transaction.compute_txid();
     match node.call("sendrawtransaction", &[json!(raw)]) {
         Ok(result) => ensure!(
             result == json!(txid),
@@ -100,6 +104,10 @@ pub(crate) fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
                     if temporary_rejection(&error) {
                         return Ok("mempool full".into());
                     }
+                    if parent_pending {
+                        tracing::warn!(%error, %txid, "child refused while its parent is still propagating; retrying on the next pass");
+                        return Ok(config::AWAITING_PARENT.into());
+                    }
                     return Err(error);
                 }
                 Presence::Mempool | Presence::Confirmed { .. } => {}
@@ -107,6 +115,21 @@ pub(crate) fn broadcast(node: &Node, raw: &str) -> Result<String, Error> {
         }
     }
     Ok(String::new())
+}
+
+fn parent_in_mempool(node: &Node, transaction: &bitcoin::Transaction) -> Result<bool, Error> {
+    let mut pending = false;
+    for input in &transaction.input {
+        match node.presence(input.previous_output.txid)? {
+            Presence::Mempool => pending = true,
+            Presence::Confirmed { .. } | Presence::Missing => (),
+        }
+    }
+    Ok(pending)
+}
+
+fn missing_inputs(reason: &str) -> bool {
+    config::MISSING_INPUT_REJECTIONS.contains(&reason)
 }
 
 fn temporary_rejection(error: &Error) -> bool {
