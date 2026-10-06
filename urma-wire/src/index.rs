@@ -1,7 +1,10 @@
+use crate::config::FETCH_WORKERS;
 use crate::{Error, SyncError, ensure, reader::Reader};
 use bitcoin::{Block, BlockHash, Transaction};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc;
 use urma_core::{
     envelope,
     format::{PublicRecord, RecordKind},
@@ -80,15 +83,53 @@ impl Index {
     }
 }
 
-pub fn sync<R: Reader>(
+pub fn sync<R: Reader + Sync>(
     reader: &R,
     path: &Path,
     start: u64,
     max_blocks: u64,
-) -> Result<SyncReport, SyncError<R::Error>> {
+) -> Result<(SyncReport, Index), SyncError<R::Error>>
+where
+    R::Error: Send,
+{
     if !(1..=10_000).contains(&max_blocks) {
         return Err(Error::Invalid("max blocks must be 1..10000".into()).into());
     }
+    let mut index = opened(reader, path, start)?;
+    let tip = reader.tip_height().map_err(SyncError::Source)?;
+    let rolled_back = rollback(reader, &mut index, tip)?;
+    if rolled_back > 0 || !path.exists() {
+        index.persist(path)?;
+    }
+    let next = index
+        .start
+        .checked_add(u64::try_from(index.blocks.len()).map_err(Error::from)?)
+        .ok_or_else(|| Error::Capacity("height overflow".into()))?;
+    let heights: Vec<u64> = (next..=tip).take(usize::try_from(max_blocks).map_err(Error::from)?).collect();
+    let fetched = fetch_in_parallel(reader, &heights)?;
+    let scanned = apply_in_order(reader, &mut index, heights.iter().copied().zip(fetched))?;
+    if scanned > 0 {
+        index.persist(path)?;
+    }
+    Ok((
+        SyncReport {
+            scanned,
+            rolled_back,
+            records: index.entries.len(),
+            tip,
+            complete_to_tip: !index.blocks.is_empty()
+                && next
+                    .checked_add(scanned)
+                    .ok_or_else(|| Error::Capacity("height overflow".into()))?
+                    == tip
+                        .checked_add(1)
+                        .ok_or_else(|| Error::Capacity("height overflow".into()))?,
+        },
+        index,
+    ))
+}
+
+fn opened<R: Reader>(reader: &R, path: &Path, start: u64) -> Result<Index, SyncError<R::Error>> {
     let genesis = reader.genesis().map_err(SyncError::Source)?.to_string();
     let mut index = if path.exists() {
         Index::load(path)?
@@ -109,19 +150,80 @@ pub fn sync<R: Reader>(
         index.entries.clear();
         index.format = "URMA-WIRE-INDEX-2".into();
     }
-    let tip = reader.tip_height().map_err(SyncError::Source)?;
-    let rolled_back = rollback(reader, &mut index, tip)?;
-    index.persist(path)?;
-    let next = index
-        .start
-        .checked_add(u64::try_from(index.blocks.len()).map_err(Error::from)?)
-        .ok_or_else(|| Error::Capacity("height overflow".into()))?;
-    let mut scanned = 0;
-    for height in next..=tip {
-        if scanned >= max_blocks {
-            break;
+    Ok(index)
+}
+
+fn fetch_in_parallel<R: Reader + Sync>(
+    reader: &R,
+    heights: &[u64],
+) -> Result<Vec<(Block, BlockHash)>, SyncError<R::Error>>
+where
+    R::Error: Send,
+{
+    let cursor = AtomicUsize::new(0);
+    let failed = AtomicBool::new(false);
+    let (answers, inbox) = mpsc::channel::<(usize, Result<(Block, BlockHash), R::Error>)>();
+    let mut slots: Vec<Option<Result<(Block, BlockHash), R::Error>>> =
+        std::iter::repeat_with(|| None).take(heights.len()).collect();
+    std::thread::scope(|scope| {
+        for _worker in 0..FETCH_WORKERS.min(heights.len()) {
+            let answers = answers.clone();
+            let cursor = &cursor;
+            let failed = &failed;
+            scope.spawn(move || {
+                loop {
+                    if failed.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    let position = cursor.fetch_add(1, Ordering::Relaxed);
+                    let Some(height) = heights.get(position) else {
+                        break;
+                    };
+                    let answer = reader.block(*height);
+                    match &answer {
+                        Ok(_pair) => (),
+                        Err(cause) => {
+                            tracing::warn!(error = %cause, height, "block fetch failed; the batch stops here");
+                            failed.store(true, Ordering::Relaxed);
+                        }
+                    }
+                    match answers.send((position, answer)) {
+                        Ok(()) => (),
+                        Err(cause) => {
+                            tracing::warn!(error = %cause, "batch collector gone; fetch worker stops");
+                            break;
+                        }
+                    }
+                }
+            });
         }
-        let (block, hash) = reader.block(height).map_err(SyncError::Source)?;
+        drop(answers);
+        for (position, answer) in inbox {
+            let Some(slot) = slots.get_mut(position) else {
+                continue;
+            };
+            *slot = Some(answer);
+        }
+    });
+    let mut blocks = Vec::with_capacity(heights.len());
+    for slot in slots {
+        match slot {
+            Some(Ok(pair)) => blocks.push(pair),
+            Some(Err(cause)) => return Err(SyncError::Source(cause)),
+            None => break,
+        }
+    }
+    Ok(blocks)
+}
+
+fn apply_in_order<R: Reader>(
+    reader: &R,
+    index: &mut Index,
+    batch: impl Iterator<Item = (u64, (Block, BlockHash))>,
+) -> Result<u64, SyncError<R::Error>> {
+    let mut scanned = 0;
+    let mut applied: Option<(u64, BlockHash)> = None;
+    for (height, (block, hash)) in batch {
         if block.block_hash() != hash {
             return Err(Error::Invalid(
                 "reader returned a block whose hash differs from its verified hash".into(),
@@ -135,30 +237,20 @@ pub fn sync<R: Reader>(
             }
         }
         let entries = read_entries(reader, &block, height)?;
-        if reader.block_hash(height).map_err(SyncError::Source)? != hash {
-            return Err(Error::Invalid("source reorg during index; retry".into()).into());
-        }
         index.entries.extend(entries);
         index.blocks.push(Checkpoint {
             height,
             hash: hash.to_string(),
         });
-        index.persist(path)?;
+        applied = Some((height, hash));
         scanned += 1;
     }
-    Ok(SyncReport {
-        scanned,
-        rolled_back,
-        records: index.entries.len(),
-        tip,
-        complete_to_tip: !index.blocks.is_empty()
-            && next
-                .checked_add(scanned)
-                .ok_or_else(|| Error::Capacity("height overflow".into()))?
-                == tip
-                    .checked_add(1)
-                    .ok_or_else(|| Error::Capacity("height overflow".into()))?,
-    })
+    for (height, hash) in applied.iter() {
+        if reader.block_hash(*height).map_err(SyncError::Source)? != *hash {
+            return Err(Error::Invalid("source reorg during index; retry".into()).into());
+        }
+    }
+    Ok(scanned)
 }
 
 fn rollback<R: Reader>(

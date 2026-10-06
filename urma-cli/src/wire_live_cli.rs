@@ -98,9 +98,13 @@ pub(crate) fn publish(args: PublishArgs) -> Result<Value, Error> {
 
 pub(crate) fn index(args: IndexArgs) -> Result<Value, Error> {
     let reader = NodeReader(args.node.connect()?);
-    Ok(serde_json::to_value(wire_sync_result(
-        urma_wire::index::sync(&reader, &args.index, args.start_height, args.max_blocks),
-    )?)?)
+    let (report, _index) = wire_sync_result(urma_wire::index::sync(
+        &reader,
+        &args.index,
+        args.start_height,
+        args.max_blocks,
+    ))?;
+    Ok(serde_json::to_value(report)?)
 }
 pub(crate) fn read(command: ReadCommand) -> Result<Value, Error> {
     match command {
