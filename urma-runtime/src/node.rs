@@ -391,18 +391,7 @@ impl Node {
             Err(error) => return Err(error),
         };
         if config::confirmations(&value)? <= 0 {
-            let mempool = self.call("getrawmempool", &[])?;
-            return Ok(
-                if mempool
-                    .as_array()
-                    .context("invalid mempool")?
-                    .contains(&json!(txid))
-                {
-                    Presence::Mempool
-                } else {
-                    Presence::Missing
-                },
-            );
+            return Ok(Presence::Mempool);
         }
         let hash = value["blockhash"]
             .as_str()

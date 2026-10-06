@@ -3,9 +3,27 @@ mod publication_node;
 use publication_node::{Mock, txid};
 use urma_core::format::PublicRecord;
 use urma_runtime::{
+    node::Presence,
     plan::{PlanLimits, PublicationPlan, prepare_atomic},
     publish::publish,
 };
+
+#[test]
+fn an_unconfirmed_answer_is_mempool_presence_without_a_second_opinion() {
+    let directory = tempfile::tempdir().unwrap();
+    let mock = Mock::new(directory.path());
+    let id = "ab".repeat(32);
+    mock.state
+        .lock()
+        .unwrap()
+        .transactions
+        .insert(id.clone(), false);
+    let presence = mock.node().presence(id.parse().unwrap()).unwrap();
+    assert_eq!(presence, Presence::Mempool);
+    let methods = mock.state.lock().unwrap().methods.clone();
+    assert!(methods.iter().any(|method| method == "getrawtransaction"));
+    assert!(!methods.iter().any(|method| method == "getrawmempool"));
+}
 
 #[test]
 fn atomic_mempool_restart_and_confirmation() {
