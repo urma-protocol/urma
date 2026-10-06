@@ -6,7 +6,7 @@ use crate::pinning::Pins;
 use crate::{
     endpoints::{self, PublicEndpoint},
     providers,
-    transport::{BlockEncoding, Evidence, Provider, Router},
+    transport::{BlockEncoding, Evidence, Provider, Router, Standing},
 };
 use bitcoin::{Transaction, Txid};
 use bitcoincore_rpc::{Auth, Client, RpcApi};
@@ -168,6 +168,18 @@ impl Node {
         match &self.backend {
             Backend::Local(_) => vec![config::LOCAL_PROVIDER_LABEL.to_owned()],
             Backend::Routed(router) => router.labels(),
+        }
+    }
+
+    pub fn standings(&self) -> Vec<Standing> {
+        match &self.backend {
+            Backend::Local(_) => vec![Standing {
+                label: config::LOCAL_PROVIDER_LABEL.to_owned(),
+                evidence: Evidence::LocalValidatingNode,
+                failures: 0,
+                blocked_for: std::time::Duration::ZERO,
+            }],
+            Backend::Routed(router) => router.standings(),
         }
     }
 

@@ -47,6 +47,14 @@ pub struct Answer {
     pub evidence: Evidence,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Standing {
+    pub label: String,
+    pub evidence: Evidence,
+    pub failures: u32,
+    pub blocked_for: Duration,
+}
+
 enum Outcome {
     Answered(Answer),
     Absent(String),
@@ -155,6 +163,26 @@ impl Router {
         self.slots
             .iter()
             .map(|slot| slot.provider.label())
+            .collect()
+    }
+
+    pub fn standings(&self) -> Vec<Standing> {
+        let now = Instant::now();
+        self.slots
+            .iter()
+            .map(|slot| {
+                let health = slot.health();
+                Standing {
+                    label: slot.provider.label(),
+                    evidence: slot.provider.evidence(),
+                    failures: health.failures.0,
+                    blocked_for: if health.blocked_until > now {
+                        health.blocked_until - now
+                    } else {
+                        Duration::ZERO
+                    },
+                }
+            })
             .collect()
     }
 
