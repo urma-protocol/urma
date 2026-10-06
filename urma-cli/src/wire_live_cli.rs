@@ -103,6 +103,7 @@ pub(crate) fn index(args: IndexArgs) -> Result<Value, Error> {
         &args.index,
         args.start_height,
         args.max_blocks,
+        |height, tip| tracing::debug!(height, tip, "block indexed"),
     ))?;
     Ok(serde_json::to_value(report)?)
 }

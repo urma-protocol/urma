@@ -1,9 +1,12 @@
 use bitcoin::{Block, BlockHash, Transaction, Txid, hashes::Hash};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use urma_wire::{
     Error, SyncError,
     index::{self, Index},
     reader::Reader,
 };
+
+fn quiet(_height: u64, _tip: u64) {}
 
 struct UnavailableReader;
 
@@ -72,6 +75,7 @@ fn source_failures_retain_the_reader_error() {
         &directory.path().join("wire-index.json"),
         0,
         1,
+        quiet,
     ) {
         Ok(_) => panic!("unavailable source synchronized"),
         Err(error) => error,
@@ -129,8 +133,8 @@ impl Reader for LyingReader {
 
 struct ChainReader {
     blocks: Vec<Block>,
-    hash_calls: std::sync::atomic::AtomicUsize,
-    block_calls: std::sync::atomic::AtomicUsize,
+    hash_calls: AtomicUsize,
+    block_calls: AtomicUsize,
     fail_at: Option<u64>,
     lie_about_tip: bool,
 }
@@ -151,8 +155,8 @@ impl ChainReader {
     fn new(length: u64) -> Self {
         Self {
             blocks: Self::chain(length),
-            hash_calls: std::sync::atomic::AtomicUsize::new(0),
-            block_calls: std::sync::atomic::AtomicUsize::new(0),
+            hash_calls: AtomicUsize::new(0),
+            block_calls: AtomicUsize::new(0),
             fail_at: None,
             lie_about_tip: false,
         }
@@ -168,16 +172,14 @@ impl Reader for ChainReader {
         Ok(u64::try_from(self.blocks.len() - 1).unwrap())
     }
     fn block_hash(&self, height: u64) -> Result<BlockHash, Self::Error> {
-        self.hash_calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.hash_calls.fetch_add(1, Ordering::Relaxed);
         if self.lie_about_tip && height == self.tip_height()? {
             return Ok(BlockHash::all_zeros());
         }
         Ok(self.blocks[usize::try_from(height).unwrap()].block_hash())
     }
     fn block(&self, height: u64) -> Result<(Block, BlockHash), Self::Error> {
-        self.block_calls
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.block_calls.fetch_add(1, Ordering::Relaxed);
         if self.fail_at == Some(height) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
@@ -198,18 +200,29 @@ fn a_batch_is_fetched_in_parallel_applied_in_order_and_checked_once_against_the_
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("chain.json");
     let reader = ChainReader::new(24);
-    let (report, index) = index::sync(&reader, &path, 0, 10).unwrap();
+    let mut reported = Vec::new();
+    let (report, index) = index::sync(&reader, &path, 0, 10, |height, tip| {
+        reported.push((height, tip))
+    })
+    .unwrap();
     assert_eq!(report.scanned, 10);
     assert!(!report.complete_to_tip);
     assert_eq!(index.blocks.len(), 10);
-    assert_eq!(reader.block_calls.load(std::sync::atomic::Ordering::Relaxed), 10);
-    assert_eq!(reader.hash_calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(
+        reported,
+        (0..10).map(|height| (height, 23)).collect::<Vec<_>>()
+    );
+    assert_eq!(reader.block_calls.load(Ordering::Relaxed), 10);
+    assert_eq!(reader.hash_calls.load(Ordering::Relaxed), 1);
     let persisted = Index::load(&path).unwrap();
     for (height, checkpoint) in persisted.blocks.iter().enumerate() {
         assert_eq!(checkpoint.height, u64::try_from(height).unwrap());
-        assert_eq!(checkpoint.hash, reader.blocks[height].block_hash().to_string());
+        assert_eq!(
+            checkpoint.hash,
+            reader.blocks[height].block_hash().to_string()
+        );
     }
-    let (report, index) = index::sync(&reader, &path, 0, 100).unwrap();
+    let (report, index) = index::sync(&reader, &path, 0, 100, quiet).unwrap();
     assert_eq!(report.scanned, 14);
     assert!(report.complete_to_tip);
     assert_eq!(index.blocks.len(), 24);
@@ -217,19 +230,29 @@ fn a_batch_is_fetched_in_parallel_applied_in_order_and_checked_once_against_the_
 }
 
 #[test]
-fn a_failed_fetch_keeps_the_batch_out_of_the_index() {
+fn a_failed_fetch_keeps_only_the_verified_prefix() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("partial.json");
     let mut reader = ChainReader::new(12);
     reader.fail_at = Some(7);
-    let failure = match index::sync(&reader, &path, 0, 12) {
+    let failure = match index::sync(&reader, &path, 0, 12, quiet) {
         Ok(_) => panic!("batch with a failed block indexed"),
         Err(cause) => cause,
     };
     assert!(matches!(failure, SyncError::Source(_)));
-    assert!(Index::load(&path).unwrap().blocks.is_empty());
+    let kept = Index::load(&path).unwrap();
+    assert!(kept.blocks.len() < 8);
+    for (height, checkpoint) in kept.blocks.iter().enumerate() {
+        assert_eq!(checkpoint.height, u64::try_from(height).unwrap());
+        assert_eq!(
+            checkpoint.hash,
+            reader.blocks[height].block_hash().to_string()
+        );
+    }
     reader.fail_at = None;
-    assert_eq!(index::sync(&reader, &path, 0, 12).unwrap().0.scanned, 12);
+    let (report, index) = index::sync(&reader, &path, 0, 12, quiet).unwrap();
+    assert!(report.complete_to_tip);
+    assert_eq!(index.blocks.len(), 12);
 }
 
 #[test]
@@ -239,7 +262,7 @@ fn a_source_that_moved_during_the_batch_is_refused_without_persisting() {
         lie_about_tip: true,
         ..ChainReader::new(12)
     };
-    let failure = match index::sync(&reader, &dir.1, 0, 12) {
+    let failure = match index::sync(&reader, &dir.1, 0, 12, quiet) {
         Ok(_) => panic!("reorganized source indexed"),
         Err(cause) => cause,
     };
@@ -251,7 +274,13 @@ fn dir_with_batch(length: u64) -> (tempfile::TempDir, std::path::PathBuf) {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("moved.json");
     let reader = ChainReader::new(length);
-    assert_eq!(index::sync(&reader, &path, 0, length).unwrap().0.scanned, length);
+    assert_eq!(
+        index::sync(&reader, &path, 0, length, quiet)
+            .unwrap()
+            .0
+            .scanned,
+        length
+    );
     (dir, path)
 }
 
@@ -265,7 +294,10 @@ fn sync_takes_the_reader_verified_hash_and_refuses_an_unverified_pair() {
         block: valid.clone(),
         claimed: valid.block_hash(),
     };
-    assert_eq!(index::sync(&reader, &path, 0, 1).unwrap().0.scanned, 1);
+    assert_eq!(
+        index::sync(&reader, &path, 0, 1, quiet).unwrap().0.scanned,
+        1
+    );
     assert_eq!(
         Index::load(&path).unwrap().blocks[0].hash,
         valid.block_hash().to_string()
@@ -279,7 +311,7 @@ fn sync_takes_the_reader_verified_hash_and_refuses_an_unverified_pair() {
         }
         let claimed = block.block_hash();
         let path = dir.path().join(format!("invalid-{witness}.json"));
-        let failure = match index::sync(&BlockReader { block, claimed }, &path, 0, 1) {
+        let failure = match index::sync(&BlockReader { block, claimed }, &path, 0, 1, quiet) {
             Ok(_) => panic!("invalid block indexed"),
             Err(cause) => cause,
         };
@@ -290,7 +322,7 @@ fn sync_takes_the_reader_verified_hash_and_refuses_an_unverified_pair() {
         assert!(Index::load(&path).unwrap().blocks.is_empty());
     }
     let path = dir.path().join("lying.json");
-    let failure = match index::sync(&LyingReader(valid), &path, 0, 1) {
+    let failure = match index::sync(&LyingReader(valid), &path, 0, 1, quiet) {
         Ok(_) => panic!("mismatched block and hash indexed"),
         Err(cause) => cause,
     };

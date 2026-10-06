@@ -2,6 +2,7 @@ use crate::config::FETCH_WORKERS;
 use crate::{Error, SyncError, ensure, reader::Reader};
 use bitcoin::{Block, BlockHash, Transaction};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
@@ -88,6 +89,7 @@ pub fn sync<R: Reader + Sync>(
     path: &Path,
     start: u64,
     max_blocks: u64,
+    mut on_applied: impl FnMut(u64, u64),
 ) -> Result<(SyncReport, Index), SyncError<R::Error>>
 where
     R::Error: Send,
@@ -106,11 +108,13 @@ where
         .checked_add(u64::try_from(index.blocks.len()).map_err(Error::from)?)
         .ok_or_else(|| Error::Capacity("height overflow".into()))?;
     let heights: Vec<u64> = (next..=tip).take(usize::try_from(max_blocks).map_err(Error::from)?).collect();
-    let fetched = fetch_in_parallel(reader, &heights)?;
-    let scanned = apply_in_order(reader, &mut index, heights.iter().copied().zip(fetched))?;
+    let streamed = stream_batch(reader, &mut index, &heights, |height| on_applied(height, tip));
+    let scanned = u64::try_from(index.blocks.len()).map_err(Error::from)? - (next - index.start);
     if scanned > 0 {
+        confirm_tail(reader, &index)?;
         index.persist(path)?;
     }
+    streamed?;
     Ok((
         SyncReport {
             scanned,
@@ -153,104 +157,133 @@ fn opened<R: Reader>(reader: &R, path: &Path, start: u64) -> Result<Index, SyncE
     Ok(index)
 }
 
-fn fetch_in_parallel<R: Reader + Sync>(
+struct Batch<'a, R: Reader> {
+    reader: &'a R,
+    heights: &'a [u64],
+    cursor: AtomicUsize,
+    failed: AtomicBool,
+}
+
+impl<R: Reader + Sync> Batch<'_, R> {
+    fn fetch_loop(&self, answers: &mpsc::Sender<(usize, Result<(Block, BlockHash), R::Error>)>) {
+        loop {
+            if self.failed.load(Ordering::Relaxed) {
+                break;
+            }
+            let position = self.cursor.fetch_add(1, Ordering::Relaxed);
+            let Some(height) = self.heights.get(position) else {
+                break;
+            };
+            let answer = self.reader.block(*height);
+            match &answer {
+                Ok(_pair) => (),
+                Err(cause) => {
+                    tracing::warn!(error = %cause, height, "block fetch failed; the batch stops here");
+                    self.failed.store(true, Ordering::Relaxed);
+                }
+            }
+            match answers.send((position, answer)) {
+                Ok(()) => (),
+                Err(cause) => {
+                    tracing::warn!(error = %cause, "batch collector finished early; fetch worker stops");
+                    break;
+                }
+            }
+        }
+    }
+}
+
+fn stream_batch<R: Reader + Sync>(
     reader: &R,
+    index: &mut Index,
     heights: &[u64],
-) -> Result<Vec<(Block, BlockHash)>, SyncError<R::Error>>
+    mut on_applied: impl FnMut(u64),
+) -> Result<(), SyncError<R::Error>>
 where
     R::Error: Send,
 {
-    let cursor = AtomicUsize::new(0);
-    let failed = AtomicBool::new(false);
-    let (answers, inbox) = mpsc::channel::<(usize, Result<(Block, BlockHash), R::Error>)>();
-    let mut slots: Vec<Option<Result<(Block, BlockHash), R::Error>>> =
-        std::iter::repeat_with(|| None).take(heights.len()).collect();
+    let batch = Batch {
+        reader,
+        heights,
+        cursor: AtomicUsize::new(0),
+        failed: AtomicBool::new(false),
+    };
+    let (answers, inbox) = mpsc::channel();
     std::thread::scope(|scope| {
         for _worker in 0..FETCH_WORKERS.min(heights.len()) {
             let answers = answers.clone();
-            let cursor = &cursor;
-            let failed = &failed;
-            scope.spawn(move || {
-                loop {
-                    if failed.load(Ordering::Relaxed) {
-                        break;
-                    }
-                    let position = cursor.fetch_add(1, Ordering::Relaxed);
-                    let Some(height) = heights.get(position) else {
-                        break;
-                    };
-                    let answer = reader.block(*height);
-                    match &answer {
-                        Ok(_pair) => (),
-                        Err(cause) => {
-                            tracing::warn!(error = %cause, height, "block fetch failed; the batch stops here");
-                            failed.store(true, Ordering::Relaxed);
-                        }
-                    }
-                    match answers.send((position, answer)) {
-                        Ok(()) => (),
-                        Err(cause) => {
-                            tracing::warn!(error = %cause, "batch collector gone; fetch worker stops");
-                            break;
-                        }
-                    }
-                }
-            });
+            let batch = &batch;
+            scope.spawn(move || batch.fetch_loop(&answers));
         }
         drop(answers);
+        let mut waiting: BTreeMap<usize, (Block, BlockHash)> = BTreeMap::new();
+        let mut expected = 0usize;
         for (position, answer) in inbox {
-            let Some(slot) = slots.get_mut(position) else {
-                continue;
+            match answer {
+                Ok(pair) => waiting.insert(position, pair),
+                Err(cause) => return Err(SyncError::Source(cause)),
             };
-            *slot = Some(answer);
-        }
-    });
-    let mut blocks = Vec::with_capacity(heights.len());
-    for slot in slots {
-        match slot {
-            Some(Ok(pair)) => blocks.push(pair),
-            Some(Err(cause)) => return Err(SyncError::Source(cause)),
-            None => break,
-        }
-    }
-    Ok(blocks)
-}
-
-fn apply_in_order<R: Reader>(
-    reader: &R,
-    index: &mut Index,
-    batch: impl Iterator<Item = (u64, (Block, BlockHash))>,
-) -> Result<u64, SyncError<R::Error>> {
-    let mut scanned = 0;
-    let mut applied: Option<(u64, BlockHash)> = None;
-    for (height, (block, hash)) in batch {
-        if block.block_hash() != hash {
-            return Err(Error::Invalid(
-                "reader returned a block whose hash differs from its verified hash".into(),
-            )
-            .into());
-        }
-        let previous_checkpoint = index.blocks.last();
-        for previous in previous_checkpoint.iter() {
-            if block.header.prev_blockhash.to_string() != previous.hash {
-                return Err(Error::Invalid("source reorg during index; retry".into()).into());
+            loop {
+                let Some(pair) = waiting.remove(&expected) else {
+                    break;
+                };
+                let Some(height) = heights.get(expected) else {
+                    break;
+                };
+                match apply_block(reader, index, *height, pair) {
+                    Ok(()) => on_applied(*height),
+                    Err(cause) => {
+                        batch.failed.store(true, Ordering::Relaxed);
+                        return Err(cause);
+                    }
+                }
+                expected += 1;
             }
         }
-        let entries = read_entries(reader, &block, height)?;
-        index.entries.extend(entries);
-        index.blocks.push(Checkpoint {
-            height,
-            hash: hash.to_string(),
-        });
-        applied = Some((height, hash));
-        scanned += 1;
+        Ok(())
+    })
+}
+
+fn apply_block<R: Reader>(
+    reader: &R,
+    index: &mut Index,
+    height: u64,
+    (block, hash): (Block, BlockHash),
+) -> Result<(), SyncError<R::Error>> {
+    if block.block_hash() != hash {
+        return Err(Error::Invalid(
+            "reader returned a block whose hash differs from its verified hash".into(),
+        )
+        .into());
     }
-    for (height, hash) in applied.iter() {
-        if reader.block_hash(*height).map_err(SyncError::Source)? != *hash {
+    let previous_checkpoint = index.blocks.last();
+    for previous in previous_checkpoint.iter() {
+        if block.header.prev_blockhash.to_string() != previous.hash {
             return Err(Error::Invalid("source reorg during index; retry".into()).into());
         }
     }
-    Ok(scanned)
+    let entries = read_entries(reader, &block, height)?;
+    index.entries.extend(entries);
+    index.blocks.push(Checkpoint {
+        height,
+        hash: hash.to_string(),
+    });
+    Ok(())
+}
+
+fn confirm_tail<R: Reader>(reader: &R, index: &Index) -> Result<(), SyncError<R::Error>> {
+    let tail = index.blocks.last();
+    for checkpoint in tail.iter() {
+        if reader
+            .block_hash(checkpoint.height)
+            .map_err(SyncError::Source)?
+            .to_string()
+            != checkpoint.hash
+        {
+            return Err(Error::Invalid("source reorg during index; retry".into()).into());
+        }
+    }
+    Ok(())
 }
 
 fn rollback<R: Reader>(
