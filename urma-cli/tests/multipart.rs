@@ -125,12 +125,19 @@ fn independent_proofs_and_candidate_binding() -> Result<()> {
             let mut request = RecordRequest {
                 reference: verified.reference(),
             };
+            let candidate = request.verify(&reveal, &commit)?;
+            assert_eq!(candidate.reference(), verified.reference());
+            request.check_txid(&candidate)?;
+            request.check_hash(&candidate)?;
+            request.reference.record_hash[0] ^= 1;
             assert_eq!(
                 request.verify(&reveal, &commit)?.reference(),
                 verified.reference()
             );
-            request.reference.record_hash[0] ^= 1;
+            assert!(request.check_hash(&candidate).is_err());
+            request.reference.txid = Txid::all_zeros();
             assert!(request.verify(&reveal, &commit).is_err());
+            assert!(request.check_txid(&candidate).is_err());
         } else {
             assert!(result.is_err(), "{}", case["name"]);
         }
@@ -494,15 +501,13 @@ fn source_failures_capacity_and_invalid_candidates_do_not_poison_retries() -> Re
         .records
         .insert(target, graph.root.clone())
         .unwrap();
-    assert_eq!(
-        outcome(&reconstruct(
-            &graph.root,
-            &mut graph.source,
-            limits(),
-            temp.path()
-        )),
-        "invalid_candidate"
-    );
+    let result = reconstruct(&graph.root, &mut graph.source, limits(), temp.path());
+    assert_eq!(outcome(&result), "invalid_candidate");
+    assert!(matches!(
+        result,
+        Err(RecoveryError::InvalidCandidate { txid, ref cause })
+            if txid == target && cause.to_string() == "candidate TXID mismatch"
+    ));
     graph.source.records.insert(target, good);
     assert!(reconstruct(&graph.root, &mut graph.source, limits(), temp.path()).is_ok());
     for entry in graph.leaves[0]

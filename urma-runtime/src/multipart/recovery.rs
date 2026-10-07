@@ -111,8 +111,9 @@ fn fetch<S: MultipartSource>(
         FetchError::Source(cause) => RecoveryError::Source { txid, cause },
     })?;
     request
-        .check(&verified)
+        .check_txid(&verified)
         .map_err(|cause| RecoveryError::InvalidCandidate { txid, cause })?;
+    request.check_hash(&verified)?;
     if verified.author() != author {
         return Err(Error::Invalid("referenced child author differs from root".into()).into());
     }

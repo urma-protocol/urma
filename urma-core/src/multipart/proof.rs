@@ -61,15 +61,21 @@ impl RecordRequest {
         reveal: &Transaction,
         commit: &Transaction,
     ) -> Result<VerifiedRecord, Error> {
-        let verified = VerifiedRecord::verify(self.reference.txid, reveal, commit)?;
-        self.check(&verified)?;
-        Ok(verified)
+        VerifiedRecord::verify(self.reference.txid, reveal, commit)
     }
 
-    pub fn check(&self, verified: &VerifiedRecord) -> Result<(), Error> {
+    pub fn check_txid(&self, verified: &VerifiedRecord) -> Result<(), Error> {
         ensure!(
-            verified.reference() == self.reference,
-            "candidate TXID or record hash mismatch"
+            verified.txid == self.reference.txid,
+            "candidate TXID mismatch"
+        );
+        Ok(())
+    }
+
+    pub fn check_hash(&self, verified: &VerifiedRecord) -> Result<(), Error> {
+        ensure!(
+            verified.record_hash == self.reference.record_hash,
+            "record hash differs from the signed manifest reference"
         );
         Ok(())
     }

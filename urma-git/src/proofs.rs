@@ -58,13 +58,13 @@ pub fn export(
     export_record(node, directory, recovered.root())?;
     for entry in &recovered.manifest().entries {
         let record = export_record(node, directory, entry.txid)?;
-        entry_request(*entry).check(&record)?;
+        RecordRequest { reference: *entry }.check_hash(&record)?;
         let MultipartRecord::Leaf(leaf) = record.decode()? else {
             return Err(Error::Invalid("proof export leaf kind".into()));
         };
         for part in leaf.entries {
             let record = export_record(node, directory, part.txid)?;
-            entry_request(part).check(&record)?;
+            RecordRequest { reference: part }.check_hash(&record)?;
         }
     }
     retained_locator(node, recovered, directory)
@@ -88,10 +88,6 @@ pub(crate) fn retained_locator(
     };
     snapshot::write_json(&directory.join("locator.json"), &locator)?;
     Ok(locator)
-}
-
-fn entry_request(reference: urma_runtime::multipart::ChildReference) -> RecordRequest {
-    RecordRequest { reference }
 }
 
 fn export_record(node: &Node, directory: &Path, txid: Txid) -> Result<VerifiedRecord, Error> {

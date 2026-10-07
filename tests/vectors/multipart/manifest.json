@@ -2236,7 +2236,7 @@
         "wrong-child-hash-leaf",
         "wrong-child-hash-root"
       ],
-      "outcome": "invalid_candidate",
+      "outcome": "invalid_object",
       "length": 1,
       "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
     },
@@ -2248,7 +2248,7 @@
         "wrong-leaf-hash-leaf",
         "wrong-leaf-hash-root"
       ],
-      "outcome": "invalid_candidate",
+      "outcome": "invalid_object",
       "length": 1,
       "sha256": "2d711642b726b04401627ca9fbac32f5c8530fb1903cc4db02258717921a4881"
     }

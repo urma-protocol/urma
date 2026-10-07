@@ -188,8 +188,8 @@ def reconstruct(root_txid,fetch,max_bytes=64*1024*1024,max_nodes=4096,destinatio
             reveal,commit=fetch(txid)
             actual,author,record=verify(reveal,commit)
             require(actual==txid,'candidate TXID')
-            require(expected_hash is None or sha(record)==expected_hash,'candidate record hash')
         except Invalid as e:raise Candidate(str(e)) from e
+        require(expected_hash is None or sha(record)==expected_hash,'record hash differs from the signed manifest reference')
         kind,body=decode(record)
         return author,kind,body
     author,kind,root=get(root_txid);require(kind==9,'root kind')

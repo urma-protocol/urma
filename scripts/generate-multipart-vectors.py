@@ -128,8 +128,8 @@ def main():
     graph('swapped-parts',b'z'*C+b'x',change_leaf=lambda r,n:leaf(0,[reference(n[1]),reference(n[0])]),outcome='invalid_object')
     graph('duplicate-parts',b'z'*C+b'x',change_leaf=lambda r,n:leaf(0,[reference(n[0]),reference(n[0])]),outcome='invalid_object')
     graph('root-to-data',b'x',change_root=lambda r,n:root(1,v.sha(b'x'),[reference(n[0])]),outcome='invalid_object')
-    graph('wrong-child-hash',b'x',change_leaf=lambda r,n:mutate(r,48,bytes(32)),outcome='invalid_candidate')
-    graph('wrong-leaf-hash',b'x',change_root=lambda r,n:mutate(r,96,bytes(32)),outcome='invalid_candidate')
+    graph('wrong-child-hash',b'x',change_leaf=lambda r,n:mutate(r,48,bytes(32)),outcome='invalid_object')
+    graph('wrong-leaf-hash',b'x',change_root=lambda r,n:mutate(r,96,bytes(32)),outcome='invalid_object')
     value=records['data-max']
     proof('proof-noncanonical-segments',value,script_transform=lambda s:s[:41]+v.push(value[:500])+b''.join(v.push(value[i:i+520]) for i in range(500,len(value),520))+b'\x68',outcome='invalid')
     proof('proof-extra-opcode',records['root-min'],script_transform=lambda s:s+b'\x61',outcome='invalid')
