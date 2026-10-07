@@ -667,10 +667,7 @@ pub mod transport {
     mod checks {
 
         use super::*;
-        use bitcoin::{
-            ScriptBuf,
-            secp256k1::{Keypair, Secp256k1},
-        };
+        use bitcoin::ScriptBuf;
 
         #[test]
         fn easier_regtest_proof_of_work_is_rejected_for_testnet4() {
@@ -688,64 +685,6 @@ pub mod transport {
             assert!(
                 validate_block_for_network(&testnet, testnet.block_hash(), Network::Bitcoin)
                     .is_err()
-            );
-        }
-
-        #[test]
-        fn copied_public_header_cannot_poison_authenticated_recovery() {
-            let key = [7; 32];
-            let bytes = vec![42; urma_core::format::Urma::CHUNK_BYTES + 1];
-            let records =
-                container::seal(&key, &bytes, urma_core::format::ContentType::Opaque).unwrap();
-            let mut forged = records[0].clone();
-            forged[urma_core::format::Urma::PRIVATE_HEADER_BYTES] ^= 1;
-            assert!(container::open(&key, &[forged.clone()]).is_err());
-
-            // Ingestion happens after block validation; construct just its relevant witness data.
-            let secp = Secp256k1::new();
-            let envelope_transaction = |record: &[u8]| {
-                let attacker_or_sender = Keypair::new(&secp, &mut OsRng);
-                let (script, info) = envelope::build(record, &attacker_or_sender).unwrap();
-                let mut transaction = transaction(
-                    OutPoint::null(),
-                    bitcoin::TxOut {
-                        value: bitcoin::Amount::from_sat(crate::config::BITCOIN_RETURN_SATS),
-                        script_pubkey: ScriptBuf::new_p2wpkh(
-                            &bitcoin::WPubkeyHash::from_byte_array([9; 20]),
-                        ),
-                    },
-                );
-                transaction.input[0].witness = envelope::witness(&[0; 64], &script, &info).unwrap();
-                transaction
-            };
-            let mut block = bitcoin::blockdata::constants::genesis_block(Network::Regtest);
-            block.txdata = vec![envelope_transaction(&forged)];
-            let mut objects = BTreeMap::new();
-            assert_eq!(collect_records(&block, &key, &mut objects).unwrap(), 1);
-            assert!(objects.is_empty());
-
-            block.txdata = vec![
-                envelope_transaction(&records[0]),
-                envelope_transaction(&forged),
-            ];
-            assert_eq!(collect_records(&block, &key, &mut objects).unwrap(), 1);
-            assert_eq!(objects.len(), 1);
-            assert!(objects.values().next().unwrap().finish().is_err());
-
-            block.txdata = vec![
-                envelope_transaction(&forged),
-                envelope_transaction(&records[1]),
-            ];
-            assert_eq!(collect_records(&block, &key, &mut objects).unwrap(), 1);
-            assert_eq!(
-                objects
-                    .values()
-                    .next()
-                    .unwrap()
-                    .finish()
-                    .unwrap()
-                    .as_slice(),
-                bytes
             );
         }
 

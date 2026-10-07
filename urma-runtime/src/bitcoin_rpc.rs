@@ -87,6 +87,44 @@ impl Node {
         BlockHash::from_str(value.as_str().context("invalid block hash")?).map_err(Into::into)
     }
 
+    fn require_txindex(&self) -> Result<(), Error> {
+        let indexes = self.call("getindexinfo", &[json!("txindex")])?;
+        ensure!(
+            indexes["txindex"]["synced"] == true,
+            "private recovery requires synchronized txindex=1 on the local node"
+        );
+        Ok(())
+    }
+
+    fn output(&self, outpoint: OutPoint) -> Result<Prevout, Error> {
+        let raw = match self.rpc.call::<Value>(
+            "getrawtransaction",
+            &[json!(outpoint.txid.to_string()), json!(false)],
+        ) {
+            Ok(value) => value,
+            Err(bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::error::Error::Rpc(
+                e,
+            ))) if e.code == -5 => {
+                tracing::warn!(code = e.code, %outpoint, "parent transaction absent");
+                return Ok(Prevout::Missing);
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let parent = decode_transaction(raw.as_str().context("invalid raw transaction")?)?;
+        ensure!(
+            parent.compute_txid() == outpoint.txid,
+            "node returned a different transaction than {}",
+            outpoint.txid
+        );
+        Ok(Prevout::Found(
+            parent
+                .output
+                .get(usize::try_from(outpoint.vout)?)
+                .context("commit outpoint absent")?
+                .clone(),
+        ))
+    }
+
     fn address(&self) -> Result<Address, Error> {
         let value = self.call("getnewaddress", &[json!("urma-lab"), json!("bech32m")])?;
         Ok(
@@ -480,29 +518,6 @@ pub fn validate_block_for_network(
     validation::validate_block_for_network(block, expected_hash, network).map_err(Error::from)
 }
 
-pub fn collect_records(
-    block: &Block,
-    key: &[u8; 32],
-    objects: &mut BTreeMap<[u8; 32], PrivateObject>,
-) -> Result<u64, Error> {
-    let mut rejected = 0;
-    for tx in &block.txdata {
-        for input in &tx.input {
-            if !envelope::is_candidate(&input.witness) {
-                continue;
-            }
-            match envelope::extract(&input.witness) {
-                Ok(parsed) => rejected += backend::accept_record(key, &parsed.record, objects)?,
-                Err(error) => {
-                    tracing::warn!(%error, "invalid URMA envelope rejected");
-                    rejected += 1;
-                }
-            }
-        }
-    }
-    Ok(rejected)
-}
-
 pub struct Scan {
     pub objects: BTreeMap<[u8; 32], PrivateObject>,
     pub start_height: u64,
@@ -548,8 +563,28 @@ impl RecordSource for BitcoinRecords<'_> {
     }
 }
 
+pub enum Prevout {
+    Found(TxOut),
+    Missing,
+}
+
+fn prevout_in_block(block: &Block, outpoint: OutPoint) -> Result<Prevout, Error> {
+    for parent in &block.txdata {
+        if parent.compute_txid() != outpoint.txid {
+            continue;
+        }
+        let output = parent
+            .output
+            .get(usize::try_from(outpoint.vout)?)
+            .context("commit outpoint absent")?;
+        return Ok(Prevout::Found(output.clone()));
+    }
+    Ok(Prevout::Missing)
+}
+
 pub fn emit_core_validated_records(
     block: &Block,
+    resolve_prevout: &mut dyn FnMut(OutPoint) -> Result<Prevout, Error>,
     emit: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
 ) -> Result<(), Error> {
     for tx in &block.txdata {
@@ -561,8 +596,29 @@ pub fn emit_core_validated_records(
             continue;
         }
         match envelope::extract_reveal(tx) {
+            Ok(parsed) => {
+                tracing::trace!(author=%parsed.author, "candidate with canonical transaction shape")
+            }
+            Err(error) => {
+                tracing::warn!(%error, "invalid reveal rejected");
+                continue;
+            }
+        }
+        let outpoint = tx.input[0].previous_output;
+        let prevout = match prevout_in_block(block, outpoint)? {
+            Prevout::Missing => resolve_prevout(outpoint)?,
+            found => found,
+        };
+        let prevout = match prevout {
+            Prevout::Found(output) => output,
+            Prevout::Missing => {
+                tracing::warn!(%outpoint, "reveal spends an unknown output; rejected");
+                continue;
+            }
+        };
+        match envelope::verify_prevout(tx, &prevout) {
             Ok(parsed) => emit(&parsed.record)?,
-            Err(error) => tracing::warn!(%error, "invalid URMA reveal rejected"),
+            Err(error) => tracing::warn!(%error, "invalid author proof rejected"),
         }
     }
     Ok(())
@@ -583,6 +639,7 @@ fn read_records(
     start: u64,
     emit: &mut dyn FnMut(&[u8]) -> Result<(), Error>,
 ) -> Result<Observation, Error> {
+    node.require_txindex()?;
     let tip_height = node.height()?;
     ensure!(start <= tip_height, "start height is beyond the chain tip");
     let tip_hash = node.block_hash(tip_height)?;
@@ -607,7 +664,7 @@ fn read_records(
             "chain changed during scan"
         );
         previous = hash;
-        emit_core_validated_records(&block, emit)?;
+        emit_core_validated_records(&block, &mut |outpoint| node.output(outpoint), emit)?;
     }
     ensure!(
         previous == tip_hash && node.block_hash(tip_height)? == tip_hash,
