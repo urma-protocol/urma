@@ -44,10 +44,11 @@ def keys(object_id):
 
 
 def record(data, index=0, *, object_id=OBJECT, hint=0, flags=0, length=None,
-           count=None, iv=None, digest=None, padding=0xa7):
+           count=None, iv=None, digest=None, padding=0xa7, tag=None):
     length = len(data) if length is None else length
     count = (len(data) + CHUNK - 1) // CHUNK if count is None else count
-    enc, auth, tag = keys(object_id)
+    enc, auth, derived = keys(object_id)
+    tag = derived if tag is None else tag
     iv = index.to_bytes(8, "big") + bytes(8) if iv is None else iv
     chunk = data[index * CHUNK:(index + 1) * CHUNK]
     body = (sha(data) if digest is None else digest) + uint(length, 8) + uint(hint, 4) + uint(flags, 4)
@@ -202,6 +203,8 @@ def main():
     private("private-type-conflict", [pair[0], record(two, 1, hint=1)], "conflict")
     private("private-mixed", [pair[0], record(two, 1, object_id=bytes([0x42])*32)], "invalid")
     private("private-wrong-root", [r], "unrelated", root="wrong-root.bin")
+    # Another object's discovery tag under a MAC that verifies: unrelated, not forged (§5.4 step 2).
+    private("private-wrong-tag", [record(one, hint=1, tag=keys(bytes([0x42])*32)[2])], "unrelated")
     for name, kwargs in [("length-zero",{"length":0}), ("length-overflow",{"length":2**64-1}),
                          ("length-count",{"length":32769}), ("type",{"hint":5}), ("metadata-flags",{"flags":1}),
                          ("iv",{"iv":bytes([1])*16}), ("digest",{"digest":bytes(32)})]:

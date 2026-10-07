@@ -109,6 +109,16 @@
       }
     },
     {
+      "name": "private-wrong-tag",
+      "outcome": "unrelated",
+      "root": "root.bin",
+      "container": {
+        "file": "private-wrong-tag.urma",
+        "bytes": 32944,
+        "sha256": "27bfd314f38ad9df00c747d072e5a5bb8e71e7c9a788eedf2888f4c2c8b26e80"
+      }
+    },
+    {
       "name": "private-invalid-length-zero",
       "outcome": "invalid",
       "root": "root.bin",

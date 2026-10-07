@@ -5,6 +5,7 @@ use bitcoin::{
     hashes::Hash,
 };
 use hkdf::Hkdf;
+use hmac::{Hmac, Mac};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::{
@@ -45,6 +46,16 @@ fn artifact(value: &Value) -> Result<Vec<u8>> {
 }
 fn key(name: &str) -> Result<[u8; 32]> {
     Ok(fs::read(vectors().join(name))?.as_slice().try_into()?)
+}
+fn corpus_record(name: &str) -> Result<Vec<u8>> {
+    let corpus = manifest()?;
+    let case = corpus["private"]
+        .as_array()
+        .context("private cases")?
+        .iter()
+        .find(|case| case["name"] == name)
+        .with_context(|| format!("{name} missing from corpus"))?;
+    Ok(container::unpack(&artifact(&case["container"])?)?.swap_remove(0))
 }
 
 #[test]
@@ -236,6 +247,57 @@ fn conflicts_and_incomplete_objects_do_not_block_unrelated_export() -> Result<()
         b"independent"
     );
     assert_eq!(fs::read_dir(&output)?.count(), 1);
+    Ok(())
+}
+
+// §5.4 step 2: a differing discovery tag is unrelated to this root even though its MAC verifies.
+#[test]
+fn wrong_discovery_tag_with_valid_mac_is_unrelated_not_rejected() -> Result<()> {
+    let kdf = manifest()?["kdf"].clone();
+    let record = corpus_record("private-wrong-tag")?;
+    let header = container::inspect_header(&record)?;
+    assert_eq!(hex::encode(header.id), kdf["object_id"].as_str().unwrap());
+    assert_ne!(
+        hex::encode(header.discovery_tag),
+        kdf["discovery"].as_str().unwrap()
+    );
+    let mut mac =
+        Hmac::<Sha256>::new_from_slice(&hex::decode(kdf["authentication"].as_str().unwrap())?)?;
+    mac.update(&record[..Urma::MAC_OFFSET]);
+    mac.verify_slice(&record[Urma::MAC_OFFSET..])?;
+    let root = key("root.bin")?;
+    assert!(matches!(
+        container::open_record(&root, &record)?,
+        RecordMatch::Unrelated
+    ));
+    assert!(container::open(&root, &[record]).is_err());
+    Ok(())
+}
+
+// §5.4: discovery skips unrelated records and counts forged candidates; neither blocks other objects.
+#[test]
+fn unrelated_tag_is_skipped_and_forged_mac_is_counted_without_blocking_discovery() -> Result<()> {
+    let root = key("root.bin")?;
+    for (candidate, rejected) in [
+        (corpus_record("private-wrong-tag")?, 0),
+        (corpus_record("private-invalid-mac")?, 1),
+    ] {
+        let records = container::seal(&root, b"independent", ContentType::Text)?;
+        let id = hex::encode(container::inspect_header(&records[0])?.id);
+        let temp = tempfile::tempdir()?;
+        let source = temp.path().join("records");
+        backend::store_directory(&source, &[candidate, records[0].clone()])?;
+        let recovery = backend::recover(&backend::DirectorySource { path: &source }, &root)?;
+        assert_eq!(recovery.rejected_records, rejected);
+        assert_eq!(recovery.objects.len(), 1);
+        let output = temp.path().join("export");
+        let result = backend::export(recovery, &output)?;
+        assert!(result.complete);
+        assert_eq!(result.report["status"], "complete");
+        assert_eq!(result.report["rejected_records"], rejected);
+        assert_eq!(fs::read(output.join(format!("{id}.bin")))?, b"independent");
+        assert_eq!(fs::read_dir(&output)?.count(), 1);
+    }
     Ok(())
 }
 
