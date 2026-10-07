@@ -4,5 +4,6 @@ pub use urma_core::multipart::{
 };
 mod recovery;
 pub use recovery::{
-    FetchError, MultipartSource, RecoveredObject, RecoveryError, RecoveryLimits, reconstruct,
+    Candidate, FetchError, MultipartSource, RecoveredObject, RecoveryError, RecoveryLimits,
+    reconstruct,
 };

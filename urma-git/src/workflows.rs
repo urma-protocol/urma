@@ -249,13 +249,13 @@ pub fn publish_progress(
 }
 
 pub fn recovery_limits(limits: &Limits) -> Result<RecoveryLimits, Error> {
-    Ok(RecoveryLimits {
-        max_payload_bytes: limits
+    Ok(RecoveryLimits::new(
+        limits
             .max_pack_bytes
             .checked_add(Descriptor::MAX_PREFIX_BYTES)
             .ok_or_else(|| Error::Capacity("payload capacity overflow".into()))?,
-        max_nodes: DiskPlan::MAX_RECORDS,
-    })
+        DiskPlan::MAX_RECORDS,
+    ))
 }
 
 #[derive(Serialize, Deserialize)]

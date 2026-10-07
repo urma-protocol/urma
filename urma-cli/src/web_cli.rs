@@ -370,10 +370,7 @@ pub(crate) fn store_publication(
 ) -> Result<StoredPublication, Error> {
     let store = web_result(Store::open(store))?;
     let scratch = tempfile::tempdir_in(store.root())?;
-    let limits = RecoveryLimits {
-        max_payload_bytes: u64::try_from(max_bytes)?,
-        max_nodes: PublicationPlan::MAX_RECORDS,
-    };
+    let limits = RecoveryLimits::new(u64::try_from(max_bytes)?, PublicationPlan::MAX_RECORDS);
     let mut object = recovery::recover(node, root, limits, scratch.path())?;
     ensure!(
         object.manifest().profile == Package::PROFILE,

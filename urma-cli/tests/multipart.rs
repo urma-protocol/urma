@@ -27,6 +27,7 @@ use std::{
     io::Read,
     path::{Path, PathBuf},
     process::Command,
+    time::Duration,
 };
 use urma_chain::observation::Chain;
 use urma_core::{envelope, format::PublicRecord};
@@ -34,7 +35,7 @@ use urma_runtime::{
     container::{self, RecordMatch},
     error::Error,
     multipart::{
-        ChildReference, DataPart, FetchError, Geometry, LeafManifest, MultipartRecord,
+        Candidate, ChildReference, DataPart, FetchError, Geometry, LeafManifest, MultipartRecord,
         MultipartSource, RecordRequest, RecoveryError, RecoveryLimits, RootManifest,
         VerifiedRecord, reconstruct,
     },
@@ -150,19 +151,110 @@ struct Source {
     calls: usize,
 }
 impl MultipartSource for Source {
-    fn fetch(&mut self, request: &RecordRequest) -> Result<VerifiedRecord, FetchError> {
+    fn fetch(
+        &mut self,
+        request: &RecordRequest,
+        _rejected: &[String],
+    ) -> Result<Candidate, FetchError> {
         self.calls += 1;
         self.records
             .get(&request.reference.txid)
             .cloned()
+            .map(|record| Candidate {
+                origin: "single".into(),
+                record,
+            })
             .ok_or(FetchError::Unavailable)
     }
 }
-fn limits() -> RecoveryLimits {
-    RecoveryLimits {
-        max_payload_bytes: 256 * 1024 * 1024,
-        max_nodes: 4096,
+
+#[derive(Clone)]
+enum Reply {
+    Record(VerifiedRecord),
+    Reject,
+}
+struct Origin {
+    label: &'static str,
+    replies: HashMap<Txid, Reply>,
+    failures: u32,
+}
+struct Origins {
+    origins: Vec<Origin>,
+    asked: Vec<(Txid, &'static str)>,
+    delay: Duration,
+}
+impl Origins {
+    fn new(graph: &Graph, labels: &[&'static str]) -> Self {
+        Self {
+            origins: labels
+                .iter()
+                .map(|label| Origin {
+                    label,
+                    replies: graph
+                        .source
+                        .records
+                        .iter()
+                        .map(|(txid, record)| (*txid, Reply::Record(record.clone())))
+                        .collect(),
+                    failures: 0,
+                })
+                .collect(),
+            asked: Vec::new(),
+            delay: Duration::ZERO,
+        }
     }
+    fn origin(&mut self, label: &str) -> &mut Origin {
+        self.origins
+            .iter_mut()
+            .find(|origin| origin.label == label)
+            .unwrap()
+    }
+    fn asked_for(&self, txid: Txid) -> Vec<&'static str> {
+        self.asked
+            .iter()
+            .filter(|(asked, _)| *asked == txid)
+            .map(|(_, label)| *label)
+            .collect()
+    }
+}
+impl MultipartSource for Origins {
+    fn fetch(
+        &mut self,
+        request: &RecordRequest,
+        rejected: &[String],
+    ) -> Result<Candidate, FetchError> {
+        std::thread::sleep(self.delay);
+        let txid = request.reference.txid;
+        for origin in &mut self.origins {
+            if rejected.iter().any(|label| label == origin.label) {
+                continue;
+            }
+            let Some(reply) = origin.replies.get(&txid) else {
+                continue;
+            };
+            self.asked.push((txid, origin.label));
+            if origin.failures > 0 {
+                origin.failures -= 1;
+                return Err(FetchError::Source(Error::Io(
+                    std::io::ErrorKind::TimedOut.into(),
+                )));
+            }
+            return match reply {
+                Reply::Record(record) => Ok(Candidate {
+                    origin: origin.label.into(),
+                    record: record.clone(),
+                }),
+                Reply::Reject => Err(FetchError::Rejected {
+                    origin: origin.label.into(),
+                    cause: urma_core::error::Error::Invalid("author signature".into()),
+                }),
+            };
+        }
+        Err(FetchError::Unavailable)
+    }
+}
+fn limits() -> RecoveryLimits {
+    RecoveryLimits::new(256 * 1024 * 1024, 4096)
 }
 fn outcome(
     result: &Result<urma_runtime::multipart::RecoveredObject, RecoveryError>,
@@ -450,10 +542,7 @@ fn multiple_leaves_stream_exact_bytes_and_reject_order_duplicates_and_missing() 
 fn source_failures_capacity_and_invalid_candidates_do_not_poison_retries() -> Result<()> {
     let mut graph = Graph::new(2, None)?;
     let temp = tempfile::tempdir()?;
-    let limited = RecoveryLimits {
-        max_payload_bytes: 1,
-        max_nodes: 4096,
-    };
+    let limited = RecoveryLimits::new(1, 4096);
     assert_eq!(
         outcome(&reconstruct(
             &graph.root,
@@ -464,10 +553,7 @@ fn source_failures_capacity_and_invalid_candidates_do_not_poison_retries() -> Re
         "capacity"
     );
     assert_eq!(graph.source.calls, 0);
-    let limited = RecoveryLimits {
-        max_payload_bytes: 256 * 1024 * 1024,
-        max_nodes: 3,
-    };
+    let limited = RecoveryLimits::new(256 * 1024 * 1024, 3);
     assert_eq!(
         outcome(&reconstruct(
             &graph.root,
@@ -478,29 +564,33 @@ fn source_failures_capacity_and_invalid_candidates_do_not_poison_retries() -> Re
         "capacity"
     );
     assert_eq!(graph.source.calls, 0);
-    struct Failing;
+    struct Failing(usize);
     impl MultipartSource for Failing {
-        fn fetch(&mut self, _: &RecordRequest) -> Result<VerifiedRecord, FetchError> {
+        fn fetch(&mut self, _: &RecordRequest, _: &[String]) -> Result<Candidate, FetchError> {
+            self.0 += 1;
             Err(FetchError::Source(Error::Io(
                 std::io::ErrorKind::TimedOut.into(),
             )))
         }
     }
+    let mut failing = Failing(0);
     assert_eq!(
         outcome(&reconstruct(
             &graph.root,
-            &mut Failing,
+            &mut failing,
             limits(),
             temp.path()
         )),
         "source"
     );
+    assert_eq!(failing.0, limits().attempts as usize);
     let target = graph.manifest.entries[0].txid;
     let good = graph
         .source
         .records
         .insert(target, graph.root.clone())
         .unwrap();
+    graph.source.calls = 0;
     let result = reconstruct(&graph.root, &mut graph.source, limits(), temp.path());
     assert_eq!(outcome(&result), "invalid_candidate");
     assert!(matches!(
@@ -508,6 +598,7 @@ fn source_failures_capacity_and_invalid_candidates_do_not_poison_retries() -> Re
         Err(RecoveryError::InvalidCandidate { txid, ref cause })
             if txid == target && cause.to_string() == "candidate TXID mismatch"
     ));
+    assert_eq!(graph.source.calls, 2);
     graph.source.records.insert(target, good);
     assert!(reconstruct(&graph.root, &mut graph.source, limits(), temp.path()).is_ok());
     for entry in graph.leaves[0]
@@ -529,6 +620,107 @@ fn source_failures_capacity_and_invalid_candidates_do_not_poison_retries() -> Re
         graph.source.records.insert(entry.txid, good);
     }
     assert!(reconstruct(&graph.root, &mut graph.source, limits(), temp.path()).is_ok());
+    Ok(())
+}
+
+#[test]
+fn rejected_candidate_is_replaced_from_another_origin() -> Result<()> {
+    let graph = Graph::new(2, None)?;
+    let temp = tempfile::tempdir()?;
+    let part = graph.leaves[0].entries[0].txid;
+    let mut origins = Origins::new(&graph, &["a", "b"]);
+    origins.origin("a").replies.insert(part, Reply::Reject);
+    let result = reconstruct(&graph.root, &mut origins, limits(), temp.path());
+    assert_eq!(outcome(&result), "complete");
+    assert_eq!(origins.asked_for(part), ["a", "b"]);
+    let mut origins = Origins::new(&graph, &["a", "b"]);
+    origins
+        .origin("a")
+        .replies
+        .insert(part, Reply::Record(graph.root.clone()));
+    let result = reconstruct(&graph.root, &mut origins, limits(), temp.path());
+    assert_eq!(outcome(&result), "complete");
+    assert_eq!(origins.asked_for(part), ["a", "b"]);
+    for entry in graph.leaves[0]
+        .entries
+        .iter()
+        .skip(1)
+        .chain(&graph.manifest.entries)
+    {
+        assert_eq!(origins.asked_for(entry.txid), ["a"]);
+    }
+    Ok(())
+}
+
+#[test]
+fn exhausted_origins_or_attempts_never_complete() -> Result<()> {
+    let graph = Graph::new(2, None)?;
+    let temp = tempfile::tempdir()?;
+    let part = graph.leaves[0].entries[0].txid;
+    let mut origins = Origins::new(&graph, &["a", "b"]);
+    origins.origin("a").replies.insert(part, Reply::Reject);
+    origins.origin("b").replies.insert(part, Reply::Reject);
+    let result = reconstruct(&graph.root, &mut origins, limits(), temp.path());
+    assert_eq!(outcome(&result), "invalid_candidate");
+    assert_eq!(origins.asked_for(part), ["a", "b"]);
+    let mut origins = Origins::new(&graph, &["a", "b"]);
+    origins.origin("a").replies.insert(part, Reply::Reject);
+    let mut limited = limits();
+    limited.attempts = 1;
+    let result = reconstruct(&graph.root, &mut origins, limited, temp.path());
+    assert_eq!(outcome(&result), "invalid_candidate");
+    assert_eq!(origins.asked_for(part), ["a"]);
+    let mut origins = Origins::new(&graph, &["a", "b"]);
+    origins.origin("a").replies.insert(part, Reply::Reject);
+    origins.origin("b").replies.remove(&part);
+    let result = reconstruct(&graph.root, &mut origins, limits(), temp.path());
+    assert_eq!(outcome(&result), "invalid_candidate");
+    assert_eq!(origins.asked_for(part), ["a"]);
+    Ok(())
+}
+
+#[test]
+fn transport_failures_retry_the_same_origin_within_the_budget() -> Result<()> {
+    let graph = Graph::new(2, None)?;
+    let temp = tempfile::tempdir()?;
+    let leaf = graph.manifest.entries[0].txid;
+    let mut origins = Origins::new(&graph, &["a", "b"]);
+    origins.origin("a").failures = 1;
+    let result = reconstruct(&graph.root, &mut origins, limits(), temp.path());
+    assert_eq!(outcome(&result), "complete");
+    assert_eq!(origins.asked_for(leaf), ["a", "a"]);
+    assert!(origins.asked.iter().all(|(_, label)| *label == "a"));
+    let mut origins = Origins::new(&graph, &["a"]);
+    origins.origin("a").failures = limits().attempts;
+    let result = reconstruct(&graph.root, &mut origins, limits(), temp.path());
+    assert_eq!(outcome(&result), "source");
+    assert_eq!(origins.asked.len(), limits().attempts as usize);
+    let mut origins = Origins::new(&graph, &["a"]);
+    origins.delay = Duration::from_millis(20);
+    let mut limited = limits();
+    limited.timeout = Duration::from_millis(10);
+    let result = reconstruct(&graph.root, &mut origins, limited, temp.path());
+    assert!(matches!(
+        result,
+        Err(RecoveryError::Source { cause: Error::Io(ref cause), .. })
+            if cause.kind() == std::io::ErrorKind::TimedOut
+    ));
+    assert_eq!(origins.asked.len(), 1);
+    Ok(())
+}
+
+#[test]
+fn verified_record_with_wrong_hash_ends_the_object_without_another_fetch() -> Result<()> {
+    let mut graph = Graph::new(2, None)?;
+    let temp = tempfile::tempdir()?;
+    graph.leaves[0].entries[0].record_hash[0] ^= 1;
+    graph.refresh()?;
+    let part = graph.leaves[0].entries[0].txid;
+    let mut origins = Origins::new(&graph, &["a", "b"]);
+    let result = reconstruct(&graph.root, &mut origins, limits(), temp.path());
+    assert_eq!(outcome(&result), "invalid_object");
+    assert_eq!(origins.asked_for(part), ["a"]);
+    assert_eq!(origins.asked.last().map(|(txid, _)| *txid), Some(part));
     Ok(())
 }
 

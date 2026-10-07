@@ -387,6 +387,40 @@ impl Node {
 
     pub fn transaction(&self, txid: Txid) -> Result<Transaction, Error> {
         let raw = self.call("getrawtransaction", &[json!(txid), json!(false)])?;
+        self.decode_transaction(txid, &raw)
+    }
+
+    pub fn transaction_avoiding(
+        &self,
+        txid: Txid,
+        avoid: &[String],
+    ) -> Result<(Transaction, String), Error> {
+        let args = [json!(txid), json!(false)];
+        let (raw, provider) = match &self.backend {
+            Backend::Local(client) => {
+                if avoid
+                    .iter()
+                    .any(|label| label == config::LOCAL_PROVIDER_LABEL)
+                {
+                    return Err(Error::Missing(format!(
+                        "{txid}: the local node served a rejected candidate"
+                    )));
+                }
+                (
+                    client.call("getrawtransaction", &args)?,
+                    config::LOCAL_PROVIDER_LABEL.to_owned(),
+                )
+            }
+            Backend::Routed(router) => {
+                let answer =
+                    router.answer_avoiding(avoid, self.chain, "getrawtransaction", &args)?;
+                (answer.value, answer.label)
+            }
+        };
+        Ok((self.decode_transaction(txid, &raw)?, provider))
+    }
+
+    fn decode_transaction(&self, txid: Txid, raw: &Value) -> Result<Transaction, Error> {
         let raw = raw.as_str().context("missing raw transaction")?;
         let transaction = chain_decode::transaction(&hex::decode(raw)?, self.chain)?;
         ensure!(

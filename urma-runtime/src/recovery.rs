@@ -4,12 +4,13 @@ use crate::storage;
 use crate::{
     error::{Context, Error, ensure},
     multipart::{
-        FetchError, MultipartSource, RecordRequest, RecoveredObject, RecoveryError, RecoveryLimits,
-        VerifiedRecord,
+        Candidate, FetchError, MultipartSource, RecordRequest, RecoveredObject, RecoveryError,
+        RecoveryLimits, VerifiedRecord,
     },
 };
 use bitcoin::{Transaction, Txid, consensus::serialize};
 use std::{collections::BTreeMap, fs::File, io::Write, path::Path};
+use urma_core::error::Error as ProtocolError;
 
 #[derive(Clone, Copy)]
 enum Retention<'a> {
@@ -85,29 +86,62 @@ fn retained_record(
     Ok(record)
 }
 
+fn candidate(
+    node: &Node,
+    txid: Txid,
+    rejected: &[String],
+    retention: Retention<'_>,
+) -> Result<Candidate, FetchError> {
+    match node.presence(txid).map_err(FetchError::Source)? {
+        Presence::Confirmed { .. } => (),
+        Presence::Missing | Presence::Mempool => return Err(FetchError::Unavailable),
+    }
+    let (reveal, origin) = match node.transaction_avoiding(txid, rejected) {
+        Ok(served) => served,
+        Err(Error::Missing(message)) => {
+            tracing::warn!(%txid, %message, "no remaining provider serves the record");
+            return Err(FetchError::Unavailable);
+        }
+        Err(cause) => return Err(FetchError::Source(cause)),
+    };
+    let Some(input) = reveal.input.first() else {
+        return Err(FetchError::Rejected {
+            origin,
+            cause: ProtocolError::Invalid("reveal without input".into()),
+        });
+    };
+    let commit = node
+        .transaction(input.previous_output.txid)
+        .map_err(FetchError::Source)?;
+    let record = match VerifiedRecord::verify(txid, &reveal, &commit) {
+        Ok(record) => record,
+        Err(cause) => return Err(FetchError::Rejected { origin, cause }),
+    };
+    retention.store(&reveal).map_err(FetchError::Source)?;
+    retention.store(&commit).map_err(FetchError::Source)?;
+    Ok(Candidate { origin, record })
+}
+
 struct Source<'a> {
     node: &'a Node,
     retention: Retention<'a>,
-    pending: BTreeMap<Txid, Result<VerifiedRecord, Error>>,
-}
-
-fn fetch_error(cause: Error) -> FetchError {
-    match cause {
-        Error::Protocol(cause) => FetchError::Rejected(cause),
-        cause => FetchError::Source(cause),
-    }
+    pending: BTreeMap<Txid, Result<Candidate, FetchError>>,
 }
 
 impl MultipartSource for Source<'_> {
-    fn fetch(&mut self, request: &RecordRequest) -> Result<VerifiedRecord, FetchError> {
-        let result = match self.pending.remove(&request.reference.txid) {
-            Some(result) => result,
-            None => {
-                return retained_record(self.node, request.reference.txid, self.retention)
-                    .map_err(fetch_error);
-            }
+    fn fetch(
+        &mut self,
+        request: &RecordRequest,
+        rejected: &[String],
+    ) -> Result<Candidate, FetchError> {
+        let txid = request.reference.txid;
+        if !rejected.is_empty() {
+            return candidate(self.node, txid, rejected, self.retention);
+        }
+        let Some(prefetched) = self.pending.remove(&txid) else {
+            return candidate(self.node, txid, rejected, self.retention);
         };
-        result.map_err(fetch_error)
+        prefetched
     }
 
     fn prefetch(&mut self, requests: &[RecordRequest]) {
@@ -122,7 +156,7 @@ impl MultipartSource for Source<'_> {
                     let txid = request.reference.txid;
                     (
                         txid,
-                        scope.spawn(move || retained_record(node, txid, retention)),
+                        scope.spawn(move || candidate(node, txid, &[], retention)),
                     )
                 })
                 .collect();
@@ -131,9 +165,9 @@ impl MultipartSource for Source<'_> {
                     Ok(result) => result,
                     Err(payload) => {
                         tracing::warn!(payload_type = ?payload.type_id(), "multipart fetch worker panicked");
-                        Err(Error::Io(std::io::Error::other(
+                        Err(FetchError::Source(Error::Io(std::io::Error::other(
                             "multipart fetch worker panicked",
-                        )))
+                        ))))
                     }
                 };
                 self.pending.insert(txid, result);
@@ -159,9 +193,10 @@ fn recover_from(
                 | RecoveryError::InvalidCandidate { cause: error, .. } => Error::Protocol(error),
                 RecoveryError::Source { cause, .. } => cause,
                 RecoveryError::Storage(cause) => Error::Io(cause),
-                RecoveryError::Incomplete { txid } => {
-                    Error::Missing(format!("multipart record unavailable: {txid}"))
-                }
+                RecoveryError::Incomplete { txid } => Error::Missing(format!(
+                    "record {txid} has no confirmed inclusion on {:?}; check the TXID, wait for confirmation or use --testnet for Litecoin test data",
+                    source.node.chain()
+                )),
                 RecoveryError::Capacity(message) => Error::Capacity(message),
             },
         )?;

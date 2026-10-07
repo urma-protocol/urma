@@ -207,11 +207,7 @@ impl Router {
         method: &str,
         args: &[Value],
     ) -> Result<Answer, Error> {
-        ensure!(
-            config::PUBLIC_METHODS.contains(&method),
-            "public transport supports chain reads and signed transaction submission only"
-        );
-        let mut candidates = self.candidates(method, Instant::now());
+        let mut candidates = self.candidates(method, Instant::now())?;
         match preference {
             Preference::Provider(label) => {
                 let found = candidates
@@ -225,6 +221,37 @@ impl Router {
             }
             Preference::Any => (),
         }
+        self.answer_from(&candidates, chain, method, args)
+    }
+
+    pub fn answer_avoiding(
+        &self,
+        avoid: &[String],
+        chain: Chain,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Answer, Error> {
+        let mut candidates = self.candidates(method, Instant::now())?;
+        candidates.retain(|index| !avoid.contains(&self.slots[*index].provider.label()));
+        if candidates.is_empty()
+            && self.slots.iter().all(|slot| {
+                !slot.provider.supports(method) || avoid.contains(&slot.provider.label())
+            })
+        {
+            return Err(Error::Missing(format!(
+                "{method} on {chain:?}: every provider that serves it was rejected"
+            )));
+        }
+        self.answer_from(&candidates, chain, method, args)
+    }
+
+    fn answer_from(
+        &self,
+        candidates: &[usize],
+        chain: Chain,
+        method: &str,
+        args: &[Value],
+    ) -> Result<Answer, Error> {
         ensure!(
             !candidates.is_empty(),
             "{method} on {chain:?}: no public provider is available for this method right now; retry shortly or configure a local node"
@@ -235,7 +262,7 @@ impl Router {
         }
         let mut failures = Vec::new();
         let mut absent = 0;
-        for index in &candidates {
+        for index in candidates {
             match self.attempt(&self.slots[*index], chain, method, args) {
                 Outcome::Answered(answer) => return Ok(answer),
                 Outcome::Absent(message) => {
@@ -264,7 +291,11 @@ impl Router {
         Err(Error::Unsupported(message))
     }
 
-    fn candidates(&self, method: &str, now: Instant) -> Vec<usize> {
+    fn candidates(&self, method: &str, now: Instant) -> Result<Vec<usize>, Error> {
+        ensure!(
+            config::PUBLIC_METHODS.contains(&method),
+            "public transport supports chain reads and signed transaction submission only"
+        );
         let mut ranked = Vec::new();
         for (index, slot) in self.slots.iter().enumerate() {
             if !slot.provider.supports(method) {
@@ -282,7 +313,7 @@ impl Router {
             tracing::debug!(?evidence, failures, index, method, "provider candidate");
             order.push(index);
         }
-        order
+        Ok(order)
     }
 
     fn attempt(&self, slot: &Slot, chain: Chain, method: &str, args: &[Value]) -> Outcome {

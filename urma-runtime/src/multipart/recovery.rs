@@ -10,18 +10,29 @@ use std::{
     fs::File,
     io::{Read, Seek, SeekFrom, Write},
     path::Path,
+    time::{Duration, Instant},
 };
 use urma_core::error::Error;
+
+#[derive(Clone, Debug)]
+pub struct Candidate {
+    pub origin: String,
+    pub record: VerifiedRecord,
+}
 
 #[derive(Debug)]
 pub enum FetchError {
     Unavailable,
-    Rejected(Error),
+    Rejected { origin: String, cause: Error },
     Source(ServiceError),
 }
 
 pub trait MultipartSource {
-    fn fetch(&mut self, request: &RecordRequest) -> Result<VerifiedRecord, FetchError>;
+    fn fetch(
+        &mut self,
+        request: &RecordRequest,
+        rejected: &[String],
+    ) -> Result<Candidate, FetchError>;
 
     fn prefetch(&mut self, _requests: &[RecordRequest]) {}
 }
@@ -30,6 +41,22 @@ pub trait MultipartSource {
 pub struct RecoveryLimits {
     pub max_payload_bytes: u64,
     pub max_nodes: u32,
+    pub attempts: u32,
+    pub timeout: Duration,
+}
+
+impl RecoveryLimits {
+    pub const ATTEMPTS: u32 = 4;
+    pub const TIMEOUT: Duration = Duration::from_secs(24 * 60 * 60);
+
+    pub fn new(max_payload_bytes: u64, max_nodes: u32) -> Self {
+        Self {
+            max_payload_bytes,
+            max_nodes,
+            attempts: Self::ATTEMPTS,
+            timeout: Self::TIMEOUT,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -98,26 +125,109 @@ impl Seek for RecoveredObject {
     }
 }
 
+struct Budget {
+    attempts: u32,
+    started: Instant,
+    timeout: Duration,
+}
+
+impl Budget {
+    fn new(limits: RecoveryLimits) -> Self {
+        Self {
+            attempts: limits.attempts.max(1),
+            started: Instant::now(),
+            timeout: limits.timeout,
+        }
+    }
+
+    fn expired(&self) -> bool {
+        self.started.elapsed() >= self.timeout
+    }
+}
+
+enum Attempted {
+    Nothing,
+    Rejected(Error),
+    Failed(ServiceError),
+}
+
+fn given_up(txid: Txid, attempted: Attempted) -> RecoveryError {
+    match attempted {
+        Attempted::Nothing => RecoveryError::Source {
+            txid,
+            cause: ServiceError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                "recovery deadline passed",
+            )),
+        },
+        Attempted::Rejected(cause) => RecoveryError::InvalidCandidate { txid, cause },
+        Attempted::Failed(cause) => RecoveryError::Source { txid, cause },
+    }
+}
+
+fn unavailable(txid: Txid, attempted: Attempted) -> RecoveryError {
+    match attempted {
+        Attempted::Nothing => RecoveryError::Incomplete { txid },
+        Attempted::Rejected(cause) => RecoveryError::InvalidCandidate { txid, cause },
+        Attempted::Failed(cause) => {
+            tracing::warn!(%txid, error = %cause, "record unavailable after a transport failure");
+            RecoveryError::Incomplete { txid }
+        }
+    }
+}
+
+fn accept(
+    request: &RecordRequest,
+    record: VerifiedRecord,
+    author: XOnlyPublicKey,
+) -> Result<VerifiedRecord, RecoveryError> {
+    request.check_hash(&record)?;
+    if record.author() != author {
+        return Err(Error::Invalid("referenced child author differs from root".into()).into());
+    }
+    Ok(record)
+}
+
 fn fetch<S: MultipartSource>(
     source: &mut S,
     reference: ChildReference,
     author: XOnlyPublicKey,
+    budget: &Budget,
 ) -> Result<VerifiedRecord, RecoveryError> {
     let request = RecordRequest { reference };
     let txid = reference.txid;
-    let verified = source.fetch(&request).map_err(|error| match error {
-        FetchError::Unavailable => RecoveryError::Incomplete { txid },
-        FetchError::Rejected(cause) => RecoveryError::InvalidCandidate { txid, cause },
-        FetchError::Source(cause) => RecoveryError::Source { txid, cause },
-    })?;
-    request
-        .check_txid(&verified)
-        .map_err(|cause| RecoveryError::InvalidCandidate { txid, cause })?;
-    request.check_hash(&verified)?;
-    if verified.author() != author {
-        return Err(Error::Invalid("referenced child author differs from root".into()).into());
+    let mut rejected: Vec<String> = Vec::new();
+    let mut attempted = Attempted::Nothing;
+    for attempt in 1..=budget.attempts {
+        if budget.expired() {
+            return Err(given_up(txid, attempted));
+        }
+        let (origin, cause) = match source.fetch(&request, &rejected) {
+            Ok(candidate) => match request.check_txid(&candidate.record) {
+                Ok(()) => return accept(&request, candidate.record, author),
+                Err(cause) => {
+                    tracing::warn!(%txid, origin = %candidate.origin, error = %cause, "candidate rejected");
+                    (candidate.origin, cause)
+                }
+            },
+            Err(FetchError::Rejected { origin, cause }) => {
+                tracing::warn!(%txid, %origin, error = %cause, "candidate rejected");
+                (origin, cause)
+            }
+            Err(FetchError::Source(cause)) => {
+                tracing::warn!(%txid, attempt, error = %cause, "multipart fetch failed; asking again");
+                attempted = Attempted::Failed(cause);
+                continue;
+            }
+            Err(FetchError::Unavailable) => return Err(unavailable(txid, attempted)),
+        };
+        if rejected.contains(&origin) {
+            return Err(RecoveryError::InvalidCandidate { txid, cause });
+        }
+        rejected.push(origin);
+        attempted = Attempted::Rejected(cause);
     }
-    Ok(verified)
+    Err(given_up(txid, attempted))
 }
 
 fn inventory_error(cause: Error) -> RecoveryError {
@@ -131,6 +241,7 @@ fn inventory<S: MultipartSource>(
     root: &VerifiedRecord,
     manifest: &RootManifest,
     source: &mut S,
+    budget: &Budget,
     file: &mut File,
 ) -> Result<(), RecoveryError> {
     let mut inventory = ManifestInventory::new(root.txid(), manifest).map_err(inventory_error)?;
@@ -145,7 +256,7 @@ fn inventory<S: MultipartSource>(
             .collect();
         source.prefetch(&requests);
         for entry in batch {
-            let verified = fetch(source, *entry, root.author())?;
+            let verified = fetch(source, *entry, root.author(), budget)?;
             let MultipartRecord::Leaf(leaf) = verified.decode()? else {
                 return Err(Error::Invalid("root must reference leaf manifests".into()).into());
             };
@@ -184,6 +295,7 @@ fn reconstruct_parts<S: MultipartSource>(
     author: XOnlyPublicKey,
     manifest: &RootManifest,
     geometry: Geometry,
+    budget: &Budget,
     inventory: &mut File,
     payload: &mut File,
 ) -> Result<(), RecoveryError> {
@@ -196,7 +308,7 @@ fn reconstruct_parts<S: MultipartSource>(
         source.prefetch(&requests);
         for (offset, request) in requests.into_iter().enumerate() {
             let index = start + u32::try_from(offset).map_err(Error::from)?;
-            let verified = fetch(source, request.reference, author)?;
+            let verified = fetch(source, request.reference, author, budget)?;
             let MultipartRecord::Data(part) = verified.decode()? else {
                 return Err(Error::Invalid("leaf must reference data parts".into()).into());
             };
@@ -237,14 +349,16 @@ pub fn reconstruct<S: MultipartSource>(
             "object exceeds caller's byte/node budget".into(),
         ));
     }
+    let budget = Budget::new(limits);
     let mut references = tempfile::tempfile_in(scratch_directory)?;
-    inventory(root, &manifest, source, &mut references)?;
+    inventory(root, &manifest, source, &budget, &mut references)?;
     let mut payload = tempfile::tempfile_in(scratch_directory)?;
     reconstruct_parts(
         source,
         root.author(),
         &manifest,
         geometry,
+        &budget,
         &mut references,
         &mut payload,
     )?;

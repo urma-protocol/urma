@@ -18,7 +18,7 @@ use tracing_subscriber::{
 };
 use urma_runtime::{
     disk_plan::DiskPlan,
-    multipart::{self, FetchError, MultipartSource, RecordRequest, VerifiedRecord},
+    multipart::{self, Candidate, FetchError, MultipartSource, RecordRequest, VerifiedRecord},
     plan::PlanLimits,
 };
 
@@ -72,10 +72,18 @@ impl Events {
 
 struct Source(HashMap<bitcoin::Txid, VerifiedRecord>);
 impl MultipartSource for Source {
-    fn fetch(&mut self, request: &RecordRequest) -> Result<VerifiedRecord, FetchError> {
+    fn fetch(
+        &mut self,
+        request: &RecordRequest,
+        _rejected: &[String],
+    ) -> Result<Candidate, FetchError> {
         self.0
             .get(&request.reference.txid)
             .cloned()
+            .map(|record| Candidate {
+                origin: "plan".into(),
+                record,
+            })
             .ok_or(FetchError::Unavailable)
     }
 }
@@ -128,10 +136,7 @@ fn signed_and_recovered_progress_counts_real_work_without_changing_bytes() {
     }
     let root = source.0[&plan.root_txid.parse::<bitcoin::Txid>().unwrap()].clone();
     let events = Events::default();
-    let limits = multipart::RecoveryLimits {
-        max_payload_bytes: 1_000_000,
-        max_nodes: 20,
-    };
+    let limits = multipart::RecoveryLimits::new(1_000_000, 20);
     let mut recovered = tracing::subscriber::with_default(
         tracing_subscriber::registry().with(events.clone()),
         || multipart::reconstruct(&root, &mut source, limits, temp.path()).unwrap(),

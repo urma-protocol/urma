@@ -706,7 +706,7 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
     use sha2::{Digest, Sha256};
     use std::{collections::HashMap, io::Read};
     use urma_runtime::multipart::{
-        DataPart, FetchError, Geometry, LeafManifest, MultipartRecord, MultipartSource,
+        Candidate, DataPart, FetchError, Geometry, LeafManifest, MultipartRecord, MultipartSource,
         RecordRequest, RecoveryLimits, RootManifest, VerifiedRecord, reconstruct,
     };
     let temp = tempfile::tempdir()?;
@@ -789,7 +789,11 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
     sender.stop()?;
     struct Blocks(HashMap<Txid, Transaction>);
     impl MultipartSource for Blocks {
-        fn fetch(&mut self, request: &RecordRequest) -> Result<VerifiedRecord, FetchError> {
+        fn fetch(
+            &mut self,
+            request: &RecordRequest,
+            _rejected: &[String],
+        ) -> Result<Candidate, FetchError> {
             let reveal = self
                 .0
                 .get(&request.reference.txid)
@@ -798,7 +802,11 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
                 .0
                 .get(&reveal.input[0].previous_output.txid)
                 .ok_or(FetchError::Unavailable)?;
-            request.verify(reveal, commit).map_err(FetchError::Rejected)
+            let origin = String::from("blocks");
+            match request.verify(reveal, commit) {
+                Ok(record) => Ok(Candidate { origin, record }),
+                Err(cause) => Err(FetchError::Rejected { origin, cause }),
+            }
         }
     }
     let tip = receiver.call("getblockcount", &[])?.as_u64().unwrap();
@@ -825,10 +833,7 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
     let mut recovered = reconstruct(
         &verified,
         &mut source,
-        RecoveryLimits {
-            max_payload_bytes: 1_000_000,
-            max_nodes: 100,
-        },
+        RecoveryLimits::new(1_000_000, 100),
         temp.path(),
     )?;
     let mut actual = Vec::new();

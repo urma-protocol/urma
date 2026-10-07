@@ -11,7 +11,7 @@ use urma_runtime::node::Node;
 use urma_runtime::{
     error::Context,
     multipart::{
-        FetchError, MultipartRecord, MultipartSource, RecordRequest, RecoveredObject,
+        Candidate, FetchError, MultipartRecord, MultipartSource, RecordRequest, RecoveredObject,
         RecoveryLimits, VerifiedRecord,
     },
 };
@@ -150,12 +150,23 @@ impl DirectorySource<'_> {
 }
 
 impl MultipartSource for DirectorySource<'_> {
-    fn fetch(&mut self, request: &RecordRequest) -> Result<VerifiedRecord, FetchError> {
-        self.record(request.reference.txid)
-            .map_err(|error| match error {
-                urma_runtime::error::Error::Protocol(cause) => FetchError::Rejected(cause),
-                cause => FetchError::Source(cause),
-            })
+    fn fetch(
+        &mut self,
+        request: &RecordRequest,
+        rejected: &[String],
+    ) -> Result<Candidate, FetchError> {
+        let origin = String::from("retained proofs");
+        if rejected.contains(&origin) {
+            return Err(FetchError::Unavailable);
+        }
+        let record = match self.record(request.reference.txid) {
+            Ok(record) => record,
+            Err(urma_runtime::error::Error::Protocol(cause)) => {
+                return Err(FetchError::Rejected { origin, cause });
+            }
+            Err(cause) => return Err(FetchError::Source(cause)),
+        };
+        Ok(Candidate { origin, record })
     }
 }
 
