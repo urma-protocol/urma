@@ -1,0 +1,3076 @@
+{
+  "protocol": "URMA",
+  "wire_version": 0,
+  "schema_version": 1,
+  "license": "CC0-1.0",
+  "mode": "explicit-container-recovery",
+  "root": "root.bin",
+  "strict_status_note": "invalid means generic strict rejection, including unrelated, incomplete or conflicted inputs; it is not an error category",
+  "failure_counts_note": "Counts describe candidate dispositions under a full scan of intact framing; the API returns counts only on success",
+  "cases": [
+    {
+      "name": "complete",
+      "root": "root.bin",
+      "records": [
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete.urma",
+        "bytes": 32944,
+        "sha256": "2657c03b8900eb222f35650b840e4eab93e1a9a70358e5b84fe60206b94a1ce9"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "complete"
+    },
+    {
+      "name": "raw-duplicate",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/raw-duplicate.urma",
+        "bytes": 65876,
+        "sha256": "120c950c4e530bbbdeb4fa5ac8478055a57cc3fb5f8422c6dae90c82a208d935"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 2,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "complete"
+    },
+    {
+      "name": "shuffled-duplicate",
+      "root": "root.bin",
+      "records": [
+        "two-1",
+        "two-0",
+        "two-1"
+      ],
+      "container": {
+        "file": "recovery/shuffled-duplicate.urma",
+        "bytes": 98808,
+        "sha256": "57d4b038ac30838aecaffdd2f6683b7817ef89b714ab8e99eb649549d0b33f0e"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 2,
+          "total": 32778,
+          "digest": "c04141b9677eca4559f11d29cae6346918625c3e4a05bb9bac3c7fc5458d41d7",
+          "content_type": 0,
+          "original": {
+            "file": "recovery/two.original",
+            "bytes": 32778,
+            "sha256": "c04141b9677eca4559f11d29cae6346918625c3e4a05bb9bac3c7fc5458d41d7"
+          }
+        }
+      },
+      "strict_status": "complete"
+    },
+    {
+      "name": "ordered-duplicate",
+      "root": "root.bin",
+      "records": [
+        "two-0",
+        "two-1",
+        "two-1"
+      ],
+      "container": {
+        "file": "recovery/ordered-duplicate.urma",
+        "bytes": 98808,
+        "sha256": "3c259539dde23b0b340069f2b95b27e3db68f442bd92ef9b687e965338dbd364"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 2,
+          "total": 32778,
+          "digest": "c04141b9677eca4559f11d29cae6346918625c3e4a05bb9bac3c7fc5458d41d7",
+          "content_type": 0,
+          "original": {
+            "file": "recovery/two.original",
+            "bytes": 32778,
+            "sha256": "c04141b9677eca4559f11d29cae6346918625c3e4a05bb9bac3c7fc5458d41d7"
+          }
+        }
+      },
+      "strict_status": "complete"
+    },
+    {
+      "name": "complete-bad-mac-early",
+      "root": "root.bin",
+      "records": [
+        "bad-mac",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-mac-early.urma",
+        "bytes": 65876,
+        "sha256": "85b442de57a48b0baecd561e4f41a0db383433487c584b999cf93849e95acfd2"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-mac"
+    },
+    {
+      "name": "complete-bad-mac-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "bad-mac"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-mac-late.urma",
+        "bytes": 65876,
+        "sha256": "715824d65d1cf346fba18291825c1cf0c81f4a9797443ea777b20b9218da15fc"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-mac"
+    },
+    {
+      "name": "complete-forged-duplicate-early",
+      "root": "root.bin",
+      "records": [
+        "forged-duplicate",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-forged-duplicate-early.urma",
+        "bytes": 65876,
+        "sha256": "5c7adb012e92c933b170d3ebab3de40b01a50c12fb6671385c257491a1714cf5"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "forged-duplicate"
+    },
+    {
+      "name": "complete-forged-duplicate-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "forged-duplicate"
+      ],
+      "container": {
+        "file": "recovery/complete-forged-duplicate-late.urma",
+        "bytes": 65876,
+        "sha256": "3bad6e798e4ca0e6db832013bf94c86c8f8ad2581cdd6243cff301c8ff311ec6"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "forged-duplicate"
+    },
+    {
+      "name": "complete-tag-modified-early",
+      "root": "root.bin",
+      "records": [
+        "tag-modified",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-tag-modified-early.urma",
+        "bytes": 65876,
+        "sha256": "fcce80d686af245fbc725ed905c49975add7ef4a1c94741b2e7fa33741d7e39a"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "tag-modified"
+    },
+    {
+      "name": "complete-tag-modified-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "tag-modified"
+      ],
+      "container": {
+        "file": "recovery/complete-tag-modified-late.urma",
+        "bytes": 65876,
+        "sha256": "fac58cc73a8df4107eed11c5c4d905dae203f10517c75958234357a68461e05f"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "tag-modified"
+    },
+    {
+      "name": "complete-foreign-early",
+      "root": "root.bin",
+      "records": [
+        "foreign",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-foreign-early.urma",
+        "bytes": 65876,
+        "sha256": "6e01d5918d59785df82c3922930335e56b93a284d7e60179b2e11549976ddd71"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "foreign"
+    },
+    {
+      "name": "complete-foreign-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "foreign"
+      ],
+      "container": {
+        "file": "recovery/complete-foreign-late.urma",
+        "bytes": 65876,
+        "sha256": "2000833623d423e79d3e89a3a3915390a93226c743189415e15e7c0a6e9af921"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "foreign"
+    },
+    {
+      "name": "complete-foreign-bad-mac-early",
+      "root": "root.bin",
+      "records": [
+        "foreign-bad-mac",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-foreign-bad-mac-early.urma",
+        "bytes": 65876,
+        "sha256": "3b7abb56bcdf774a71434e7a8fbd7bcbd6ad74d8fd318a55da85396355383fca"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "foreign-bad-mac"
+    },
+    {
+      "name": "complete-foreign-bad-mac-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "foreign-bad-mac"
+      ],
+      "container": {
+        "file": "recovery/complete-foreign-bad-mac-late.urma",
+        "bytes": 65876,
+        "sha256": "c91c11b3be48ca0c654cade412ad60d23fcece115d883a9048d3d5432f8238db"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "foreign-bad-mac"
+    },
+    {
+      "name": "complete-wrong-id-bad-mac-early",
+      "root": "root.bin",
+      "records": [
+        "wrong-id-bad-mac",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-bad-mac-early.urma",
+        "bytes": 65876,
+        "sha256": "38e1aa384d259186dd043de5caadcee80b6acef4d6519113dee9e73c78484e4d"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-bad-mac"
+    },
+    {
+      "name": "complete-wrong-id-bad-mac-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "wrong-id-bad-mac"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-bad-mac-late.urma",
+        "bytes": 65876,
+        "sha256": "e732b31b55c163291bb9e334374f6c94568c5790e2569849cdf1876a3bbac840"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-bad-mac"
+    },
+    {
+      "name": "complete-wrong-tag-valid-mac-early",
+      "root": "root.bin",
+      "records": [
+        "wrong-tag-valid-mac",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-tag-valid-mac-early.urma",
+        "bytes": 65876,
+        "sha256": "fb2b2571a300ac4276dacd617c54812fbeeac7b4343f8b322d871a1c95e18a5a"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-tag-valid-mac"
+    },
+    {
+      "name": "complete-wrong-tag-valid-mac-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "wrong-tag-valid-mac"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-tag-valid-mac-late.urma",
+        "bytes": 65876,
+        "sha256": "0cbbd30c22aab04a36125a9b89cde36ad63720ee2bf1cecf1411b848232e3cc9"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-tag-valid-mac"
+    },
+    {
+      "name": "complete-non-urma-early",
+      "root": "root.bin",
+      "records": [
+        "non-urma",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-non-urma-early.urma",
+        "bytes": 65876,
+        "sha256": "ff4cf453ecfab2d5bc3d1a0c899246fb132fd5fe445e65580bbe81718826e58f"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "non-urma"
+    },
+    {
+      "name": "complete-non-urma-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "non-urma"
+      ],
+      "container": {
+        "file": "recovery/complete-non-urma-late.urma",
+        "bytes": 65876,
+        "sha256": "e9eed26acbf348da877320acca097464c8815b27f3fd4bb5fe2500213d060509"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "non-urma"
+    },
+    {
+      "name": "complete-public-kind-early",
+      "root": "root.bin",
+      "records": [
+        "public-kind",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-public-kind-early.urma",
+        "bytes": 65876,
+        "sha256": "c387f936659b77ad8b1de78746d5f1e1f22e04b0eaefe19acd585c908e27ad96"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "public-kind"
+    },
+    {
+      "name": "complete-public-kind-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "public-kind"
+      ],
+      "container": {
+        "file": "recovery/complete-public-kind-late.urma",
+        "bytes": 65876,
+        "sha256": "cde9df02c33db18f6babad8b80b492612a9f1ca3af351de9fd7a48014ae8b96a"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "public-kind"
+    },
+    {
+      "name": "complete-bad-header-version-early",
+      "root": "root.bin",
+      "records": [
+        "bad-header-version",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-header-version-early.urma",
+        "bytes": 65876,
+        "sha256": "f122c430620d6a0bcc22776d4aecd7ba6b4212bb75e7f7608b12c91795471392"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-header-version"
+    },
+    {
+      "name": "complete-bad-header-version-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "bad-header-version"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-header-version-late.urma",
+        "bytes": 65876,
+        "sha256": "3e603c552ddbf35649719200cbdf997ddd6eae0ed91d28a34e3bfeedbafef8c7"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-header-version"
+    },
+    {
+      "name": "complete-bad-header-kind-early",
+      "root": "root.bin",
+      "records": [
+        "bad-header-kind",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-header-kind-early.urma",
+        "bytes": 65876,
+        "sha256": "0fdb4a7c72064624b67cdd299d304fca2d377a5d62095b9e6085c487343e2fdc"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-header-kind"
+    },
+    {
+      "name": "complete-bad-header-kind-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "bad-header-kind"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-header-kind-late.urma",
+        "bytes": 65876,
+        "sha256": "c3c09c5eafb0851dd8bc15c16cba402b43e23ccadc82d910ca2c5610765aa12e"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-header-kind"
+    },
+    {
+      "name": "complete-bad-header-flags-early",
+      "root": "root.bin",
+      "records": [
+        "bad-header-flags",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-header-flags-early.urma",
+        "bytes": 65876,
+        "sha256": "f2c16f2751d06a16c98278707a8862f8940f6ff914118fab3893773da7fbca1d"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-header-flags"
+    },
+    {
+      "name": "complete-bad-header-flags-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "bad-header-flags"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-header-flags-late.urma",
+        "bytes": 65876,
+        "sha256": "9d4ebfb3874a59c136c7d48e7e2c127797809ff3890bbc12724911ede455f299"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-header-flags"
+    },
+    {
+      "name": "complete-bad-index-early",
+      "root": "root.bin",
+      "records": [
+        "bad-index",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-index-early.urma",
+        "bytes": 65876,
+        "sha256": "109dcde998661401783a3f5da154aac77990ff401fc940abad71731322adeb72"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-index"
+    },
+    {
+      "name": "complete-bad-index-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "bad-index"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-index-late.urma",
+        "bytes": 65876,
+        "sha256": "1b21fd6beb5852857292b96264d3b87d240f5af06e12b0958ea3e18abc0f0337"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-index"
+    },
+    {
+      "name": "complete-bad-count-early",
+      "root": "root.bin",
+      "records": [
+        "bad-count",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-count-early.urma",
+        "bytes": 65876,
+        "sha256": "8c73d783839df9454b61c5105170fb8e52891a70c6834b50f34aac7c2b2060f4"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-count"
+    },
+    {
+      "name": "complete-bad-count-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "bad-count"
+      ],
+      "container": {
+        "file": "recovery/complete-bad-count-late.urma",
+        "bytes": 65876,
+        "sha256": "5af83be8ef66d67fcd6c5bdecf9780e3df264456059041326f1f5a658dabc059"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "bad-count"
+    },
+    {
+      "name": "complete-post-mac-iv-early",
+      "root": "root.bin",
+      "records": [
+        "post-mac-iv",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-iv-early.urma",
+        "bytes": 65876,
+        "sha256": "6363902019cb5a3a513b59aaf64aa8467acfa4f98173a6be33494b5a26756951"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-iv"
+    },
+    {
+      "name": "complete-post-mac-iv-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "post-mac-iv"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-iv-late.urma",
+        "bytes": 65876,
+        "sha256": "25b732a1b5b569c533852f854942c5d7dc6c2a7f5e6b71fad4a1d9998f002c7e"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-iv"
+    },
+    {
+      "name": "complete-post-mac-length-zero-early",
+      "root": "root.bin",
+      "records": [
+        "post-mac-length-zero",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-length-zero-early.urma",
+        "bytes": 65876,
+        "sha256": "99fecfb5a1e3941d69dd435201165d72f26db48f33bc0e6ed4b105731fcd4406"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-length-zero"
+    },
+    {
+      "name": "complete-post-mac-length-zero-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "post-mac-length-zero"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-length-zero-late.urma",
+        "bytes": 65876,
+        "sha256": "3287fad2213ee3619530f151f911c8c04b3b29054d55a0c86e0e422fbaa4b366"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-length-zero"
+    },
+    {
+      "name": "complete-post-mac-length-overflow-early",
+      "root": "root.bin",
+      "records": [
+        "post-mac-length-overflow",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-length-overflow-early.urma",
+        "bytes": 65876,
+        "sha256": "77c96e520f4dbb73edc3a86d3a786df3dca5ecae9d85cc82a5b215d754273dce"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-length-overflow"
+    },
+    {
+      "name": "complete-post-mac-length-overflow-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "post-mac-length-overflow"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-length-overflow-late.urma",
+        "bytes": 65876,
+        "sha256": "55378903d49033f64ecd2b35107361717d19acf58290fb653f45b5f118962b3f"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-length-overflow"
+    },
+    {
+      "name": "complete-post-mac-length-count-early",
+      "root": "root.bin",
+      "records": [
+        "post-mac-length-count",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-length-count-early.urma",
+        "bytes": 65876,
+        "sha256": "72d3bf936d4b2433876d525045346a5520dd072eba2a576ac931528c5b4cc24d"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-length-count"
+    },
+    {
+      "name": "complete-post-mac-length-count-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "post-mac-length-count"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-length-count-late.urma",
+        "bytes": 65876,
+        "sha256": "a6d198023f479f6d4df52675f45e2c0e58026e2b96f187f3f055710631a02694"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-length-count"
+    },
+    {
+      "name": "complete-post-mac-type-early",
+      "root": "root.bin",
+      "records": [
+        "post-mac-type",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-type-early.urma",
+        "bytes": 65876,
+        "sha256": "69aa1bc8c2682029dabbee739d8e82384645cf881a829a5d82484e95b375df19"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-type"
+    },
+    {
+      "name": "complete-post-mac-type-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "post-mac-type"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-type-late.urma",
+        "bytes": 65876,
+        "sha256": "dd819723fedb53e9212b878b06fb9b5da8c708578035ee2ab10dd338465a3e40"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-type"
+    },
+    {
+      "name": "complete-post-mac-flags-early",
+      "root": "root.bin",
+      "records": [
+        "post-mac-flags",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-flags-early.urma",
+        "bytes": 65876,
+        "sha256": "45a246c8e41450dd8c9951179a2aea462a2e6b6fd396383a126a082314c0c304"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-flags"
+    },
+    {
+      "name": "complete-post-mac-flags-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "post-mac-flags"
+      ],
+      "container": {
+        "file": "recovery/complete-post-mac-flags-late.urma",
+        "bytes": 65876,
+        "sha256": "214b3a0d8788a86862d11895a24b3f31cf66c369413a75a52fbaaf70dec25709"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "post-mac-flags"
+    },
+    {
+      "name": "complete-wrong-id-post-mac-iv-early",
+      "root": "root.bin",
+      "records": [
+        "wrong-id-post-mac-iv",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-post-mac-iv-early.urma",
+        "bytes": 65876,
+        "sha256": "19ce46ff6ec9d6ae9759d2e89bd2f4314e34db60ac92430c96b0f3594b904741"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-post-mac-iv"
+    },
+    {
+      "name": "complete-wrong-id-post-mac-iv-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "wrong-id-post-mac-iv"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-post-mac-iv-late.urma",
+        "bytes": 65876,
+        "sha256": "594ade246d723316d88021845ddbb602ccaa20d8466e908db7d47b21c0dd2626"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-post-mac-iv"
+    },
+    {
+      "name": "complete-wrong-id-post-mac-length-early",
+      "root": "root.bin",
+      "records": [
+        "wrong-id-post-mac-length",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-post-mac-length-early.urma",
+        "bytes": 65876,
+        "sha256": "b066b581cd4b4a2e8b0229dae13323941db91c9bf7dc9378c11eb8d46b20faa9"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-post-mac-length"
+    },
+    {
+      "name": "complete-wrong-id-post-mac-length-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "wrong-id-post-mac-length"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-post-mac-length-late.urma",
+        "bytes": 65876,
+        "sha256": "dad6467011ea17f71ed410b714f939781c831645c96a8cbc889423d80512d033"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-post-mac-length"
+    },
+    {
+      "name": "complete-wrong-id-post-mac-type-early",
+      "root": "root.bin",
+      "records": [
+        "wrong-id-post-mac-type",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-post-mac-type-early.urma",
+        "bytes": 65876,
+        "sha256": "eabce40d324c36cfcf729605250a507e1e256901ddfb87e0af6faf517e906d24"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-post-mac-type"
+    },
+    {
+      "name": "complete-wrong-id-post-mac-type-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "wrong-id-post-mac-type"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-post-mac-type-late.urma",
+        "bytes": 65876,
+        "sha256": "c8c898f7a8bdc652f550492cfec6ea85f44c6307daf47042b8280ba0c82be32b"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-post-mac-type"
+    },
+    {
+      "name": "complete-wrong-id-post-mac-flags-early",
+      "root": "root.bin",
+      "records": [
+        "wrong-id-post-mac-flags",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-post-mac-flags-early.urma",
+        "bytes": 65876,
+        "sha256": "97f815a7f874598d54227b3b7d9840e5c02b1a8d0dc181456bf18de56a60792e"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-post-mac-flags"
+    },
+    {
+      "name": "complete-wrong-id-post-mac-flags-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "wrong-id-post-mac-flags"
+      ],
+      "container": {
+        "file": "recovery/complete-wrong-id-post-mac-flags-late.urma",
+        "bytes": 65876,
+        "sha256": "7fa365a6298e2a77556c3fa98dd9601c5e4daab5c9c1fccaf1512cb34073674f"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "wrong-id-post-mac-flags"
+    },
+    {
+      "name": "complete-all-skips-early",
+      "root": "root.bin",
+      "records": [
+        "bad-mac",
+        "forged-duplicate",
+        "tag-modified",
+        "foreign",
+        "foreign-bad-mac",
+        "wrong-id-bad-mac",
+        "wrong-tag-valid-mac",
+        "non-urma",
+        "public-kind",
+        "bad-header-version",
+        "bad-header-kind",
+        "bad-header-flags",
+        "bad-index",
+        "bad-count",
+        "post-mac-iv",
+        "post-mac-length-zero",
+        "post-mac-length-overflow",
+        "post-mac-length-count",
+        "post-mac-type",
+        "post-mac-flags",
+        "wrong-id-post-mac-iv",
+        "wrong-id-post-mac-length",
+        "wrong-id-post-mac-type",
+        "wrong-id-post-mac-flags",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/complete-all-skips-early.urma",
+        "bytes": 823312,
+        "sha256": "0625808457a1c1827ba077ee9949c5ddb2cf4bb33240bc27f64d609f8513f64a"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 6,
+        "rejected_records": 18,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "all-skips"
+    },
+    {
+      "name": "complete-all-skips-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "wrong-id-post-mac-flags",
+        "wrong-id-post-mac-type",
+        "wrong-id-post-mac-length",
+        "wrong-id-post-mac-iv",
+        "post-mac-flags",
+        "post-mac-type",
+        "post-mac-length-count",
+        "post-mac-length-overflow",
+        "post-mac-length-zero",
+        "post-mac-iv",
+        "bad-count",
+        "bad-index",
+        "bad-header-flags",
+        "bad-header-kind",
+        "bad-header-version",
+        "public-kind",
+        "non-urma",
+        "wrong-tag-valid-mac",
+        "wrong-id-bad-mac",
+        "foreign-bad-mac",
+        "foreign",
+        "tag-modified",
+        "forged-duplicate",
+        "bad-mac"
+      ],
+      "container": {
+        "file": "recovery/complete-all-skips-late.urma",
+        "bytes": 823312,
+        "sha256": "bd0b2199657f2f3993c7a31a5997086a885e119c69fc82b817d1d5ac8d42cebe"
+      },
+      "expected": {
+        "status": "complete",
+        "skipped_unrelated": 6,
+        "rejected_records": 18,
+        "valid_records": 1,
+        "object": {
+          "id": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+          "count": 1,
+          "total": 32,
+          "digest": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0",
+          "content_type": 1,
+          "original": {
+            "file": "recovery/text.original",
+            "bytes": 32,
+            "sha256": "857587627b09e82739c1d98a07ec3dd5d16ab67970af1abfba3bb9112c5285e0"
+          }
+        }
+      },
+      "strict_status": "invalid",
+      "order_group": "all-skips"
+    },
+    {
+      "name": "zero-valid-invalid",
+      "root": "root.bin",
+      "records": [
+        "bad-mac",
+        "post-mac-iv",
+        "wrong-id-post-mac-flags"
+      ],
+      "container": {
+        "file": "recovery/zero-valid-invalid.urma",
+        "bytes": 98808,
+        "sha256": "90236760d2fc25ce70fa1a02cc5e7a116d0fff025f4f0e33b575a86682e843a2"
+      },
+      "expected": {
+        "status": "no-object",
+        "skipped_unrelated": 0,
+        "rejected_records": 3,
+        "valid_records": 0
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "zero-valid-unrelated",
+      "root": "root.bin",
+      "records": [
+        "foreign",
+        "tag-modified",
+        "wrong-tag-valid-mac"
+      ],
+      "container": {
+        "file": "recovery/zero-valid-unrelated.urma",
+        "bytes": 98808,
+        "sha256": "b68a444f23f1a4eb767bca4ff63954b2870552b52a07b06dc7bc149fc122788d"
+      },
+      "expected": {
+        "status": "no-object",
+        "skipped_unrelated": 3,
+        "rejected_records": 0,
+        "valid_records": 0
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "zero-valid-mixed-skips",
+      "root": "root.bin",
+      "records": [
+        "foreign",
+        "bad-mac",
+        "wrong-id-post-mac-type"
+      ],
+      "container": {
+        "file": "recovery/zero-valid-mixed-skips.urma",
+        "bytes": 98808,
+        "sha256": "05829b92edcfc2d8e4b35c89e5f74e2d1c7f12c567b96eead2f65803ce1f9832"
+      },
+      "expected": {
+        "status": "no-object",
+        "skipped_unrelated": 1,
+        "rejected_records": 2,
+        "valid_records": 0
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "wrong-root",
+      "root": "wrong-root.bin",
+      "records": [
+        "text"
+      ],
+      "container": {
+        "file": "recovery/wrong-root.urma",
+        "bytes": 32944,
+        "sha256": "2657c03b8900eb222f35650b840e4eab93e1a9a70358e5b84fe60206b94a1ce9"
+      },
+      "expected": {
+        "status": "no-object",
+        "skipped_unrelated": 1,
+        "rejected_records": 0,
+        "valid_records": 0
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "missing-unique-index",
+      "root": "root.bin",
+      "records": [
+        "two-0",
+        "two-0"
+      ],
+      "container": {
+        "file": "recovery/missing-unique-index.urma",
+        "bytes": 65876,
+        "sha256": "bdd4d021d3f563dc606b15b8e6a0f4a7e704750946a032fbd1421ed00dcd7507"
+      },
+      "expected": {
+        "status": "incomplete",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 2
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "missing-first-index",
+      "root": "root.bin",
+      "records": [
+        "two-1",
+        "two-1",
+        "bad-mac"
+      ],
+      "container": {
+        "file": "recovery/missing-first-index.urma",
+        "bytes": 98808,
+        "sha256": "6e2a8620be7dfc6de77276a7437945577cf28abcc711bfbf0e89985d5b70d047"
+      },
+      "expected": {
+        "status": "incomplete",
+        "skipped_unrelated": 0,
+        "rejected_records": 1,
+        "valid_records": 2
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "padding-conflict-early",
+      "root": "root.bin",
+      "records": [
+        "two-1",
+        "padding-conflict",
+        "two-0"
+      ],
+      "container": {
+        "file": "recovery/padding-conflict-early.urma",
+        "bytes": 98808,
+        "sha256": "703ee1a07f72ffe2d2064ee9a660354e71a01309f19606bf1a5045d03246a490"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "padding-conflict"
+    },
+    {
+      "name": "padding-conflict-late",
+      "root": "root.bin",
+      "records": [
+        "two-0",
+        "two-1",
+        "padding-conflict"
+      ],
+      "container": {
+        "file": "recovery/padding-conflict-late.urma",
+        "bytes": 98808,
+        "sha256": "393b9ef63b95c1699354372eb2d35e8d408377217a238892dac8a9e984993646"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "padding-conflict"
+    },
+    {
+      "name": "padding-conflict-first",
+      "root": "root.bin",
+      "records": [
+        "padding-conflict",
+        "two-0",
+        "two-1"
+      ],
+      "container": {
+        "file": "recovery/padding-conflict-first.urma",
+        "bytes": 98808,
+        "sha256": "00150cb479de42607d24b15f3ed547d8cd57ceb1d9f4e538fd3b87ef82d94459"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "padding-conflict"
+    },
+    {
+      "name": "type-conflict-early",
+      "root": "root.bin",
+      "records": [
+        "two-1",
+        "type-conflict",
+        "two-0"
+      ],
+      "container": {
+        "file": "recovery/type-conflict-early.urma",
+        "bytes": 98808,
+        "sha256": "966325b2e9e42d264aed2a49659dec1ab2b8ca0a7cf132b134f1148b1cba0a67"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "type-conflict"
+    },
+    {
+      "name": "type-conflict-late",
+      "root": "root.bin",
+      "records": [
+        "two-0",
+        "two-1",
+        "type-conflict"
+      ],
+      "container": {
+        "file": "recovery/type-conflict-late.urma",
+        "bytes": 98808,
+        "sha256": "2ee564c1a03e198667f6ff6bb0354c12b2a58d780c2c8801639716978c5e14fe"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "type-conflict"
+    },
+    {
+      "name": "type-conflict-first",
+      "root": "root.bin",
+      "records": [
+        "type-conflict",
+        "two-0",
+        "two-1"
+      ],
+      "container": {
+        "file": "recovery/type-conflict-first.urma",
+        "bytes": 98808,
+        "sha256": "a4d3b3d62cfef63cacfacecf8cc595a3420e8e0e98bad12350c95d706ae615c8"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "type-conflict"
+    },
+    {
+      "name": "length-conflict-early",
+      "root": "root.bin",
+      "records": [
+        "two-1",
+        "length-conflict",
+        "two-0"
+      ],
+      "container": {
+        "file": "recovery/length-conflict-early.urma",
+        "bytes": 98808,
+        "sha256": "8b2fac16ee5c2a84317f9e50098bc0b7ec1b239347178e02990ea42516685bdf"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "length-conflict"
+    },
+    {
+      "name": "length-conflict-late",
+      "root": "root.bin",
+      "records": [
+        "two-0",
+        "two-1",
+        "length-conflict"
+      ],
+      "container": {
+        "file": "recovery/length-conflict-late.urma",
+        "bytes": 98808,
+        "sha256": "b382ddde6fd51db8e2028de81bb87560f231eeccc867047b54a9ceabf07d38f7"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "length-conflict"
+    },
+    {
+      "name": "length-conflict-first",
+      "root": "root.bin",
+      "records": [
+        "length-conflict",
+        "two-0",
+        "two-1"
+      ],
+      "container": {
+        "file": "recovery/length-conflict-first.urma",
+        "bytes": 98808,
+        "sha256": "54925170a60bc78be7737a4ad242cda13c2374829dab0db09965c3be4c3ff05f"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "length-conflict"
+    },
+    {
+      "name": "count-conflict-early",
+      "root": "root.bin",
+      "records": [
+        "two-1",
+        "count-conflict",
+        "two-0"
+      ],
+      "container": {
+        "file": "recovery/count-conflict-early.urma",
+        "bytes": 98808,
+        "sha256": "7a804262f18b0292ace9148ab4bebd88eb0c1ba51e54eb60ae337473e5537478"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "count-conflict"
+    },
+    {
+      "name": "count-conflict-late",
+      "root": "root.bin",
+      "records": [
+        "two-0",
+        "two-1",
+        "count-conflict"
+      ],
+      "container": {
+        "file": "recovery/count-conflict-late.urma",
+        "bytes": 98808,
+        "sha256": "478b2a166840ec9bcf7499b492242e5f7c578941bf0e8dd80405bc964dec0453"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "count-conflict"
+    },
+    {
+      "name": "count-conflict-first",
+      "root": "root.bin",
+      "records": [
+        "count-conflict",
+        "two-0",
+        "two-1"
+      ],
+      "container": {
+        "file": "recovery/count-conflict-first.urma",
+        "bytes": 98808,
+        "sha256": "33b1021b88ac71fa1cf5793a7f38f571d50c527a4a2cf2ebab11c3c876a6e1ca"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "count-conflict"
+    },
+    {
+      "name": "digest-conflict-early",
+      "root": "root.bin",
+      "records": [
+        "two-1",
+        "digest-conflict",
+        "two-0"
+      ],
+      "container": {
+        "file": "recovery/digest-conflict-early.urma",
+        "bytes": 98808,
+        "sha256": "8db501c1c9052968154e92204a66bd102cc8aa77f2e7445fa8a0c3f672a828b1"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "digest-conflict"
+    },
+    {
+      "name": "digest-conflict-late",
+      "root": "root.bin",
+      "records": [
+        "two-0",
+        "two-1",
+        "digest-conflict"
+      ],
+      "container": {
+        "file": "recovery/digest-conflict-late.urma",
+        "bytes": 98808,
+        "sha256": "a7756c0b16752d03598ec85669595d3ba4d4bd519a5c49c4c626700ee1e9eff2"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "digest-conflict"
+    },
+    {
+      "name": "digest-conflict-first",
+      "root": "root.bin",
+      "records": [
+        "digest-conflict",
+        "two-0",
+        "two-1"
+      ],
+      "container": {
+        "file": "recovery/digest-conflict-first.urma",
+        "bytes": 98808,
+        "sha256": "4d99bf332c9d775cb03b362a1d75edf2a04e00c062b7102766294ca9dbb292aa"
+      },
+      "expected": {
+        "status": "conflict",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 3
+      },
+      "strict_status": "invalid",
+      "order_group": "digest-conflict"
+    },
+    {
+      "name": "mixed-other-complete-early",
+      "root": "root.bin",
+      "records": [
+        "other-complete",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/mixed-other-complete-early.urma",
+        "bytes": 65876,
+        "sha256": "7e31093afa1b0445ff3689dcc152b0450b88ee010b9fc333dcf6d71a76f243c8"
+      },
+      "expected": {
+        "status": "mixed",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 2
+      },
+      "strict_status": "invalid",
+      "order_group": "other-complete"
+    },
+    {
+      "name": "mixed-other-complete-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "other-complete"
+      ],
+      "container": {
+        "file": "recovery/mixed-other-complete-late.urma",
+        "bytes": 65876,
+        "sha256": "a20a0bd805e8e3d206f4e17de6ab59ccc21cc2bec8aca8f1994fe30e92a3cd00"
+      },
+      "expected": {
+        "status": "mixed",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 2
+      },
+      "strict_status": "invalid",
+      "order_group": "other-complete"
+    },
+    {
+      "name": "mixed-other-partial-early",
+      "root": "root.bin",
+      "records": [
+        "other-partial",
+        "text"
+      ],
+      "container": {
+        "file": "recovery/mixed-other-partial-early.urma",
+        "bytes": 65876,
+        "sha256": "c18444de2a3e672bc2a0634406414817384ea0a9fd3883d058b9ae545288796f"
+      },
+      "expected": {
+        "status": "mixed",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 2
+      },
+      "strict_status": "invalid",
+      "order_group": "other-partial"
+    },
+    {
+      "name": "mixed-other-partial-late",
+      "root": "root.bin",
+      "records": [
+        "text",
+        "other-partial"
+      ],
+      "container": {
+        "file": "recovery/mixed-other-partial-late.urma",
+        "bytes": 65876,
+        "sha256": "192dd0245b169eef6fbb77fdb2aaaa4e4667d1ac18de2f38720960a3c2ab2765"
+      },
+      "expected": {
+        "status": "mixed",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 2
+      },
+      "strict_status": "invalid",
+      "order_group": "other-partial"
+    },
+    {
+      "name": "final-hash-fail",
+      "root": "root.bin",
+      "records": [
+        "final-hash-fail"
+      ],
+      "container": {
+        "file": "recovery/final-hash-fail.urma",
+        "bytes": 32944,
+        "sha256": "f1da2364172a2b221b7c982ff56e3b9bc883c2b0638f6b2203f2a6f51ceb6ce3"
+      },
+      "expected": {
+        "status": "hash-mismatch",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 1
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "final-hash-fail-with-skips",
+      "root": "root.bin",
+      "records": [
+        "bad-mac",
+        "final-hash-fail",
+        "foreign"
+      ],
+      "container": {
+        "file": "recovery/final-hash-fail-with-skips.urma",
+        "bytes": 98808,
+        "sha256": "66a23fac1272a6f80c63666c8385f2b824de8f7fd0f9e479413e1692f1792bf6"
+      },
+      "expected": {
+        "status": "hash-mismatch",
+        "skipped_unrelated": 1,
+        "rejected_records": 1,
+        "valid_records": 1
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "two-final-hash-fail",
+      "root": "root.bin",
+      "records": [
+        "two-hash-fail-1",
+        "two-hash-fail-0"
+      ],
+      "container": {
+        "file": "recovery/two-final-hash-fail.urma",
+        "bytes": 65876,
+        "sha256": "b6b20ca08cb9b2484b73a39833d7c5d5d3579c2710f36cbf04f38e5692e4f190"
+      },
+      "expected": {
+        "status": "hash-mismatch",
+        "skipped_unrelated": 0,
+        "rejected_records": 0,
+        "valid_records": 2
+      },
+      "strict_status": "invalid"
+    },
+    {
+      "name": "wrapper-count-zero",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/wrapper-count-zero.urma",
+        "bytes": 12,
+        "sha256": "4ab6f9bcaf97f5e159879a598c58abea9dfc46adb3963cda38217c21ebee0923"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "wrapper-zero-with-record",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/wrapper-zero-with-record.urma",
+        "bytes": 32944,
+        "sha256": "4b26829d283e0052371f27e7fd6b9776e9fde43044b1b754c1ab0edba3676bc0"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "wrapper-count-too-large",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/wrapper-count-too-large.urma",
+        "bytes": 32944,
+        "sha256": "b4cf0ce8cd65b5b754fb47344d8fae8ca003b7b2ba962d41c188232314581791"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "wrapper-count-too-small",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/wrapper-count-too-small.urma",
+        "bytes": 65876,
+        "sha256": "957cbd5c5cd0fd42fc3ee09dd003583b38d029207f02a451779f21e6745eba94"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "wrapper-count-max",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/wrapper-count-max.urma",
+        "bytes": 32944,
+        "sha256": "3bbc265bb7120b051b2bf46908a3da85562fbc13bf92a4c3e715a27335e05f26"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "record-length-zero",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/record-length-zero.urma",
+        "bytes": 32944,
+        "sha256": "bdcda8e6b47bf4f7c1350a66aad756ac96d7d18938ad5281b676f290abc98deb"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "record-length-short",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/record-length-short.urma",
+        "bytes": 32944,
+        "sha256": "698c87f808df08a359765d7284db904c5f37219df7daf64bce759812f12efc16"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "record-length-long",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/record-length-long.urma",
+        "bytes": 32944,
+        "sha256": "55af8996be9059e286b9afa4af312ce29c631b035fa2ad7261d60fa5a4a43c6e"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "record-length-max",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/record-length-max.urma",
+        "bytes": 32944,
+        "sha256": "56aee86e39bcb505a03d217d493ac21727674142b69e2a29016076dffa3ac64a"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "trailing",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/trailing.urma",
+        "bytes": 32945,
+        "sha256": "48199120fa13775aa854205965003d1bc706cc1051c5b7bec59d1c6de326dfdb"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "truncated-record",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/truncated-record.urma",
+        "bytes": 32943,
+        "sha256": "409bbab18cf0b1409c44aa0bb8e82a695968118378ababe80ed14884cd67181d"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "truncated-length",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/truncated-length.urma",
+        "bytes": 14,
+        "sha256": "91bd7c67785a75bad653f4244232fb490556527cc326c5aee5fa35a53af40abe"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "truncated-header",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/truncated-header.urma",
+        "bytes": 11,
+        "sha256": "621a0b4a281b078155fdf9feffdf83166bd442dbdc6eded086e1e13c54d7f251"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "truncated-after-complete",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/truncated-after-complete.urma",
+        "bytes": 65875,
+        "sha256": "7a23bda0da91c28289a27d3c8e133b25f3c0522e25ebacda3f034b50ba0fdbe4"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "trailing-after-skips",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/trailing-after-skips.urma",
+        "bytes": 65877,
+        "sha256": "b7aa48a506163e50428c4a088a57bc602a536d86fed59306e6076db3d87b73f9"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "wrapper-version",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/wrapper-version.urma",
+        "bytes": 32944,
+        "sha256": "a17c965ebd8cd68f2b1001eca0a7083e61e7ad3214acb4082f4fb0e8efaf0e83"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "wrapper-kind",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/wrapper-kind.urma",
+        "bytes": 32944,
+        "sha256": "db69b79a354868f409bd75c5cbe8c7787894a199a08ba1614f3011472da02bff"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    },
+    {
+      "name": "wrapper-flags",
+      "root": "root.bin",
+      "records": [],
+      "container": {
+        "file": "recovery/wrapper-flags.urma",
+        "bytes": 32944,
+        "sha256": "35a1226a183162823ed2b16e8f7fa438b8af3de12bdfbd668be34db3bd40b170"
+      },
+      "expected": {
+        "status": "framing"
+      },
+      "strict_status": "invalid",
+      "reason": "Malformed framing is fatal; completed earlier records cannot authorize export or resynchronization"
+    }
+  ],
+  "records": {
+    "text": {
+      "artifact": {
+        "file": "recovery/text.record",
+        "bytes": 32928,
+        "sha256": "1b5a566aca7ec3c1870b016e049317e4bac08bd9a6c0be4020a5164c133ac3d1"
+      },
+      "disposition": "valid",
+      "reason": "Canonical single-chunk text object",
+      "mac_valid_for_root": true
+    },
+    "two-0": {
+      "artifact": {
+        "file": "recovery/two-0.record",
+        "bytes": 32928,
+        "sha256": "da639e7164f6816f01a054ec9a5787df3818bcb77616ed87262352ee9cc11011"
+      },
+      "disposition": "valid",
+      "reason": "Canonical chunk of the two-chunk object",
+      "mac_valid_for_root": true
+    },
+    "two-1": {
+      "artifact": {
+        "file": "recovery/two-1.record",
+        "bytes": 32928,
+        "sha256": "b183bbffbf1364fc66ca093834ed57ca5b0fe1d68628d889cf111861c005321b"
+      },
+      "disposition": "valid",
+      "reason": "Canonical chunk of the two-chunk object",
+      "mac_valid_for_root": true
+    },
+    "bad-mac": {
+      "artifact": {
+        "file": "recovery/bad-mac.record",
+        "bytes": 32928,
+        "sha256": "6a17d4e246d139942800e76aa450c1cd97e3bab4a3190d0162997441544e6f7a"
+      },
+      "disposition": "invalid",
+      "reason": "Matching discovery tag, invalid HMAC",
+      "mac_valid_for_root": false
+    },
+    "forged-duplicate": {
+      "artifact": {
+        "file": "recovery/forged-duplicate.record",
+        "bytes": 32928,
+        "sha256": "53bcc6d95950d673ac6a86a4415b81c48cedf3b4d963295ac59260aa6ec9ddb2"
+      },
+      "disposition": "invalid",
+      "reason": "Same O/index, altered ciphertext, stale HMAC",
+      "mac_valid_for_root": false
+    },
+    "tag-modified": {
+      "artifact": {
+        "file": "recovery/tag-modified.record",
+        "bytes": 32928,
+        "sha256": "09f0a0b4f2cd37d72b5eefdf0742a092abbb4abd4eb42219b3f0ef72dcec4e2b"
+      },
+      "disposition": "unrelated",
+      "reason": "Damaged discovery tag is not evidence of a foreign object",
+      "mac_valid_for_root": false
+    },
+    "foreign": {
+      "artifact": {
+        "file": "recovery/foreign.record",
+        "bytes": 32928,
+        "sha256": "45a8196520f426b342d49996e6951ae3df3f0402334408b8132d5bf54fd88cdc"
+      },
+      "disposition": "unrelated",
+      "reason": "Another recovery root, discovery tag does not match",
+      "mac_valid_for_root": false
+    },
+    "foreign-bad-mac": {
+      "artifact": {
+        "file": "recovery/foreign-bad-mac.record",
+        "bytes": 32928,
+        "sha256": "889c01a4529777cadc01cb1b4295779e78a1d60b9a2303ef9f28fefb39e65d62"
+      },
+      "disposition": "unrelated",
+      "reason": "Discovery mismatch precedes MAC verification",
+      "mac_valid_for_root": false
+    },
+    "wrong-id-bad-mac": {
+      "artifact": {
+        "file": "recovery/wrong-id-bad-mac.record",
+        "bytes": 32928,
+        "sha256": "1d65a65dc700f4b9f51c2940ca8c857c87d5118b7dcd8d7bc890a221fabd0bc9"
+      },
+      "disposition": "invalid",
+      "reason": "Matching discovery tag for another ID, invalid HMAC must not select that ID",
+      "mac_valid_for_root": false
+    },
+    "wrong-tag-valid-mac": {
+      "artifact": {
+        "file": "recovery/wrong-tag-valid-mac.record",
+        "bytes": 32928,
+        "sha256": "d292729bdfe8b92dad5788cf372f1e8301905150a988eaf3763e8e5fd423a3d8"
+      },
+      "disposition": "unrelated",
+      "reason": "Discovery mismatch even though the supplied-root MAC verifies",
+      "mac_valid_for_root": true
+    },
+    "non-urma": {
+      "artifact": {
+        "file": "recovery/non-urma.record",
+        "bytes": 32928,
+        "sha256": "9fdf85c96166312b756483a79a2ad01762121a3d49af3b4564822fc9b2a4cbe9"
+      },
+      "disposition": "unrelated",
+      "reason": "No URMA magic",
+      "mac_valid_for_root": false
+    },
+    "public-kind": {
+      "artifact": {
+        "file": "recovery/public-kind.record",
+        "bytes": 32928,
+        "sha256": "91565e681eb319127c7f40b6942507ec086565f8a2148e45cc675c7904d23155"
+      },
+      "disposition": "unrelated",
+      "reason": "Public kind is not a private candidate",
+      "mac_valid_for_root": false
+    },
+    "bad-header-version": {
+      "artifact": {
+        "file": "recovery/bad-header-version.record",
+        "bytes": 32928,
+        "sha256": "90a3f5f2601736e31be339d0377a86da71d11ebdd01158c20c7d086dd9c8f72b"
+      },
+      "disposition": "invalid",
+      "reason": "Malformed candidate header, stale HMAC",
+      "mac_valid_for_root": false
+    },
+    "bad-header-kind": {
+      "artifact": {
+        "file": "recovery/bad-header-kind.record",
+        "bytes": 32928,
+        "sha256": "53e8cf1ab76c363b94c63b4bd21e747a6ae4fa04d19b6bcf194ff74c85fccaf5"
+      },
+      "disposition": "invalid",
+      "reason": "Malformed candidate header, stale HMAC",
+      "mac_valid_for_root": false
+    },
+    "bad-header-flags": {
+      "artifact": {
+        "file": "recovery/bad-header-flags.record",
+        "bytes": 32928,
+        "sha256": "204741364ff42c390381dad87a718679c82edeb28da078c04bff711ce6da5efd"
+      },
+      "disposition": "invalid",
+      "reason": "Malformed candidate header, stale HMAC",
+      "mac_valid_for_root": false
+    },
+    "bad-index": {
+      "artifact": {
+        "file": "recovery/bad-index.record",
+        "bytes": 32928,
+        "sha256": "b7266a20b1bca74b2485926bb4455313ae68e4780df76c6a940cac8257d66681"
+      },
+      "disposition": "invalid",
+      "reason": "Malformed candidate header, stale HMAC",
+      "mac_valid_for_root": false
+    },
+    "bad-count": {
+      "artifact": {
+        "file": "recovery/bad-count.record",
+        "bytes": 32928,
+        "sha256": "8b0c67fd54e57c459f6b8a1ea937a3ed413040f6b9110be1714227d2acccbed1"
+      },
+      "disposition": "invalid",
+      "reason": "Malformed candidate header, stale HMAC",
+      "mac_valid_for_root": false
+    },
+    "post-mac-iv": {
+      "artifact": {
+        "file": "recovery/post-mac-iv.record",
+        "bytes": 32928,
+        "sha256": "950e118bcc8b87428fc01927d9e9c64503bf66d3d98a8b17050bf3ab902ebd59"
+      },
+      "disposition": "invalid",
+      "reason": "HMAC verifies; IV or metadata is invalid",
+      "mac_valid_for_root": true
+    },
+    "post-mac-length-zero": {
+      "artifact": {
+        "file": "recovery/post-mac-length-zero.record",
+        "bytes": 32928,
+        "sha256": "4fdab9a5f724a3e54aaae7a8330a01ad9ccfaf74dcc53e770b016c9a5b60453e"
+      },
+      "disposition": "invalid",
+      "reason": "HMAC verifies; IV or metadata is invalid",
+      "mac_valid_for_root": true
+    },
+    "post-mac-length-overflow": {
+      "artifact": {
+        "file": "recovery/post-mac-length-overflow.record",
+        "bytes": 32928,
+        "sha256": "48b7d5d78510552cf1c14f6b8e4a6eccece74ae8373b4b0e9f653efa0855129d"
+      },
+      "disposition": "invalid",
+      "reason": "HMAC verifies; IV or metadata is invalid",
+      "mac_valid_for_root": true
+    },
+    "post-mac-length-count": {
+      "artifact": {
+        "file": "recovery/post-mac-length-count.record",
+        "bytes": 32928,
+        "sha256": "eaac3a99bff7a5adf280cc03b7a3ebde875d7995b93fdb588241852498c683c3"
+      },
+      "disposition": "invalid",
+      "reason": "HMAC verifies; IV or metadata is invalid",
+      "mac_valid_for_root": true
+    },
+    "post-mac-type": {
+      "artifact": {
+        "file": "recovery/post-mac-type.record",
+        "bytes": 32928,
+        "sha256": "544335054d2ca63e98f1a0cd23540b80dc00f28183132e4ad9f7c42e2ff9905a"
+      },
+      "disposition": "invalid",
+      "reason": "HMAC verifies; IV or metadata is invalid",
+      "mac_valid_for_root": true
+    },
+    "post-mac-flags": {
+      "artifact": {
+        "file": "recovery/post-mac-flags.record",
+        "bytes": 32928,
+        "sha256": "065d981c983d591739c1b59532b96fe3562658c92cfad48aca74b4530719efea"
+      },
+      "disposition": "invalid",
+      "reason": "HMAC verifies; IV or metadata is invalid",
+      "mac_valid_for_root": true
+    },
+    "wrong-id-post-mac-iv": {
+      "artifact": {
+        "file": "recovery/wrong-id-post-mac-iv.record",
+        "bytes": 32928,
+        "sha256": "84949716d860921587ea8964b971d0c0abd28a4e059507ee6086405cb4fb5d11"
+      },
+      "disposition": "invalid",
+      "reason": "Matching tag and valid HMAC under another ID; invalid semantics must not select that ID",
+      "mac_valid_for_root": true
+    },
+    "wrong-id-post-mac-length": {
+      "artifact": {
+        "file": "recovery/wrong-id-post-mac-length.record",
+        "bytes": 32928,
+        "sha256": "4748b08feb90809060ba54fbfeba9a11a3e41b9bf17f8308859642df71ae38cc"
+      },
+      "disposition": "invalid",
+      "reason": "Matching tag and valid HMAC under another ID; invalid semantics must not select that ID",
+      "mac_valid_for_root": true
+    },
+    "wrong-id-post-mac-type": {
+      "artifact": {
+        "file": "recovery/wrong-id-post-mac-type.record",
+        "bytes": 32928,
+        "sha256": "ae774d271e6dcad349a2f5cb585ff2009d46d9bbb81bc0800c82a194c1b164af"
+      },
+      "disposition": "invalid",
+      "reason": "Matching tag and valid HMAC under another ID; invalid semantics must not select that ID",
+      "mac_valid_for_root": true
+    },
+    "wrong-id-post-mac-flags": {
+      "artifact": {
+        "file": "recovery/wrong-id-post-mac-flags.record",
+        "bytes": 32928,
+        "sha256": "54bad10da769d5bae01bb2324e110ca793267b1a8f534ed0407a4a0ae144579a"
+      },
+      "disposition": "invalid",
+      "reason": "Matching tag and valid HMAC under another ID; invalid semantics must not select that ID",
+      "mac_valid_for_root": true
+    },
+    "other-complete": {
+      "artifact": {
+        "file": "recovery/other-complete.record",
+        "bytes": 32928,
+        "sha256": "581a2e9c91ef4d0712d7a10d8640b7772cfbb3deff9d84d381c56ef0f30c4c73"
+      },
+      "disposition": "valid",
+      "reason": "Second complete ID under the supplied root",
+      "mac_valid_for_root": true
+    },
+    "other-partial": {
+      "artifact": {
+        "file": "recovery/other-partial.record",
+        "bytes": 32928,
+        "sha256": "45c850f913425bcd70ee06d30849bfa607b2efa4fd64e68946e7b81b6c5e678e"
+      },
+      "disposition": "valid",
+      "reason": "One valid chunk selects a second ID even when incomplete",
+      "mac_valid_for_root": true
+    },
+    "padding-conflict": {
+      "artifact": {
+        "file": "recovery/padding-conflict.record",
+        "bytes": 32928,
+        "sha256": "5d0b6c7a3a392946c5ef2476ef14f9c2fa589cad38a505a660d1713bf401963e"
+      },
+      "disposition": "valid",
+      "reason": "Same meaningful bytes and metadata, distinct authenticated padding",
+      "mac_valid_for_root": true
+    },
+    "type-conflict": {
+      "artifact": {
+        "file": "recovery/type-conflict.record",
+        "bytes": 32928,
+        "sha256": "49e761de03e35b882f54e4c3925b1bbf1c6289e3629d2e62376696068c91729d"
+      },
+      "disposition": "valid",
+      "reason": "Canonical chunk with conflicting content type",
+      "mac_valid_for_root": true
+    },
+    "length-conflict": {
+      "artifact": {
+        "file": "recovery/length-conflict.record",
+        "bytes": 32928,
+        "sha256": "d7d6172a7ec662515f95855126859775679ec44c96ca20f7da4a7c5ee90b3045"
+      },
+      "disposition": "valid",
+      "reason": "Canonical chunk with conflicting L, same N, digest and type",
+      "mac_valid_for_root": true
+    },
+    "count-conflict": {
+      "artifact": {
+        "file": "recovery/count-conflict.record",
+        "bytes": 32928,
+        "sha256": "9df4e4c0c9a01d22af88d9eaee66e76c3e85d1e3e86ba00084dcf67250e27a89"
+      },
+      "disposition": "valid",
+      "reason": "Same O, canonical N=1 conflicts with the N=2 object",
+      "mac_valid_for_root": true
+    },
+    "digest-conflict": {
+      "artifact": {
+        "file": "recovery/digest-conflict.record",
+        "bytes": 32928,
+        "sha256": "3d6f44c21af0299bad245ddd631d7468f4a4d66ccb1b0920477ebba58e4d8950"
+      },
+      "disposition": "valid",
+      "reason": "Canonical record carrying a conflicting file digest",
+      "mac_valid_for_root": true
+    },
+    "final-hash-fail": {
+      "artifact": {
+        "file": "recovery/final-hash-fail.record",
+        "bytes": 32928,
+        "sha256": "a72066ff76705793d565a37a6084acc7610ad8b953c5a88c07b70adc8e8e5eac"
+      },
+      "disposition": "valid",
+      "reason": "Fully valid record, final whole-object digest does not match",
+      "mac_valid_for_root": true
+    },
+    "two-hash-fail-0": {
+      "artifact": {
+        "file": "recovery/two-hash-fail-0.record",
+        "bytes": 32928,
+        "sha256": "cb436b6cf82afc356ae2e8b9adb8e7721795e0ebd244d009965d3d252e0ab380"
+      },
+      "disposition": "valid",
+      "reason": "All records agree on a digest that fails after full reconstruction",
+      "mac_valid_for_root": true
+    },
+    "two-hash-fail-1": {
+      "artifact": {
+        "file": "recovery/two-hash-fail-1.record",
+        "bytes": 32928,
+        "sha256": "3d6f44c21af0299bad245ddd631d7468f4a4d66ccb1b0920477ebba58e4d8950"
+      },
+      "disposition": "valid",
+      "reason": "All records agree on a digest that fails after full reconstruction",
+      "mac_valid_for_root": true
+    }
+  }
+}
