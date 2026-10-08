@@ -45,6 +45,10 @@ Use [urma-profiles](https://crates.io/crates/urma-profiles) for typed applicatio
 
 This crate performs no network or filesystem I/O. Protocol byte layouts and limits are defined by the API, rather than duplicated here.
 
+Strict offline reading combines `container::unpack`, which checks framing, private headers and a single declared object ID, with `container::open`, which authenticates and reconstructs the supplied records and refuses invalid or unrelated records. The separate `container::recover_container(root, bytes)` entry point recovers an object from a packed kind `03` container while counting unrelated records and rejected candidates, including records with a valid MAC but invalid IV or metadata. It preserves exact framing checks and never resynchronizes damaged framing.
+
+Recovery requires exactly one object ID established by fully valid authenticated records. A second authenticated object is refused even if incomplete. Identical duplicates are idempotent; incompatible authenticated metadata or different full records at the same index, including padding differences, conflict. Success follows examination of the whole input and checks every index, the original length and final SHA-256. The result contains the recovered bytes, object metadata, `skipped_unrelated` and `rejected_records`; it does not certify the input container as valid. Incomplete objects, conflicts and invalid framing return an error without recovered bytes. Resource and internal errors propagate.
+
 ## License
 
 [0BSD](https://github.com/urma-protocol/urma/blob/master/LICENSE). Part of the [URMA workspace](https://github.com/urma-protocol/urma), maintained by Cristian Zmole. [Project contact](mailto:urma@rosint.org).

@@ -18,6 +18,7 @@ pub enum Error {
     Allocation(std::collections::TryReserveError),
     Random(rand::Error),
     CipherKey(hmac::digest::InvalidLength),
+    Kdf(hkdf::InvalidLength),
     Mac(hmac::digest::MacError),
     Secp256k1(bitcoin::secp256k1::Error),
     Transaction(bitcoin::consensus::encode::Error),
@@ -54,6 +55,7 @@ impl Display for Error {
             Self::Allocation(cause) => Display::fmt(cause, formatter),
             Self::Random(cause) => Display::fmt(cause, formatter),
             Self::CipherKey(cause) => Display::fmt(cause, formatter),
+            Self::Kdf(cause) => Display::fmt(cause, formatter),
             Self::Mac(cause) => Display::fmt(cause, formatter),
             Self::Secp256k1(cause) => Display::fmt(cause, formatter),
             Self::Transaction(cause) => Display::fmt(cause, formatter),
@@ -87,6 +89,7 @@ impl std::error::Error for Error {
             Self::Allocation(cause) => Some(cause),
             Self::Random(cause) => Some(cause),
             Self::CipherKey(cause) => Some(cause),
+            Self::Kdf(cause) => Some(cause),
             Self::Mac(cause) => Some(cause),
             Self::Secp256k1(cause) => Some(cause),
             Self::Transaction(cause) => Some(cause),
@@ -151,6 +154,11 @@ impl From<rand::Error> for Error {
 impl From<hmac::digest::InvalidLength> for Error {
     fn from(error: hmac::digest::InvalidLength) -> Self {
         Self::CipherKey(error)
+    }
+}
+impl From<hkdf::InvalidLength> for Error {
+    fn from(error: hkdf::InvalidLength) -> Self {
+        Self::Kdf(error)
     }
 }
 impl From<hmac::digest::MacError> for Error {

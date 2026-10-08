@@ -19,7 +19,7 @@ pub fn random_secret<R: RngCore + CryptoRng>(rng: &mut R) -> Result<Zeroizing<[u
 fn derive(root: &[u8; 32], id: &[u8; 32], purpose: &[u8], output: &mut [u8]) -> Result<(), Error> {
     Hkdf::<Sha256>::new(Some(id), root)
         .expand(purpose, output)
-        .map_err(|error| Error::Invalid(format!("HKDF expansion: {error}")))?;
+        .map_err(Error::Kdf)?;
     Ok(())
 }
 fn discovery_tag(root: &[u8; 32], id: &[u8; 32]) -> Result<[u8; 16], Error> {
@@ -280,6 +280,21 @@ pub fn pack(records: &[Vec<u8>]) -> Result<Vec<u8>, Error> {
     Ok(bytes)
 }
 pub fn unpack(bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
+    let entries = framed_records(bytes)?;
+    let mut records = Vec::new();
+    records.try_reserve_exact(entries.len())?;
+    for entry in entries {
+        let record = framed_record(entry)?;
+        inspect_header(record)?;
+        records.push(record.to_vec());
+    }
+    let id = inspect_header(&records[0])?.id;
+    for record in &records {
+        ensure!(inspect_header(record)?.id == id, "mixed objects");
+    }
+    Ok(records)
+}
+fn framed_records(bytes: &[u8]) -> Result<&[[u8; Urma::PRIVATE_RECORD_BYTES + 4]], Error> {
     ensure!(
         RecordKind::parse(bytes)? == RecordKind::Container,
         "not an offline container"
@@ -295,25 +310,16 @@ pub fn unpack(bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
         .and_then(|n| n.checked_add(Urma::CONTAINER_HEADER_BYTES))
         .context("container size overflow")?;
     ensure!(bytes.len() == size, "truncated or trailing container data");
-    let mut records = Vec::new();
-    records.try_reserve_exact(count)?;
-    for entry in bytes[Urma::CONTAINER_HEADER_BYTES..]
+    Ok(bytes[Urma::CONTAINER_HEADER_BYTES..]
         .as_chunks::<{ Urma::PRIVATE_RECORD_BYTES + 4 }>()
-        .0
-    {
-        ensure!(
-            u32::from_le_bytes(entry[..4].try_into()?)
-                == u32::try_from(Urma::PRIVATE_RECORD_BYTES)?,
-            "invalid container record length"
-        );
-        inspect_header(&entry[4..])?;
-        records.push(entry[4..].to_vec());
-    }
-    let id = inspect_header(&records[0])?.id;
-    for record in &records {
-        ensure!(inspect_header(record)?.id == id, "mixed objects");
-    }
-    Ok(records)
+        .0)
+}
+fn framed_record(entry: &[u8; Urma::PRIVATE_RECORD_BYTES + 4]) -> Result<&[u8], Error> {
+    ensure!(
+        u32::from_le_bytes(entry[..4].try_into()?) == u32::try_from(Urma::PRIVATE_RECORD_BYTES)?,
+        "invalid container record length"
+    );
+    Ok(&entry[4..])
 }
 fn required_chunk(root: &[u8; 32], record: &[u8]) -> Result<PrivateChunk, Error> {
     match open_record(root, record)? {
@@ -328,4 +334,74 @@ pub fn open(root: &[u8; 32], records: &[Vec<u8>]) -> Result<Zeroizing<Vec<u8>>, 
         object.insert(required_chunk(root, record)?)?;
     }
     object.finish()
+}
+pub struct ContainerRecovery {
+    pub id: [u8; 32],
+    pub count: u32,
+    pub total: u64,
+    pub digest: [u8; 32],
+    pub content_type: ContentType,
+    pub bytes: Zeroizing<Vec<u8>>,
+    pub skipped_unrelated: usize,
+    pub rejected_records: usize,
+}
+enum RecoveryRecord {
+    Matched(RecordMatch),
+    Rejected(String),
+}
+fn recovery_record(root: &[u8; 32], record: &[u8]) -> Result<RecoveryRecord, Error> {
+    let candidate = match open_record(root, record) {
+        Ok(matched) => RecoveryRecord::Matched(matched),
+        Err(error) => classify_rejection(error)?,
+    };
+    Ok(candidate)
+}
+fn classify_rejection(error: Error) -> Result<RecoveryRecord, Error> {
+    match error {
+        Error::Invalid(reason) | Error::Unsupported(reason) => Ok(RecoveryRecord::Rejected(reason)),
+        fatal => Err(fatal),
+    }
+}
+pub fn recover_container(root: &[u8; 32], bytes: &[u8]) -> Result<ContainerRecovery, Error> {
+    let mut objects = BTreeMap::new();
+    let mut skipped_unrelated = 0;
+    let mut rejected_records = 0;
+    let entries = framed_records(bytes)?;
+    for entry in entries {
+        framed_record(entry)?;
+    }
+    for entry in entries {
+        match recovery_record(root, &entry[4..])? {
+            RecoveryRecord::Matched(RecordMatch::Unrelated) => skipped_unrelated += 1,
+            RecoveryRecord::Rejected(reason) => {
+                drop(reason);
+                rejected_records += 1;
+            }
+            RecoveryRecord::Matched(RecordMatch::Authenticated(chunk)) => {
+                match objects.entry(chunk.id) {
+                    std::collections::btree_map::Entry::Vacant(slot) => {
+                        slot.insert(PrivateObject::new(chunk));
+                    }
+                    std::collections::btree_map::Entry::Occupied(mut slot) => {
+                        slot.get_mut().insert(chunk)?;
+                    }
+                }
+                ensure!(objects.len() == 1, "multiple authenticated objects");
+            }
+        }
+    }
+    let object = objects
+        .into_values()
+        .next()
+        .ok_or_else(|| Error::Invalid("no authenticated object".into()))?;
+    Ok(ContainerRecovery {
+        bytes: object.finish()?,
+        id: object.id,
+        count: object.count,
+        total: object.total,
+        digest: object.digest,
+        content_type: object.content_type,
+        skipped_unrelated,
+        rejected_records,
+    })
 }
