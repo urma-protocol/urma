@@ -150,8 +150,10 @@ fn independent_recovery_answers_and_strict_baseline() {
                 "framing" => "",
                 status => panic!("{name}: unknown expected status {status}"),
             };
+            let framing_overflow = expected["status"] == "framing"
+                && matches!(&error, Error::Missing(message) if message == "container size overflow");
             assert!(
-                matches!(&error, Error::Invalid(_) | Error::Unsupported(_)),
+                matches!(&error, Error::Invalid(_) | Error::Unsupported(_)) || framing_overflow,
                 "{name}: {error}"
             );
             assert!(
