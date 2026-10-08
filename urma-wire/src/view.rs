@@ -1,5 +1,7 @@
 use crate::{
-    Error, ensure,
+    Error,
+    cached::{CachedRecord, decode_cached},
+    ensure,
     index::{Entry, Index},
 };
 use serde_json::{Value, json};
@@ -7,7 +9,17 @@ use urma_core::format::PublicRecord;
 
 pub fn records(index: &Index, limit: usize) -> Result<Vec<Value>, Error> {
     ensure!((1..=1000).contains(&limit), "feed limit must be 1..1000");
-    index.entries.iter().rev().take(limit).map(render).collect()
+    let mut records = Vec::new();
+    for entry in index.entries.iter().rev() {
+        match decode_cached(&hex::decode(&entry.record)?)? {
+            CachedRecord::Current(record) => records.push(render(entry, record)?),
+            CachedRecord::LegacyAvatar => continue,
+        }
+        if records.len() == limit {
+            break;
+        }
+    }
+    Ok(records)
 }
 pub fn record(index: &Index, txid: bitcoin::Txid) -> Result<Value, Error> {
     let txid = txid.to_string();
@@ -16,7 +28,12 @@ pub fn record(index: &Index, txid: bitcoin::Txid) -> Result<Value, Error> {
         .iter()
         .find(|entry| entry.txid == txid)
         .ok_or_else(|| Error::Missing("record is not in the confirmed local index".into()))?;
-    render(entry)
+    match decode_cached(&hex::decode(&entry.record)?)? {
+        CachedRecord::Current(record) => render(entry, record),
+        CachedRecord::LegacyAvatar => Err(Error::Invalid(
+            "legacy 512-byte avatar is unsupported; cached record bytes are preserved".into(),
+        )),
+    }
 }
 pub fn identity(index: &Index, author: bitcoin::XOnlyPublicKey) -> Result<Value, Error> {
     let author = author.to_string();
@@ -28,7 +45,11 @@ pub fn identity(index: &Index, author: bitcoin::XOnlyPublicKey) -> Result<Value,
         .rev()
         .filter(|entry| entry.author == author)
     {
-        match PublicRecord::decode(&hex::decode(&entry.record)?)? {
+        let record = match decode_cached(&hex::decode(&entry.record)?)? {
+            CachedRecord::Current(record) => record,
+            CachedRecord::LegacyAvatar => continue,
+        };
+        match record {
             PublicRecord::Profile(name) if profile.is_null() => {
                 profile = json!({"txid":entry.txid,"name":name});
             }
@@ -46,8 +67,8 @@ pub fn identity(index: &Index, author: bitcoin::XOnlyPublicKey) -> Result<Value,
     }
     Ok(json!({"author":author,"profile":profile,"avatar":avatar,"genesis":index.genesis}))
 }
-fn render(entry: &Entry) -> Result<Value, Error> {
-    let payload = match PublicRecord::decode(&hex::decode(&entry.record)?)? {
+fn render(entry: &Entry, record: PublicRecord) -> Result<Value, Error> {
+    let payload = match record {
         PublicRecord::Post(text) => json!({"kind":"post","text":text}),
         PublicRecord::WirePost { topics, text } => {
             json!({"kind":"post","text":text,"wire":topics.wire,"hashtags":topics.hashtags})

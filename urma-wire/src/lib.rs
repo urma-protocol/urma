@@ -5,6 +5,7 @@
     unused_variables,
     unused_assignments
 )]
+pub mod cached;
 pub mod config;
 mod error;
 pub mod index;

@@ -20,7 +20,13 @@ impl Urma {
     pub const MAX_PRIVATE_BYTES: u64 = 140_737_488_322_560;
     pub const MAX_PUBLIC_BYTES: usize = 32_768;
     pub const PROFILE_IDENTIFIER_BYTES: usize = 8;
-    pub const AVATAR_BYTES: usize = 512;
+    pub const AVATAR_SIDE: usize = 16;
+    pub const AVATAR_PIXELS: usize = Self::AVATAR_SIDE * Self::AVATAR_SIDE;
+    pub const AVATAR_BYTES: usize = Self::AVATAR_PIXELS / 2;
+    pub const AVATAR_PALETTE: [&'static str; 16] = [
+        "#000000", "#0000AA", "#00AA00", "#00AAAA", "#AA0000", "#AA00AA", "#AA5500", "#AAAAAA",
+        "#555555", "#5555FF", "#55FF55", "#55FFFF", "#FF5555", "#FF55FF", "#FFFF55", "#FFFFFF",
+    ];
     pub const CONTAINER_HEADER_BYTES: usize = 12;
     pub const CONTENT_DOMAIN: &'static [u8] = b"URMA/V0/private/content";
     pub const AUTHENTICATION_DOMAIN: &'static [u8] = b"URMA/V0/private/authentication";
@@ -137,7 +143,7 @@ pub enum PublicRecord {
         text: String,
     },
     Profile(String),
-    Avatar(Box<[u8; 512]>),
+    Avatar(Box<[u8; Urma::AVATAR_BYTES]>),
     WirePost {
         topics: Topics,
         text: String,
@@ -239,7 +245,14 @@ impl PublicRecord {
                     text: std::str::from_utf8(&body[32..])?.to_owned(),
                 })
             }
-            RecordKind::Avatar => Ok(Self::Avatar(Box::new(body.try_into()?))),
+            RecordKind::Avatar => {
+                ensure!(
+                    body.len() == Urma::AVATAR_BYTES,
+                    "avatar body must contain exactly {} packed pixel bytes",
+                    Urma::AVATAR_BYTES
+                );
+                Ok(Self::Avatar(Box::new(body.try_into()?)))
+            }
             RecordKind::ProfileRecord => {
                 ensure!(
                     body.len() >= Urma::PROFILE_IDENTIFIER_BYTES,
