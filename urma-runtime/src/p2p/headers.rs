@@ -128,14 +128,12 @@ impl HeaderChain {
         let revalidate_from = count.max(P2P_HEADER_CACHE_REVALIDATE) - P2P_HEADER_CACHE_REVALIDATE;
         let started = Instant::now();
         for (offset, header) in headers.iter().enumerate().skip(1) {
-            // Borrow the preceding history: replay difficulty/MTP without copying prefixes.
             self.validate_context(&headers[..offset], header)
                 .with_context(|| {
                     format!("header cache {} at offset {offset}", self.path.display())
                 })?;
         }
         tracing::debug!(target: "urma_startup", chain = self.chain.label(), stage = "cache_context", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, headers = count, "light client stage completed");
-        // This is a trusted local cache: older PoW was checked during live ingest.
         let tail = &headers[revalidate_from.max(1)..];
         let started = Instant::now();
         prove_batch(self.chain, tail)?;
@@ -309,8 +307,6 @@ impl HeaderChain {
 
     fn validate_next(&self, window: &[Header], header: &Header, now: u32) -> Result<(), Error> {
         self.validate_context(window, header)?;
-        // Clock horizon is an admission rule for live headers. Reapplying it to
-        // a trusted cache after a clock regression must not discard that cache.
         let horizon = now
             .checked_add(P2P_MAX_FUTURE_SECS)
             .context("clock horizon overflow")?;
