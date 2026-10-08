@@ -30,6 +30,7 @@
 !/scripts/open-bundle.sh
 !/scripts/read-multipart.py
 !/scripts/smoke-universal-regtest.py
+!/scripts/measure-startup-live.py
 *.[mM][dD]
 !/README.md
 !/LICENSE

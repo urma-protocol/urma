@@ -88,12 +88,26 @@ fn maintain_peers(shared: &Shared, peers: &mut Peers) {
     peers.absorb_gossip();
     if peers.count() < P2P_MIN_PEERS {
         let height = locked(&shared.headers, "headers").tip_height();
+        let started = Instant::now();
         peers.discover();
+        tracing::debug!(
+            target: "urma_startup",
+            chain = shared.chain.label(),
+            stage = "peer_discovery",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            pooled = peers.pool_size(),
+            "light client stage completed"
+        );
+        let started = Instant::now();
         peers.top_up(height);
         tracing::debug!(
+            target: "urma_startup",
+            chain = shared.chain.label(),
+            stage = "peer_connect",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
             connected = peers.count(),
             pooled = peers.pool_size(),
-            "peer set maintained"
+            "light client stage completed"
         );
     }
     let mut status = locked(&shared.status, "status");
@@ -132,6 +146,7 @@ fn serve(shared: &Shared, peers: &mut Peers, command: Command) {
 }
 
 fn sync_round(shared: &Shared, peers: &mut Peers) -> bool {
+    let started = Instant::now();
     let mut answered = 0;
     let mut index = 0;
     while index < peers.count() {
@@ -158,20 +173,64 @@ fn sync_round(shared: &Shared, peers: &mut Peers) -> bool {
         let tip = locked(&shared.headers, "headers").tip_height();
         status.target = status.target.max(tip);
     }
+    tracing::debug!(
+        target: "urma_startup",
+        chain = shared.chain.label(),
+        stage = "header_sync_round",
+        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+        answered,
+        connected = status.peers,
+        success = answered > 0,
+        "light client stage completed"
+    );
     answered > 0
 }
 
 fn sync_from(shared: &Shared, peers: &mut Peers, index: usize) -> Result<(), Error> {
     loop {
         let locator = locked(&shared.headers, "headers").locator();
-        let batch = peers.connected[index].request_headers(locator)?;
+        let started = Instant::now();
+        let requested = peers.connected[index].request_headers(locator);
+        tracing::debug!(
+            target: "urma_startup",
+            chain = shared.chain.label(),
+            stage = "header_request",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            result = ?requested.as_ref().map(Vec::len),
+            "light client stage completed"
+        );
+        let batch = requested?;
         let now = now_unix()?;
         let outcome = {
             let mut headers = locked(&shared.headers, "headers");
-            let outcome = headers.extend(&batch, now)?;
+            let started = Instant::now();
+            let extended = headers.extend(&batch, now);
+            tracing::debug!(
+                target: "urma_startup",
+                chain = shared.chain.label(),
+                stage = "header_batch_apply",
+                elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                headers = batch.len(),
+                result = ?extended,
+                "light client stage completed"
+            );
+            let outcome = extended?;
             match outcome {
                 Extension::Ignored => (),
-                Extension::Appended(..) | Extension::Reorganized { .. } => headers.persist()?,
+                Extension::Appended(..) | Extension::Reorganized { .. } => {
+                    let started = Instant::now();
+                    let persisted = headers.persist();
+                    tracing::debug!(
+                        target: "urma_startup",
+                        chain = shared.chain.label(),
+                        stage = "header_persist",
+                        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                        headers = headers.synced_count() + 1,
+                        result = ?persisted,
+                        "light client stage completed"
+                    );
+                    persisted?;
+                }
             }
             outcome
         };

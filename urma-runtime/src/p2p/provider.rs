@@ -12,7 +12,7 @@ use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, SyncSender};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use urma_chain::observation::Chain;
 
 enum Engine {
@@ -37,7 +37,17 @@ impl P2pProvider {
         anchor: Anchor,
         pinned: Vec<SocketAddr>,
     ) -> Result<Self, Error> {
-        let headers = HeaderChain::open_at(chain, cache_dir, anchor)?;
+        let started = Instant::now();
+        let loaded = HeaderChain::open_at(chain, cache_dir, anchor);
+        tracing::debug!(
+            target: "urma_startup",
+            chain = chain.label(),
+            stage = "header_chain_open",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            result = ?loaded.as_ref().map(HeaderChain::synced_count),
+            "light client stage completed"
+        );
+        let headers = loaded?;
         let shared = Arc::new(Shared {
             chain,
             pinned,

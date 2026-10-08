@@ -366,12 +366,25 @@ impl Node {
     }
 
     pub fn verify_network(&self) -> Result<(), Error> {
-        let genesis = self.call("getblockhash", &[json!(0)])?;
-        ensure!(
-            genesis.as_str() == Some(self.chain().genesis()?.0.to_string().as_str()),
-            "RPC genesis does not match selected chain"
+        let started = Instant::now();
+        let verified = (|| {
+            let genesis = self.call("getblockhash", &[json!(0)])?;
+            ensure!(
+                genesis.as_str() == Some(self.chain().genesis()?.0.to_string().as_str()),
+                "RPC genesis does not match selected chain"
+            );
+            Ok(())
+        })();
+        tracing::debug!(
+            target: "urma_startup",
+            chain = self.chain.label(),
+            stage = "network_verification",
+            elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+            routed = self.is_public(),
+            result = ?verified,
+            "light client stage completed"
         );
-        Ok(())
+        verified
     }
 
     pub fn tip(&self) -> Result<(u64, String), Error> {
