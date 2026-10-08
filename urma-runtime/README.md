@@ -38,6 +38,31 @@ The clock horizon applies separately to incoming peer headers. Reload does not c
 
 Trust statement: P2P validates headers and fetched block commitments. It relies on the embedded checkpoint, the cached prefix and the chain branches connected peers present. It does not validate scripts, amounts, MWEB extension data or the UTXO set, and it cannot detect a majority-hashrate chain that violates consensus rules. Transaction inclusion requires checking the transaction against the fetched block; a public provider's inclusion report alone does not establish it. The checkpoint is a trusted root: mainnet height 3187295/3187296 and testnet height 4904927/4904928, each cross-checked against two independent public sources before embedding. `progress()` reports headers synced against the best peer height so callers can show real sync state; the provider only advertises its methods after a full header round has completed and while peers are connected.
 
+### Measuring startup
+
+From the workspace root, run the offline harness in Cargo's optimized release profile:
+
+```sh
+URMA_STARTUP_SAMPLES=7 URMA_STARTUP_REVISION=contextual \
+  cargo test --offline --locked --release -p urma-runtime --target-dir target \
+  --test p2p_startup_costs -- --ignored --nocapture
+```
+
+This always uses the two committed retarget fixtures, each with 2,018 headers (161,440 bytes). To additionally measure an existing cache, set `URMA_STARTUP_CACHE` to an absolute file path and `URMA_STARTUP_CHAIN` to `mainnet` or `testnet`. Input reads are bounded to the production capacity, and the loader receives a temporary copy. JSON records include byte digest, anchor/start height, tip hash, count and size so before/after runs can be checked for identical input. No cache path appears in successful JSON; input errors retain normal path context.
+
+Each dataset gets one unreported warmup, then 7 samples by default (configurable from 3 to 100), in serial order: production reload, standalone tail PoW, standalone full PoW. Reload includes reading, decoding, contextual replay, tail PoW and index construction; contextual timings come directly from production tracing. Standalone PoW uses already decoded headers and the production worker cap, proving the anchor first. It does not enable full PoW in production. The file cache is warm; host load and CPU frequency are uncontrolled. Before/after reload totals also include the changed tracing overhead. Small fixtures and ordinary caches do not establish the worst case of testnet's minimum-difficulty lookback. Absent stage events are omitted rather than reported as zero.
+
+For a separate, explicitly requested live read-only probe on a copy of a cache:
+
+```sh
+URMA_STARTUP_CACHE=/absolute/path/to/headers.bin URMA_STARTUP_CHAIN=testnet \
+  python3 scripts/measure-startup-live.py
+```
+
+The wrapper builds in release first, then uses GNU `timeout` with a 90-second deadline and a further 5 seconds before forced termination. Its Python parent owns and removes staging under `target`, including after a timeout. This probe performs public network verification, peer discovery/connect and header sync, with pins and header persistence confined to temporary state. It installs a global subscriber so worker events are emitted as they complete, including partial measurements before a timeout. It publishes no transactions and accesses no wallet keys. A successful run is one sample of the connected peers and current network conditions. Cargo's `--offline` prevents dependency downloads; the live test itself accesses the network. The offline harness command does not run this separate test binary.
+
+Technical timings use DEBUG events on target `urma_startup`, with `stage`, `chain` and `elapsed_ms`. Cache stages separate read/decode/context/PoW/index; other stages separate header-chain construction, network verification, discovery/connect, header requests, batch application and persistence. `header_sync_round` includes requests, application and persistence, so these nested times should not be summed with it. Library hosts must enable this target in their subscriber. The CLI uses `log_level: "debug"` in the JSON settings selected by `URMA_CONFIG`; `URMA_LOG_OUTPUT=stderr` sends diagnostics to the console. Its logging does not use `RUST_LOG`.
+
 ## Public transport
 
 `Node::public(chain)` and `Node::public_in(chain, cache_dir)` read the chain without a local node, provider key, paid plan or RPC cookie. Both build a `transport::Router` over providers that implement `transport::Provider`. On native targets, `Node::public_in` adds the built-in P2P light client for Litecoin mainnet and testnet and persists Electrum certificate pins. `Node::public` uses public servers with session-only pins and no P2P light client. `Node::with_providers` accepts any provider set; `Node::connect` uses a local Core node over loopback HTTP with cookie authentication and checks the selected chain's genesis hash.
