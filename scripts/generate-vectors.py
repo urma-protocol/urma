@@ -223,14 +223,58 @@ def main():
     post=prefix(2)+"  știre\x00\r\ne\u0301  ".encode()
     reply=prefix(4)+bytes(range(32))+b"reply"
     profile=prefix(5)+"Nume\x00 public".encode()
-    avatar=prefix(6)+bytes(range(256))*2
+    avatar_pixels=bytes(range(128))
+    avatar=prefix(6)+avatar_pixels
+    avatar_png_pixels=b"\x89PNG\r\n\x1a\n"+bytes(range(120))
+    avatar_urma_pixels=prefix(6)+bytes(range(120))
+    # Literal known answer: each row advances by three palette indices. This
+    # distinguishes row-major traversal from transposition and nibble reversal.
+    avatar_rows = [
+        "0123456789abcdef", "3456789abcdef012", "6789abcdef012345", "9abcdef012345678",
+        "cdef0123456789ab", "f0123456789abcde", "23456789abcdef01", "56789abcdef01234",
+        "89abcdef01234567", "bcdef0123456789a", "ef0123456789abcd", "123456789abcdef0",
+        "456789abcdef0123", "789abcdef0123456", "abcdef0123456789", "def0123456789abc",
+    ]
+    avatar_reference_pixels=bytes.fromhex("".join(avatar_rows))
+    avatar_reference=prefix(6)+avatar_reference_pixels
+    ega16 = [
+        [0,0,0], [0,0,170], [0,170,0], [0,170,170],
+        [170,0,0], [170,0,170], [170,85,0], [170,170,170],
+        [85,85,85], [85,85,255], [85,255,85], [85,255,255],
+        [255,85,85], [255,85,255], [255,255,85], [255,255,255],
+    ]
+    reference = {"protocol": "URMA", "wire_version": 0, "kind": 6,
+                 "specification": "URMA V0, document revision 0.9, section 7.1", "palette": "EGA16",
+                 "width": 16, "height": 16, "body_bytes": 128, "record_bytes": 136,
+                 "packing": "high-nibble-first", "order": "row-major",
+                 "indices_by_row": avatar_rows, "palette_rgb": ega16,
+                 "pixels": save("avatar-ega16-reference.bin", avatar_reference_pixels),
+                 "record": "avatar-ega16-reference.record", "proof": "proof-avatar-ega16-reference"}
+    manifest["avatar_reference"] = save("avatar-ega16-reference.json",
+        (json.dumps(reference,indent=2)+"\n").encode())
+    manifest["avatar_inputs"] = [
+        {"name": name, "outcome": outcome, "pixels": save(name+".bin", pixels)}
+        for name,pixels,outcome in [
+            ("avatar-raw128",avatar_pixels,"valid"),
+            ("avatar-raw-png-prefix128",avatar_png_pixels,"valid"),
+            ("avatar-raw-urma-prefix128",avatar_urma_pixels,"valid"),
+            ("avatar-raw127",avatar_pixels[:-1],"invalid"),
+            ("avatar-raw129",avatar_pixels+b"x","invalid"),
+            ("avatar-raw-legacy512",bytes(range(256))*2,"invalid"),
+            ("avatar-prefixed136",avatar,"invalid"),
+        ]
+    ]
     for name,data in [("post",post),("reply",reply),("profile",profile),("avatar",avatar),
+                      ("avatar-ega16-reference",avatar_reference),
+                      ("avatar-png-prefix",prefix(6)+avatar_png_pixels),
+                      ("avatar-urma-prefix",prefix(6)+avatar_urma_pixels),
                       ("post-empty",prefix(2)),("reply-empty",prefix(4)+bytes(32)),("profile-empty",prefix(5)),
                       ("post-max",prefix(2)+b"x"*32760),("reply-max",prefix(4)+bytes(32)+b"x"*32728),
                       ("profile-max",prefix(5)+b"x"*32760)]:
         public(name,data)
     for name,data in [("post-over",prefix(2)+b"x"*32761),("reply-short",prefix(4)+bytes(31)),
-                      ("avatar-short",avatar[:-1]),("avatar-appended",avatar+b"x"),("unknown-kind",prefix(255)),
+                      ("avatar-short",avatar[:-1]),("avatar-appended",avatar+b"x"),
+                      ("avatar-legacy512",prefix(6)+bytes(range(256))*2),("unknown-kind",prefix(255)),
                       ("unknown-version",b"URMA\x01\x02\x00\x00"),("reserved-flags",b"URMA\x00\x02\x01\x00"),
                       ("invalid-post-utf8",prefix(2)+b"\xc0\x80"),("invalid-profile-utf8",prefix(5)+b"\xff"),
                       ("invalid-reply-utf8",prefix(4)+bytes(32)+b"\xff")]:
@@ -246,11 +290,17 @@ def main():
                       ("profile-record-over",prefix(12)+b"URMANAM1"+b"x"*32753)]:
         public(name,data,"invalid")
     for name,data in [("proof-post",post),("proof-reply",reply),("proof-profile",profile),("proof-avatar",avatar),
+                      ("proof-avatar-ega16-reference",avatar_reference),
+                      ("proof-avatar-png-prefix",prefix(6)+avatar_png_pixels),
+                      ("proof-avatar-urma-prefix",prefix(6)+avatar_urma_pixels),
                       ("proof-post-max",prefix(2)+b"x"*32760),("proof-private",r),
                       ("proof-segment-one",prefix(2)+b"a"*512+b"\x01"),
                       ("proof-segment-zero",prefix(2)+b"a"*512+b"\x00"),
                       ("proof-segment-negative",prefix(2)+b"a"*511+b"\xd0\x81")]:
         proof(name,data)
+    for name,data in [("proof-avatar-short",avatar[:-1]),("proof-avatar-appended",avatar+b"x"),
+                      ("proof-avatar-legacy512",prefix(6)+bytes(range(256))*2)]:
+        proof(name,data,outcome="invalid")
     proof("proof-extra-opcode",post,lambda script:script+b"\x61","invalid")
     proof("proof-nonminimal-push",post,lambda script:script[:41]+b"\x4c"+script[41:],"invalid")
     proof("proof-wrong-segmentation",prefix(2)+b"a"*513,

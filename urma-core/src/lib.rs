@@ -5,6 +5,7 @@
     unused_variables,
     unused_assignments
 )]
+pub mod avatar;
 pub mod container;
 pub mod envelope;
 pub mod error;

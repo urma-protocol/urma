@@ -7,7 +7,7 @@ use std::num::NonZeroU64;
 use std::path::PathBuf;
 use urma_chain::observation::Chain;
 use urma_core::format::{PublicRecord, Urma};
-use urma_runtime::error::{Context, Error, bail};
+use urma_runtime::error::{Context, Error, bail, ensure};
 use urma_runtime::storage;
 use urma_wallet::wallet::{FeeBudget, FeeRate};
 
@@ -66,7 +66,10 @@ pub(crate) enum PublicTools {
     Encode {
         #[arg(long, value_enum)]
         kind: PublicKind,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Raw input; avatar requires 128 packed bytes for a 16x16 EGA16 image"
+        )]
         input: PathBuf,
         #[arg(long)]
         output: PathBuf,
@@ -120,7 +123,16 @@ fn encode(
             text: String::from_utf8(bytes)?,
         },
         PublicKind::Profile => PublicRecord::Profile(String::from_utf8(bytes)?),
-        PublicKind::Avatar => PublicRecord::Avatar(Box::new(bytes.as_slice().try_into()?)),
+        PublicKind::Avatar => {
+            ensure!(
+                bytes.len() == Urma::AVATAR_BYTES,
+                "avatar input must contain exactly {} packed pixel bytes ({}x{} EGA16), without the URMA header",
+                Urma::AVATAR_BYTES,
+                Urma::AVATAR_SIDE,
+                Urma::AVATAR_SIDE
+            );
+            PublicRecord::Avatar(Box::new(bytes.as_slice().try_into()?))
+        }
         PublicKind::ProfileRecord => PublicRecord::ProfileRecord {
             profile: profile_identifier(&profile.context("profile record requires --profile")?)?,
             payload: bytes,

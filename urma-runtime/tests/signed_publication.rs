@@ -6,7 +6,10 @@ use bitcoin::{
 };
 use std::num::NonZeroU64;
 use urma_chain::observation::Chain;
-use urma_core::{envelope, format::PublicRecord};
+use urma_core::{
+    envelope,
+    format::{PublicRecord, RecordKind},
+};
 use urma_runtime::{config, error::Error, publication::prepare_signed_bytes};
 use urma_wallet::{
     funding::Funding,
@@ -120,6 +123,36 @@ fn signed_pairs_reject_wrong_author_and_chain() {
         )
         .is_err()
     );
+}
+
+#[test]
+fn avatar_signed_proofs_use_only_the_amended_128_byte_payload() {
+    let author = signer(9);
+    let record = PublicRecord::Avatar(Box::new([0xEF; 128]));
+    let bytes = record.encode().unwrap();
+    assert_eq!(bytes.len(), 136);
+    assert_eq!(&bytes[..8], b"URMA\x00\x06\x00\x00");
+    for chain in [Chain::BitcoinRegtest, Chain::LitecoinTestnet] {
+        let budget = FeeBudget {
+            chain: chain.genesis().unwrap(),
+            rate: FeeRate(NonZeroU64::new(1).unwrap()),
+            maximum_base_units: 10_000,
+        };
+        let pair = prepare_signed_bytes(&bytes, &author, funding(&author), chain, budget).unwrap();
+        let commit: Transaction = deserialize(&hex::decode(&pair.plan.commit).unwrap()).unwrap();
+        let reveal: Transaction = deserialize(&hex::decode(&pair.plan.reveal).unwrap()).unwrap();
+        let proof = envelope::verify_reveal(&reveal, &commit).unwrap();
+        assert_eq!(proof.record, bytes);
+        assert_eq!(proof.author, author.x_only_public_key().0);
+        assert_eq!(PublicRecord::decode(&proof.record).unwrap(), record);
+        for size in [127, 129, 512] {
+            let invalid = [RecordKind::Avatar.prefix().to_vec(), vec![0xEF; size]].concat();
+            assert!(
+                prepare_signed_bytes(&invalid, &author, funding(&author), chain, budget).is_err()
+            );
+            assert!(envelope::build(&invalid, &author).is_err());
+        }
+    }
 }
 
 #[test]

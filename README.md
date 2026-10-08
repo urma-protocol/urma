@@ -98,4 +98,4 @@ For bugs and concrete proposals, use the [issue tracker](https://github.com/urma
 
 ## License
 
-[0BSD](https://github.com/urma-protocol/urma/blob/master/LICENSE). Maintained by Zmole Cristian as part of [ROSINT](https://rosint.org).
+[0BSD](https://github.com/urma-protocol/urma/blob/master/LICENSE). Maintained by Cristian Zmole as part of [ROSINT](https://rosint.org).

@@ -1,3 +1,4 @@
+use crate::cached::decode_cached;
 use crate::config::FETCH_WORKERS;
 use crate::{Error, SyncError, ensure, reader::Reader};
 use bitcoin::{Block, BlockHash, Transaction};
@@ -6,10 +7,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use urma_core::{
-    envelope,
-    format::{PublicRecord, RecordKind},
-};
+use urma_core::{envelope, format::RecordKind};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -66,7 +64,7 @@ impl Index {
             block.hash.parse::<BlockHash>()?;
         }
         for entry in &index.entries {
-            PublicRecord::decode(&hex::decode(&entry.record)?)?;
+            decode_cached(&hex::decode(&entry.record)?)?;
             entry.txid.parse::<bitcoin::Txid>()?;
             entry.author.parse::<bitcoin::XOnlyPublicKey>()?;
         }
@@ -107,8 +105,12 @@ where
         .start
         .checked_add(u64::try_from(index.blocks.len()).map_err(Error::from)?)
         .ok_or_else(|| Error::Capacity("height overflow".into()))?;
-    let heights: Vec<u64> = (next..=tip).take(usize::try_from(max_blocks).map_err(Error::from)?).collect();
-    let streamed = stream_batch(reader, &mut index, &heights, |height| on_applied(height, tip));
+    let heights: Vec<u64> = (next..=tip)
+        .take(usize::try_from(max_blocks).map_err(Error::from)?)
+        .collect();
+    let streamed = stream_batch(reader, &mut index, &heights, |height| {
+        on_applied(height, tip)
+    });
     let scanned = u64::try_from(index.blocks.len()).map_err(Error::from)? - (next - index.start);
     if scanned > 0 {
         confirm_tail(reader, &index)?;

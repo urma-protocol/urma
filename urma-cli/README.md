@@ -89,4 +89,4 @@ The command line composes the [URMA Rust libraries](https://github.com/urma-prot
 
 ## License
 
-[0BSD](https://github.com/urma-protocol/urma/blob/master/LICENSE). Maintained by Zmole Cristian as part of [URMA](https://urma.rosint.org). [Project contact](mailto:urma@rosint.org).
+[0BSD](https://github.com/urma-protocol/urma/blob/master/LICENSE). Maintained by Cristian Zmole as part of [URMA](https://urma.rosint.org). [Project contact](mailto:urma@rosint.org).

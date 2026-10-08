@@ -603,7 +603,7 @@ fn public_kinds_are_accepted_and_verified_on_a_separate_node() -> Result<()> {
         hashes::Hash,
         secp256k1::{Keypair, Secp256k1},
     };
-    use urma_core::format::PublicRecord;
+    use urma_core::format::{PublicRecord, Urma};
     let root = tempfile::Builder::new()
         .prefix("urma-public-regtest-")
         .tempdir()?;
@@ -626,7 +626,7 @@ fn public_kinds_are_accepted_and_verified_on_a_separate_node() -> Result<()> {
             text: "reply".into(),
         },
         PublicRecord::Profile("pseudonim".into()),
-        PublicRecord::Avatar(Box::new([0x12; 512])),
+        PublicRecord::Avatar(Box::new([0x12; Urma::AVATAR_BYTES])),
         PublicRecord::Post("x".repeat(32760)),
         PublicRecord::Post(format!("{}\u{1}", "x".repeat(512))),
         PublicRecord::ProfileRecord {
