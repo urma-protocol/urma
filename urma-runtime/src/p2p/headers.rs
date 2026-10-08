@@ -9,6 +9,7 @@ use bitcoin::block::Header;
 use bitcoin::consensus::encode::{deserialize, serialize};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::time::Instant;
 use urma_chain::observation::Chain;
 use urma_chain::pow::{chain_work, check_header_pow, expected_bits};
 
@@ -102,7 +103,10 @@ impl HeaderChain {
     }
 
     fn load(&mut self) -> Result<(), Error> {
+        let started = Instant::now();
         let raw = urma_io::read_bounded(&self.path, P2P_HEADER_CACHE_MAX * Header::SIZE)?;
+        tracing::debug!(target: "urma_startup", chain = self.chain.label(), stage = "cache_read", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, headers = raw.len() / Header::SIZE, "light client stage completed");
+        let started = Instant::now();
         ensure!(
             raw.len() % Header::SIZE == 0 && raw.len() >= Header::SIZE,
             "header cache {} is not a whole number of headers",
@@ -120,28 +124,30 @@ impl HeaderChain {
         for slice in raw.chunks_exact(Header::SIZE) {
             headers.push(deserialize::<Header>(slice)?);
         }
+        tracing::debug!(target: "urma_startup", chain = self.chain.label(), stage = "cache_decode", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, headers = count, "light client stage completed");
         let revalidate_from = count.max(P2P_HEADER_CACHE_REVALIDATE) - P2P_HEADER_CACHE_REVALIDATE;
+        let started = Instant::now();
         for (offset, header) in headers.iter().enumerate().skip(1) {
-            ensure!(
-                header.prev_blockhash == headers[offset - 1].block_hash(),
-                "header cache {} breaks continuity at offset {offset}",
-                self.path.display()
-            );
-            if offset == 1 {
-                ensure!(
-                    header.block_hash() == self.trusted_next,
-                    "header cache {} diverges from the checkpoint",
-                    self.path.display()
-                );
-            }
+            // Borrow the preceding history: replay difficulty/MTP without copying prefixes.
+            self.validate_context(&headers[..offset], header)
+                .with_context(|| {
+                    format!("header cache {} at offset {offset}", self.path.display())
+                })?;
         }
-        prove_batch(self.chain, &headers[revalidate_from.max(1)..])?;
+        tracing::debug!(target: "urma_startup", chain = self.chain.label(), stage = "cache_context", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, headers = count, "light client stage completed");
+        // This is a trusted local cache: older PoW was checked during live ingest.
+        let tail = &headers[revalidate_from.max(1)..];
+        let started = Instant::now();
+        prove_batch(self.chain, tail)?;
+        tracing::debug!(target: "urma_startup", chain = self.chain.label(), stage = "cache_pow", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, headers = count, pow_headers = tail.len(), "light client stage completed");
+        let started = Instant::now();
         self.index = headers
             .iter()
             .enumerate()
             .map(|(offset, header)| (header.block_hash(), offset))
             .collect();
         self.headers = headers;
+        tracing::debug!(target: "urma_startup", chain = self.chain.label(), stage = "cache_index", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, headers = count, "light client stage completed");
         Ok(())
     }
 
@@ -302,6 +308,20 @@ impl HeaderChain {
     }
 
     fn validate_next(&self, window: &[Header], header: &Header, now: u32) -> Result<(), Error> {
+        self.validate_context(window, header)?;
+        // Clock horizon is an admission rule for live headers. Reapplying it to
+        // a trusted cache after a clock regression must not discard that cache.
+        let horizon = now
+            .checked_add(P2P_MAX_FUTURE_SECS)
+            .context("clock horizon overflow")?;
+        ensure!(
+            header.time <= horizon,
+            "peer header time is too far in the future"
+        );
+        Ok(())
+    }
+
+    fn validate_context(&self, window: &[Header], header: &Header) -> Result<(), Error> {
         let last = window.last().context("header window is empty")?;
         ensure!(
             header.prev_blockhash == last.block_hash(),
@@ -325,13 +345,6 @@ impl HeaderChain {
         ensure!(
             header.time > median_time(window),
             "peer header time is not after the median of the previous blocks"
-        );
-        let horizon = now
-            .checked_add(P2P_MAX_FUTURE_SECS)
-            .context("clock horizon overflow")?;
-        ensure!(
-            header.time <= horizon,
-            "peer header time is too far in the future"
         );
         Ok(())
     }
