@@ -1,0 +1,120 @@
+{
+  "protocol": "URMA",
+  "wire_version": 0,
+  "kind": 6,
+  "specification": "URMA V0, document revision 0.9, section 7.1",
+  "palette": "EGA16",
+  "width": 16,
+  "height": 16,
+  "body_bytes": 128,
+  "record_bytes": 136,
+  "packing": "high-nibble-first",
+  "order": "row-major",
+  "indices_by_row": [
+    "0123456789abcdef",
+    "3456789abcdef012",
+    "6789abcdef012345",
+    "9abcdef012345678",
+    "cdef0123456789ab",
+    "f0123456789abcde",
+    "23456789abcdef01",
+    "56789abcdef01234",
+    "89abcdef01234567",
+    "bcdef0123456789a",
+    "ef0123456789abcd",
+    "123456789abcdef0",
+    "456789abcdef0123",
+    "789abcdef0123456",
+    "abcdef0123456789",
+    "def0123456789abc"
+  ],
+  "palette_rgb": [
+    [
+      0,
+      0,
+      0
+    ],
+    [
+      0,
+      0,
+      170
+    ],
+    [
+      0,
+      170,
+      0
+    ],
+    [
+      0,
+      170,
+      170
+    ],
+    [
+      170,
+      0,
+      0
+    ],
+    [
+      170,
+      0,
+      170
+    ],
+    [
+      170,
+      85,
+      0
+    ],
+    [
+      170,
+      170,
+      170
+    ],
+    [
+      85,
+      85,
+      85
+    ],
+    [
+      85,
+      85,
+      255
+    ],
+    [
+      85,
+      255,
+      85
+    ],
+    [
+      85,
+      255,
+      255
+    ],
+    [
+      255,
+      85,
+      85
+    ],
+    [
+      255,
+      85,
+      255
+    ],
+    [
+      255,
+      255,
+      85
+    ],
+    [
+      255,
+      255,
+      255
+    ]
+  ],
+  "pixels": {
+    "file": "avatar-ega16-reference.bin",
+    "bytes": 128,
+    "sha256": "7b764fd7e4e94bc61a4bab113877ee7d7b97b456bd35b16823ebce27a19eaf9d"
+  },
+  "record": "avatar-ega16-reference.record",
+  "proof": "proof-avatar-ega16-reference"
+}
