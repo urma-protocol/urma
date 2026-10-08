@@ -30,13 +30,19 @@ cargo add urma-runtime
 
 ### Peer-to-peer light client
 
-`p2p::P2pProvider::new(chain, cache_dir)` connects outbound to Litecoin peers found through the DNS seeds, syncs block headers from an embedded retarget-boundary checkpoint and serves `getblockchaininfo`, `getblockhash`, `getblockheader` and `getblock(hash, 0)` through the `Provider` trait with `Evidence::LightClientInclusion` and Esplora block framing. Headers are validated for continuity, scrypt proof of work, the Core retarget schedule, median-time-past and clock horizon; the most-work branch wins and a reorganization drops cached blocks above the fork. Blocks are checked against the verified header and their Merkle and witness commitments. The header chain is cached under the caller's directory with atomic writes; on reload the file is anchored to the checkpoint and the trailing window is re-proved.
+`p2p::P2pProvider::new(chain, cache_dir)` loads the Litecoin header cache synchronously from an embedded retarget-boundary checkpoint. Its worker starts when explicitly warmed or when the router considers block or header reads. The worker connects outbound to Litecoin peers found through the DNS seeds and syncs headers. Once ready, the provider serves `getblockchaininfo`, `getblockhash`, `getblockheader` and `getblock(hash, 0)` through the `Provider` trait with `Evidence::LightClientInclusion` and Esplora block framing. Incoming headers are validated for continuity, scrypt proof of work, the Core retarget schedule, median-time-past and clock horizon; the most-work branch presented by connected peers wins and a reorganization drops cached blocks above the fork. Blocks are checked against the verified header and their Merkle and witness commitments.
 
-Trust statement: this is header-chain plus inclusion validation, not consensus validation. It proves that a block carrying the claimed work is on the heaviest header chain the connected peers present, and that a transaction is inside that block. It does not validate scripts, amounts, MWEB extension data or the UTXO set, and it cannot detect a majority-hashrate chain that violates consensus rules. The checkpoint is a trusted root: mainnet height 3187295/3187296 and testnet height 4904927/4904928, each cross-checked against two independent public sources before embedding. `progress()` reports headers synced against the best peer height so callers can show real sync state; the provider only advertises its methods once the first full header round has completed.
+The V0 header cache uses atomic writes under the caller's directory. Reload checks the embedded checkpoint and its trusted successor, continuity throughout the file, and difficulty transitions and median-time-past across the entire available history. The first successor is pinned by hash and exempt from the expected-difficulty calculation. Median-time-past uses up to 11 preceding headers from the available history; bootstrap does not supply the headers before the checkpoint. Scrypt proof of work is rechecked for the last 2,016 cached headers, or all post-checkpoint headers if fewer are present. The older prefix is trusted local state previously accepted by the client; reload does not independently re-prove its work. Keep this trust boundary when copying or restoring a cache.
+
+The clock horizon applies separately to incoming peer headers. Reload does not compare historical timestamps with today's clock, so a clock that has moved backwards does not invalidate or delete the cache. Such a clock can still cause incoming headers to fail the live horizon check.
+
+Trust statement: P2P validates headers and fetched block commitments. It relies on the embedded checkpoint, the cached prefix and the chain branches connected peers present. It does not validate scripts, amounts, MWEB extension data or the UTXO set, and it cannot detect a majority-hashrate chain that violates consensus rules. Transaction inclusion requires checking the transaction against the fetched block; a public provider's inclusion report alone does not establish it. The checkpoint is a trusted root: mainnet height 3187295/3187296 and testnet height 4904927/4904928, each cross-checked against two independent public sources before embedding. `progress()` reports headers synced against the best peer height so callers can show real sync state; the provider only advertises its methods after a full header round has completed and while peers are connected.
 
 ## Public transport
 
-`Node::public(chain)` and `Node::public_in(chain, cache_dir)` read the chain without a local node, provider key, paid plan or RPC cookie. Both build a `transport::Router` over providers that implement `transport::Provider`; `Node::with_providers` accepts any provider set, `Node::connect` keeps the local RPC path.
+`Node::public(chain)` and `Node::public_in(chain, cache_dir)` read the chain without a local node, provider key, paid plan or RPC cookie. Both build a `transport::Router` over providers that implement `transport::Provider`. On native targets, `Node::public_in` adds the built-in P2P light client for Litecoin mainnet and testnet and persists Electrum certificate pins. `Node::public` uses public servers with session-only pins and no P2P light client. `Node::with_providers` accepts any provider set; `Node::connect` uses a local Core node over loopback HTTP with cookie authentication and checks the selected chain's genesis hash.
+
+Although P2P cache loading itself is offline, constructing a `Node` separately verifies the selected network through `getblockhash(0)`. The complete `Node::public_in` constructor therefore requires a network response.
 
 ### Provider kinds
 
@@ -45,13 +51,15 @@ Trust statement: this is header-chain plus inclusion validation, not consensus v
 | Electrum (`ssl://host:port`, `tcp://host:port`) | JSON lines over TLS, protocol 1.4 | tip, block hashes, transactions, address unspents, output lookups, broadcast | raw blocks, mempool listing, mempool preflight |
 | Esplora (`https://…/api`) | REST | everything above plus raw blocks and the mempool list | mempool preflight |
 | JSON-RPC gateway (`https://…`) | Core-style JSON-RPC | node methods including mempool preflight | address unspents |
-| Light client | in-process, supplied by the application | header-chain inclusion checks | provided by the application |
+| P2P light client | native Litecoin peer-to-peer | tip, block hashes, headers and raw blocks anchored to its header chain | transaction lookup, address unspents, output lookups, broadcast, mempool listing and preflight |
 
-The light client slot sits first in the provider list and is empty in this crate; an application that carries one hands it to `Node::with_providers`.
+With `Node::public_in`, the built-in Litecoin light client sits first in the provider list. Other chains and `Node::public` start with public servers. Applications can supply their own providers through `Node::with_providers`.
 
 ### Routing and failover
 
-For every call the router keeps the providers that support the method, orders them by evidence tier and then by health, and tries them one at a time. There is no fan-out: one request reaches one provider, and the next provider is asked only after the previous one failed. Three consecutive failures open a provider's circuit for 30 s; an HTTP 429 or a gateway's own request budget parks it for the `Retry-After` window (default 60 s, at most 300 s). A record that one provider reports as absent is retried on the others, and `Error::Missing` is returned only when every tried provider agrees. Every answer is validated against the request before it is returned: block hashes parse, transactions hash to the requested id, blocks decode and match their hash and merkle root in the answering provider's encoding, unspent rows carry the fields the wallet reads. A failed or timed-out read is an error, never an empty balance.
+For every call the router keeps the providers that support the method and orders them by evidence tier and then by health. By default it tries them one at a time without fan-out: the next provider is asked only after the previous one failed or reported absence. Opt-in `Router::race_tip(true)` allows concurrent `getblockchaininfo` calls. Three consecutive failures open a provider's circuit for 30 s; an HTTP 429 or a gateway's own request budget parks it for the `Retry-After` window (default 60 s, at most 300 s). A record that one provider reports as absent is retried on the others; if no tried provider supplies an answer and at least one reports absence, the router returns `Error::Missing` even if the others failed. Every answer is validated against the request before it is returned: block hashes parse, transactions hash to the requested id, blocks decode and match their hash and merkle root in the answering provider's encoding, unspent rows carry the fields the wallet reads. A failed or timed-out read is an error, never an empty balance.
+
+Fallback happens per call. During P2P startup, for history before its checkpoint, for unsupported methods or after a failed P2P call, a public server may supply the answer. HTTP block reads check the requested block hash, Merkle root and witness commitment, but do not independently validate a Litecoin header chain or its difficulty transitions. Configuring P2P alongside HTTP does not cross-validate every HTTP response against P2P. A hash supplied by P2P can constrain a later HTTP block fetch; it does not authenticate a separate HTTP transaction-inclusion claim.
 
 ### Defaults per chain
 
@@ -62,7 +70,7 @@ For every call the router keeps the providers that support the method, orders th
 | Bitcoin testnet4 | `https://mempool.space/testnet4/api` |
 | Bitcoin regtest | none; use `Node::connect` |
 
-Every provider must return the selected chain's genesis hash before it serves anything else. `endpoints::defaults(chain)` returns the list; `Node::with_public_sources` accepts your own.
+The built-in HTTP and Electrum providers check the selected chain's genesis hash before serving reads; P2P uses that chain's embedded checkpoint and network parameters. `endpoints::defaults(chain)` returns the public-server list; `Node::with_public_sources` accepts your own.
 
 ### Certificate pinning
 
@@ -70,13 +78,13 @@ Electrum servers commonly use self-signed certificates, so the TLS session does 
 
 ### Evidence tiers
 
-`Node::inclusion_evidence()` names the weakest provider in the set, and journals record it next to every observation.
+`Node::inclusion_evidence()` names the weakest provider in the configured set, and journals record that conservative label. A default `Node::public_in` therefore retains `public_provider_observation` even when P2P serves some calls. `Node::observe` reports the provider and evidence of its individual answer; callers must retain those distinctions when combining or caching observations.
 
-| Label | Proves | Does not prove |
+| Label | Evidence basis | Limits |
 | --- | --- | --- |
-| `local_validating_node` | your own node validated the block and its transactions under consensus rules | nothing beyond your node's view of the chain |
-| `light_client_inclusion` | a header chain with valid proof of work includes the transaction at the reported height | that the block's transactions are valid, or that the chain is the heaviest one |
-| `public_provider_observation` | a third-party server reported the transaction, its block hash and height, and the bytes hash to the requested id | that the block exists or was validated; a provider can omit, delay or misreport inclusion |
+| `local_validating_node` | a local Core full node trusted to validate consensus and select the chain | URMA does not independently repeat Core's consensus validation; evidence follows that node's view |
+| `light_client_inclusion` | P2P header validation and fetched block commitments, with the V0 cache trust boundary above | transaction inclusion needs a check against the block; no full consensus validation or guarantee of the globally heaviest chain |
+| `public_provider_observation` | a third-party report, with local transaction-ID and fetched-block integrity checks | chain selection and inclusion reports remain provider claims; the provider can omit, delay or misreport them |
 
 A routed node never reports `local_validating_node`. Signed records are authenticated by their own signatures at every tier; the tier only states what the inclusion and confirmation counts rest on.
 
