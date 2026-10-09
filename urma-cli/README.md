@@ -73,13 +73,51 @@ Choose the network explicitly using the options available for the selected opera
 
 Private archives use recovery secrets distinct from identity-vault recovery phrases. Public records can expose their contents; inspect Git snapshots and other public material before approval. Access to retained records remains necessary even when the original application or host is gone.
 
+### Explicit offline container recovery
+
+Use `urma expert recover-container` to recover one object from a local packed
+private container containing unrelated or invalid records:
+
+```sh
+URMA_OUTPUT=json urma expert recover-container --key recovery.key --input bundle.urma --output recovered.bin
+```
+
+The recovery key contains exactly 32 raw bytes and needs private file permissions
+(for example, `chmod 600 recovery.key`). This mode reads bounded input and uses
+neither a chain source nor an identity vault. It scans the entire container before
+export. Container framing remains strict: damaged count, record-length framing,
+truncation or trailing bytes are errors; it does not search for magic bytes or
+resynchronize damaged framing.
+
+Unrelated records and invalid candidates, including invalid metadata or IV after
+MAC verification, are omitted and counted. Only fully valid authenticated records
+determine the object. Exactly one object is required; another authenticated object
+is an error even if incomplete. All chunks, consistent metadata, the original
+length and whole-file hash must verify. Distinct fully valid records at the same
+object/index, including a padding-only difference, make the object conflicted;
+byte-identical duplicates are accepted. Resource and source failures remain errors.
+
+JSON success reports `status: "recovered-object"`, `object_id`, `chunks`, `bytes`,
+`sha256`, `content_type`, `skipped_unrelated` and `rejected_records`. This describes
+the recovered object; it does not certify every source record or a complete source
+inventory. Output configuration and recovery validation happen before writing.
+Their failures exit unsuccessfully and leave a new output absent. Export writes a
+complete file atomically without replacing an existing destination. A durability
+error after the file has been committed, or an error reporting the result, can
+still return failure with that complete file present.
+
+The strict `urma expert open` and `store-local` commands, directory discovery with
+`recover-local`, and Archive collection/file and identity-vault workflows retain
+their existing contracts. Choose this recovery mode explicitly when tolerating
+invalid or unrelated records within intact packed-container framing.
+
 ## Chain sources
 
 Without any configuration `urma` reads the chain through the public providers of [urma-runtime](https://crates.io/crates/urma-runtime): Electrum servers first, then an Esplora explorer, then a JSON-RPC gateway, each checked against the selected network's genesis block. No local node, API key or paid plan is involved; `--testnet` switches the provider set with the network.
 
 Electrum certificates are pinned on first use under `~/.local/share/urma/electrum-pins/` (`$XDG_DATA_HOME/urma/electrum-pins/` when set), one `<host>_<port>.sha256` file per server. A server whose certificate changed is refused until its pin file is removed; confirm the new fingerprint with the operator before removing it.
 
-To use your own node instead, set `rpc_url` and `node_auth_file` in `~/.config/urma/config.json`, or export `URMA_RPC_URL` and `URMA_NODE_AUTH_FILE`. Both must be present; the node must listen on a loopback address with cookie authentication. `urma expert` commands always require the local node.
+To use your own node instead, set `rpc_url` and `node_auth_file` in `~/.config/urma/config.json`, or export `URMA_RPC_URL` and `URMA_NODE_AUTH_FILE`. Both must be present; the node must listen on a loopback address with cookie authentication. Chain-facing `urma expert` commands that connect to Core require this local node; offline encoding, opening and recovery commands do not.
 
 Command output names the evidence behind chain observations. `chain_evidence` in JSON reports, `source` in observation journals and the `Observation source` line of Git recovery carry one of three labels: `local_validating_node` means your node validated the blocks; `light_client_inclusion` means a proof-of-work header chain includes the transaction; `public_provider_observation` means third-party servers reported inclusion and the bytes were verified against the requested ids, but no block was validated locally. Record signatures are verified at every tier; the label states only what confirmation counts rest on.
 

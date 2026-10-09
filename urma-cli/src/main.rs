@@ -206,6 +206,7 @@ fn main() {
             } else {
                 eprintln!("error: {error}");
             }
+            drop(error);
             std::process::exit(1);
         }
     }
