@@ -12,6 +12,7 @@ use clap::{Args, Subcommand, ValueEnum};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::path::PathBuf;
+use urma_core::container::recover_container as recover_offline_container;
 use urma_runtime::error::{Context, Error, bail, ensure};
 use urma_runtime::journal::{self, Plan};
 use urma_runtime::{
@@ -83,6 +84,11 @@ pub(crate) enum Command {
     Backends,
     StoreLocal(StoreLocalArgs),
     RecoverLocal(RecoverLocalArgs),
+    #[command(
+        about = "Recover one authenticated object from an offline container, skipping unrelated or invalid records",
+        long_about = "Explicit offline recovery mode: scans every framed record and exports only one complete authenticated object after length and hash checks. Unrelated or invalid records are skipped with counts. Packed-container framing remains strict; no magic-byte salvage or resynchronization. Does not use a node, network or identity vault."
+    )]
+    RecoverContainer(RecoverContainerArgs),
     Seal(SealArgs),
     Open(OpenArgs),
     Prepare(PrepareArgs),
@@ -119,6 +125,7 @@ pub(crate) fn run(command: Command) -> Result<(), Error> {
         }))?,
         Command::StoreLocal(args) => store_local(args)?,
         Command::RecoverLocal(args) => recover_local(args)?,
+        Command::RecoverContainer(args) => recover_container(args)?,
         Command::Seal(args) => seal(args)?,
         Command::Open(args) => open(args)?,
         Command::Prepare(args) => prepare(args)?,
@@ -242,6 +249,16 @@ pub(crate) struct RecoverLocalArgs {
     key: PathBuf,
     #[arg(long)]
     output_dir: PathBuf,
+}
+
+#[derive(Args)]
+pub(crate) struct RecoverContainerArgs {
+    #[arg(long)]
+    key: PathBuf,
+    #[arg(long)]
+    input: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
 }
 
 #[derive(Args)]
@@ -436,6 +453,33 @@ fn recover_local(args: RecoverLocalArgs) -> Result<(), Error> {
         &output_dir,
     )?;
 
+    Ok(())
+}
+
+fn recover_container(args: RecoverContainerArgs) -> Result<(), Error> {
+    let RecoverContainerArgs { key, input, output } = args;
+    config::output()?;
+    ensure!(
+        !output.try_exists()? && !output.is_symlink(),
+        "recovery requires a new output file"
+    );
+    let key = urma_workflows::archive::read_key(&key)?;
+    let recovered = recover_offline_container(
+        &key,
+        &storage::read_bounded(&input, urma_runtime::config::Limits::CONTAINER_BYTES)?,
+    )?;
+    let report = json!({
+        "status": "recovered-object",
+        "object_id": hex::encode(recovered.id),
+        "chunks": recovered.count,
+        "bytes": recovered.total,
+        "sha256": hex::encode(recovered.digest),
+        "content_type": recovered.content_type.code(),
+        "skipped_unrelated": recovered.skipped_unrelated,
+        "rejected_records": recovered.rejected_records,
+    });
+    storage::write_new(&output, &recovered.bytes)?;
+    print_report(report)?;
     Ok(())
 }
 
