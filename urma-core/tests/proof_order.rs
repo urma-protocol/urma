@@ -177,3 +177,53 @@ fn genuine_signed_manifest_hash_mismatch_is_checked_after_candidate_proof() {
         .unwrap();
     }
 }
+
+#[test]
+fn invalid_bip340_signature_precedes_a_real_signed_manifest_hash_mismatch() {
+    for (graph, child_is_leaf) in [("wrong-child-hash", false), ("wrong-leaf-hash", true)] {
+        let (request, authentic) = signed_edge(graph, child_is_leaf);
+        let original: Vec<Vec<u8>> = authentic.reveal.input[0]
+            .witness
+            .iter()
+            .map(<[u8]>::to_vec)
+            .collect();
+        let mut witness = original.clone();
+        assert_eq!(witness[0].len(), 64);
+        witness[0][63] ^= 1;
+        bitcoin::secp256k1::schnorr::Signature::from_slice(&witness[0]).unwrap();
+        assert_eq!(witness[1..], original[1..]);
+        let mut altered = authentic.reveal.clone();
+        altered.input[0].witness = Witness::from_slice(&witness);
+        assert_eq!(altered.compute_txid(), authentic.reveal.compute_txid());
+        assert_eq!(altered.compute_txid(), request.reference.txid);
+        assert_ne!(altered.compute_wtxid(), authentic.reveal.compute_wtxid());
+        assert_eq!(
+            altered.input[0].previous_output,
+            authentic.reveal.input[0].previous_output
+        );
+        assert_eq!(
+            envelope::extract_reveal(&altered).unwrap().record,
+            authentic.record
+        );
+        assert_ne!(
+            <[u8; 32]>::from(Sha256::digest(&authentic.record)),
+            request.reference.record_hash
+        );
+        // The complete proof of the unchanged script/commitment succeeds when
+        // only the genuine signature is restored. The wrong signed hash remains.
+        let candidate = request
+            .verify(&authentic.reveal, &authentic.commit)
+            .unwrap();
+        assert_eq!(
+            request.check_hash(&candidate).unwrap_err().to_string(),
+            HASH_MISMATCH
+        );
+        let cause = request.verify(&altered, &authentic.commit).unwrap_err();
+        match cause {
+            urma_core::error::Error::Context { message, .. } => {
+                assert_eq!(message, "invalid author signature");
+            }
+            other => panic!("signature-only alteration failed at an irrelevant guard: {other}"),
+        }
+    }
+}
