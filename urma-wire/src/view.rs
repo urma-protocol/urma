@@ -13,7 +13,7 @@ pub fn records(index: &Index, limit: usize) -> Result<Vec<Value>, Error> {
     for entry in index.entries.iter().rev() {
         match decode_cached(&hex::decode(&entry.record)?)? {
             CachedRecord::Current(record) => records.push(render(entry, record)?),
-            CachedRecord::LegacyAvatar => continue,
+            CachedRecord::LegacyAvatar | CachedRecord::LegacyProfile => continue,
         }
         if records.len() == limit {
             break;
@@ -33,6 +33,9 @@ pub fn record(index: &Index, txid: bitcoin::Txid) -> Result<Value, Error> {
         CachedRecord::LegacyAvatar => Err(Error::Invalid(
             "legacy 512-byte avatar is unsupported; cached record bytes are preserved".into(),
         )),
+        CachedRecord::LegacyProfile => Err(Error::Invalid(
+            "legacy profile longer than 128 UTF-8 bytes is unsupported; cached record bytes are preserved".into(),
+        )),
     }
 }
 pub fn identity(index: &Index, author: bitcoin::XOnlyPublicKey) -> Result<Value, Error> {
@@ -47,7 +50,7 @@ pub fn identity(index: &Index, author: bitcoin::XOnlyPublicKey) -> Result<Value,
     {
         let record = match decode_cached(&hex::decode(&entry.record)?)? {
             CachedRecord::Current(record) => record,
-            CachedRecord::LegacyAvatar => continue,
+            CachedRecord::LegacyAvatar | CachedRecord::LegacyProfile => continue,
         };
         match record {
             PublicRecord::Profile(name) if profile.is_null() => {

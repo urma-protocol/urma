@@ -335,7 +335,8 @@ fn fixed_public_layouts_preserve_utf8_txid_order_and_limits() -> Result<()> {
         .encode()
         .is_err()
     );
-    assert!(PublicRecord::Profile("x".repeat(32761)).encode().is_err());
+    assert!(PublicRecord::Profile("x".repeat(128)).encode().is_ok());
+    assert!(PublicRecord::Profile("x".repeat(129)).encode().is_err());
     Ok(())
 }
 

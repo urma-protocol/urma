@@ -19,6 +19,7 @@ impl Urma {
     pub const PRIVATE_RECORD_BYTES: usize = 32_928;
     pub const MAX_PRIVATE_BYTES: u64 = 140_737_488_322_560;
     pub const MAX_PUBLIC_BYTES: usize = 32_768;
+    pub const MAX_PROFILE_BYTES: usize = 128;
     pub const PROFILE_IDENTIFIER_BYTES: usize = 8;
     pub const AVATAR_SIDE: usize = 16;
     pub const AVATAR_PIXELS: usize = Self::AVATAR_SIDE * Self::AVATAR_SIDE;
@@ -186,7 +187,15 @@ impl PublicRecord {
             return Ok(bytes);
         }
         let body_size = match self {
-            Self::Post(text) | Self::Profile(text) => text.len(),
+            Self::Post(text) => text.len(),
+            Self::Profile(text) => {
+                ensure!(
+                    text.len() <= Urma::MAX_PROFILE_BYTES,
+                    "profile body exceeds {} UTF-8 bytes",
+                    Urma::MAX_PROFILE_BYTES
+                );
+                text.len()
+            }
             Self::Reply { text, .. } => text
                 .len()
                 .checked_add(32)
@@ -237,7 +246,14 @@ impl PublicRecord {
         let body = &bytes[Urma::PREFIX_BYTES..];
         match kind {
             RecordKind::Post => Ok(Self::Post(std::str::from_utf8(body)?.to_owned())),
-            RecordKind::Profile => Ok(Self::Profile(std::str::from_utf8(body)?.to_owned())),
+            RecordKind::Profile => {
+                ensure!(
+                    body.len() <= Urma::MAX_PROFILE_BYTES,
+                    "profile body exceeds {} UTF-8 bytes",
+                    Urma::MAX_PROFILE_BYTES
+                );
+                Ok(Self::Profile(std::str::from_utf8(body)?.to_owned()))
+            }
             RecordKind::Reply => {
                 ensure!(body.len() >= 32, "truncated reply target");
                 Ok(Self::Reply {
