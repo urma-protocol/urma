@@ -238,6 +238,63 @@ def public(name, data, outcome="valid"):
     manifest["public"].append({"name": name, "outcome": outcome, "record": save(name + ".record", data)})
 
 
+def profile_vectors(profile):
+    """Literal UTF-8 bytes exercise the kind-05 limit without normalization.
+
+    NFD129 is invalid even though NFC would shorten it to 86 bytes. NFD128
+    and its NFC spelling are both valid but must retain distinct wire bytes.
+    The existing small profile, empty profile and invalid-UTF8 fixture keep
+    their names and bytes. Only the old profile-max known answer is replaced.
+    """
+    cases = [
+        ("profile", profile[8:], "valid", "Existing name includes U+0000"),
+        ("profile-empty", b"", "valid", "Empty body is structurally valid"),
+        ("profile-ascii127", b"x"*127, "valid", "ASCII below the byte limit"),
+        ("profile-max", b"x"*128, "valid", "128-byte body, full record136"),
+        ("profile-over", b"x"*129, "invalid", "129 ASCII bytes exceed the limit"),
+        ("profile-utf8-two-byte128", bytes.fromhex("c899"*64), "valid", "64 U+0219 code points, 128 UTF-8 bytes"),
+        ("profile-utf8-two-byte129", bytes.fromhex("c899"*64+"61"), "invalid", "65 code points, 129 UTF-8 bytes"),
+        ("profile-utf8-four-byte128", bytes.fromhex("f09f9982"*32), "valid", "32 U+1F642 code points, 128 UTF-8 bytes"),
+        ("profile-utf8-four-byte129", bytes.fromhex("f09f9982"*32+"61"), "invalid", "33 code points, 129 UTF-8 bytes"),
+        ("profile-utf8-four-byte132", bytes.fromhex("f09f9982"*33), "invalid", "33 U+1F642 code points occupy132 bytes, never33 bytes"),
+        ("profile-nfd128", bytes.fromhex("65cc81"*42+"6162"), "valid", "NFD spelling retained at exactly128 bytes"),
+        ("profile-nfc86", bytes.fromhex("c3a9"*42+"6162"), "valid", "NFC spelling remains distinct from NFD128"),
+        ("profile-nfd129", bytes.fromhex("65cc81"*43), "invalid", "NFC normalization must not turn an overlong body into an accepted one"),
+        ("profile-nfc43", bytes.fromhex("c3a9"*43), "valid", "NFC equivalent of NFD129 fits in86 bytes"),
+        ("profile-preserve", bytes.fromhex("200065cc810d0a20"), "valid", "Keep whitespace, NUL, combining mark and CRLF exactly"),
+        ("invalid-profile-utf8", b"\xff", "invalid", "Existing invalid UTF-8 body"),
+        ("invalid-profile-utf8-over129", b"\xff"*129, "invalid", "Invalid UTF-8 and overlong body cannot be accepted"),
+        ("profile-utf8-truncated128", b"a"*127+b"\xc8", "invalid", "128-byte body ends inside a two-byte UTF-8 sequence"),
+        ("profile-legacy32760", b"x"*32760, "invalid", "Old maximum body is rejected, never truncated or migrated"),
+    ]
+    reference = {"protocol": "URMA", "wire_version": 0, "kind": 5,
+                 "encoding": "UTF-8", "maximum_body_bytes": 128,
+                 "minimum_record_bytes": 8, "maximum_record_bytes": 136,
+                 "normalization": "none", "truncation": "none", "cases": []}
+    for name, body, outcome, reason in cases:
+        value = prefix(5)+body
+        public(name, value, outcome)
+        proof_name = "proof-profile" if name == "profile" else "proof-"+name
+        proof(proof_name, value, outcome=outcome)
+        entry = {"name": name, "outcome": outcome, "reason": reason,
+                 "body": save(name+".bin", body),
+                 "record": {"file": name+".record", "bytes": len(value), "sha256": sha(value).hex()},
+                 "proof": proof_name}
+        try:
+            entry["text"] = body.decode("utf-8")
+        except UnicodeDecodeError:
+            entry["utf8_valid"] = False
+        else:
+            entry["utf8_valid"] = True
+        reference["cases"].append(entry)
+    reference["equivalent_spellings"] = [
+        {"left": "profile-nfd128", "right": "profile-nfc86", "relation": "canonically equivalent, retain distinct bytes"},
+        {"left": "profile-nfd129", "right": "profile-nfc43", "relation": "canonically equivalent, different acceptance due to byte length"},
+    ]
+    manifest["profile_reference"] = save("profile-utf8-reference.json",
+        (json.dumps(reference, indent=2, ensure_ascii=False)+"\n").encode())
+
+
 def add(left, right):
     if left is None:
         return right
@@ -422,19 +479,18 @@ def main():
             ("avatar-prefixed136",avatar,"invalid"),
         ]
     ]
-    for name,data in [("post",post),("reply",reply),("profile",profile),("avatar",avatar),
+    for name,data in [("post",post),("reply",reply),("avatar",avatar),
                       ("avatar-ega16-reference",avatar_reference),
                       ("avatar-png-prefix",prefix(6)+avatar_png_pixels),
                       ("avatar-urma-prefix",prefix(6)+avatar_urma_pixels),
-                      ("post-empty",prefix(2)),("reply-empty",prefix(4)+bytes(32)),("profile-empty",prefix(5)),
-                      ("post-max",prefix(2)+b"x"*32760),("reply-max",prefix(4)+bytes(32)+b"x"*32728),
-                      ("profile-max",prefix(5)+b"x"*32760)]:
+                      ("post-empty",prefix(2)),("reply-empty",prefix(4)+bytes(32)),
+                      ("post-max",prefix(2)+b"x"*32760),("reply-max",prefix(4)+bytes(32)+b"x"*32728)]:
         public(name,data)
     for name,data in [("post-over",prefix(2)+b"x"*32761),("reply-short",prefix(4)+bytes(31)),
                       ("avatar-short",avatar[:-1]),("avatar-appended",avatar+b"x"),
                       ("avatar-legacy512",prefix(6)+bytes(range(256))*2),("unknown-kind",prefix(255)),
                       ("unknown-version",b"URMA\x01\x02\x00\x00"),("reserved-flags",b"URMA\x00\x02\x01\x00"),
-                      ("invalid-post-utf8",prefix(2)+b"\xc0\x80"),("invalid-profile-utf8",prefix(5)+b"\xff"),
+                      ("invalid-post-utf8",prefix(2)+b"\xc0\x80"),
                       ("invalid-reply-utf8",prefix(4)+bytes(32)+b"\xff")]:
         public(name,data,"invalid")
     profile_record=prefix(12)+b"URMANAM1"+bytes(range(256))
@@ -447,7 +503,7 @@ def main():
     for name,data in [("profile-record-short",prefix(12)+b"URMANAM"),
                       ("profile-record-over",prefix(12)+b"URMANAM1"+b"x"*32753)]:
         public(name,data,"invalid")
-    for name,data in [("proof-post",post),("proof-reply",reply),("proof-profile",profile),("proof-avatar",avatar),
+    for name,data in [("proof-post",post),("proof-reply",reply),("proof-avatar",avatar),
                       ("proof-avatar-ega16-reference",avatar_reference),
                       ("proof-avatar-png-prefix",prefix(6)+avatar_png_pixels),
                       ("proof-avatar-urma-prefix",prefix(6)+avatar_urma_pixels),
@@ -465,6 +521,7 @@ def main():
           lambda script:script[:41]+push((prefix(2)+b"a"*513)[:500])+push((prefix(2)+b"a"*513)[500:])+b"\x68","invalid")
     proof("proof-offline-container",prefix(3)+bytes(4),outcome="invalid")
     proof("proof-profile-record",profile_record)
+    profile_vectors(profile)
     (OUT/"manifest.json").write_text(json.dumps(manifest,indent=2,ensure_ascii=False)+"\n")
     recovery_vectors(one, two)
 
