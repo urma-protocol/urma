@@ -195,21 +195,40 @@ fn fetch<S: MultipartSource>(
     budget: &Budget,
 ) -> Result<VerifiedRecord, RecoveryError> {
     let request = RecordRequest { reference };
-    let txid = reference.txid;
+    let record = fetch_candidate(reference.txid, budget, |rejected| {
+        source.fetch(&request, rejected)
+    })?;
+    accept(&request, record, author)
+}
+
+pub(crate) fn retrieve(
+    txid: Txid,
+    limits: RecoveryLimits,
+    fetch: impl FnMut(&[String]) -> Result<Candidate, FetchError>,
+) -> Result<VerifiedRecord, RecoveryError> {
+    fetch_candidate(txid, &Budget::new(limits), fetch)
+}
+
+fn fetch_candidate(
+    txid: Txid,
+    budget: &Budget,
+    mut fetch: impl FnMut(&[String]) -> Result<Candidate, FetchError>,
+) -> Result<VerifiedRecord, RecoveryError> {
     let mut rejected: Vec<String> = Vec::new();
     let mut attempted = Attempted::Nothing;
     for attempt in 1..=budget.attempts {
         if budget.expired() {
             return Err(given_up(txid, attempted));
         }
-        let (origin, cause) = match source.fetch(&request, &rejected) {
-            Ok(candidate) => match request.check_txid(&candidate.record) {
-                Ok(()) => return accept(&request, candidate.record, author),
-                Err(cause) => {
-                    tracing::warn!(%txid, origin = %candidate.origin, error = %cause, "candidate rejected");
-                    (candidate.origin, cause)
+        let (origin, cause) = match fetch(&rejected) {
+            Ok(candidate) => {
+                if candidate.record.txid() == txid {
+                    return Ok(candidate.record);
                 }
-            },
+                let cause = Error::Invalid("candidate TXID mismatch".into());
+                tracing::warn!(%txid, origin = %candidate.origin, error = %cause, "candidate rejected");
+                (candidate.origin, cause)
+            }
             Err(FetchError::Rejected { origin, cause }) => {
                 tracing::warn!(%txid, %origin, error = %cause, "candidate rejected");
                 (origin, cause)

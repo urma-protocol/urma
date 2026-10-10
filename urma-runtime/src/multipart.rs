@@ -3,6 +3,7 @@ pub use urma_core::multipart::{
     RecordRequest, RootManifest, VerifiedRecord,
 };
 mod recovery;
+pub(crate) use recovery::retrieve;
 pub use recovery::{
     Candidate, FetchError, MultipartSource, RecoveredObject, RecoveryError, RecoveryLimits,
     reconstruct,

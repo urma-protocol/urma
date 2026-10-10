@@ -185,26 +185,31 @@ fn recover_from(
     source.node.verify_network()?;
     source.node.require_txindex()?;
     let tip = source.node.tip()?;
-    let verified = retained_record(source.node, root, source.retention)?;
-    let result =
-        multipart::reconstruct(&verified, source, limits, scratch).map_err(
-            |cause| match cause {
-                RecoveryError::InvalidObject(error)
-                | RecoveryError::InvalidCandidate { cause: error, .. } => Error::Protocol(error),
-                RecoveryError::Source { cause, .. } => cause,
-                RecoveryError::Storage(cause) => Error::Io(cause),
-                RecoveryError::Incomplete { txid } => Error::Missing(format!(
-                    "record {txid} has no confirmed inclusion on {:?}; check the TXID, wait for confirmation or use --testnet for Litecoin test data",
-                    source.node.chain()
-                )),
-                RecoveryError::Capacity(message) => Error::Capacity(message),
-            },
-        )?;
+    let verified = multipart::retrieve(root, limits, |rejected| {
+        candidate(source.node, root, rejected, source.retention)
+    })
+    .map_err(|cause| recovery_error(source.node, cause))?;
+    let result = multipart::reconstruct(&verified, source, limits, scratch)
+        .map_err(|cause| recovery_error(source.node, cause))?;
     ensure!(
         source.node.block_hash(tip.0)?.to_string() == tip.1,
         "chain changed during reconstruction; retry recovery"
     );
     Ok(result)
+}
+
+fn recovery_error(node: &Node, cause: RecoveryError) -> Error {
+    match cause {
+        RecoveryError::InvalidObject(error)
+        | RecoveryError::InvalidCandidate { cause: error, .. } => Error::Protocol(error),
+        RecoveryError::Source { cause, .. } => cause,
+        RecoveryError::Storage(cause) => Error::Io(cause),
+        RecoveryError::Incomplete { txid } => Error::Missing(format!(
+            "record {txid} has no confirmed inclusion on {:?}; check the TXID, wait for confirmation or use --testnet for Litecoin test data",
+            node.chain()
+        )),
+        RecoveryError::Capacity(message) => Error::Capacity(message),
+    }
 }
 
 pub fn recover(
