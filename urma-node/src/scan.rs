@@ -12,6 +12,7 @@ use urma_core::{envelope, format::RecordKind, multipart::VerifiedRecord};
 
 pub(crate) struct Record {
     pub position: u32,
+    pub wtxid: bitcoin::Wtxid,
     pub verified: VerifiedRecord,
     pub proof: TransactionProof,
     pub commit: Transaction,
@@ -101,6 +102,7 @@ impl ScanBatch {
             }
             records.push(Record {
                 position,
+                wtxid: reveal.compute_wtxid(),
                 verified,
                 proof,
                 commit,

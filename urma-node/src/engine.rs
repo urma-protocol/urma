@@ -60,6 +60,59 @@ impl Engine {
         self.archive()?.status()
     }
 
+    pub fn record(&self, txid: bitcoin::Txid) -> Result<Option<ArchivedRecord>, Error> {
+        self.archive()?.record(txid)
+    }
+
+    /// Cache an explicitly requested record, including children in pruned mode.
+    /// This is not a pin or a statement that the multipart object is complete.
+    /// Header selection is independent of the sender; reorg invalidates the
+    /// ticket before persistence. No source call or database lock spans proof work.
+    pub fn admit_record(&self, package: RecordPackage) -> Result<RecordReceipt, Error> {
+        let (ticket, chain, header) = {
+            let archive = self.archive()?;
+            let chain = archive.config().chain;
+            if package.version != API_VERSION
+                || package.chain_genesis
+                    != chain
+                        .genesis()
+                        .map_err(|e| Error::Invalid(e.to_string()))?
+                        .0
+            {
+                return Err(Error::Invalid(
+                    "record package version or network mismatch".into(),
+                ));
+            }
+            let ticket = archive.ticket(package.block.height)?;
+            if ticket.point() != package.block {
+                return Err(Error::Stale);
+            }
+            let header = archive
+                .header_at(package.block.height)?
+                .ok_or(Error::Stale)?;
+            (ticket, chain, header)
+        };
+        let included = package
+            .reveal
+            .verify(chain, &header)
+            .map_err(|e| Error::Invalid(format!("selective inclusion: {e}")))?;
+        let commit = urma_chain::decode::transaction(&package.commit, chain)
+            .map_err(|e| Error::Invalid(format!("selective commit: {e}")))?;
+        let reveal = included.transaction();
+        let verified =
+            urma_core::multipart::VerifiedRecord::verify(reveal.compute_txid(), reveal, &commit)
+                .map_err(|e| Error::Invalid(format!("selective URMA proof: {e}")))?;
+        let record = crate::scan::Record {
+            position: included.position(),
+            wtxid: reveal.compute_wtxid(),
+            verified,
+            commit,
+            raw_commit: package.commit,
+            proof: package.reveal,
+        };
+        self.archive()?.admit_record(ticket, record)
+    }
+
     /// Admit at most 2,000 headers from the selected verifier view. This makes
     /// no block-scan or completeness claim. Concurrent callers do not duplicate
     /// the synchronization cycle; they receive Busy.
@@ -127,6 +180,7 @@ impl Engine {
         }
         // Linked prefix plus unchanged final header binds the fetched batch to
         // one verifier branch even if the source changed during acquisition.
+        budget.check()?;
         if source.header(end)?
             != *headers
                 .last()
@@ -140,6 +194,7 @@ impl Engine {
         if now.generation != before.generation || now.selected_tip != before.selected_tip {
             return Err(Error::Stale);
         }
+        budget.check()?;
         archive.select(start, &headers)?;
         archive.status()
     }
@@ -193,11 +248,13 @@ impl Engine {
                 .position(|tx| tx.compute_txid() == txid)
                 .map(|i| decoded.raw_transactions()[i].clone()))
         })?;
+        budget.check()?;
         if source.header(ticket.point().height)?.block_hash() != ticket.point().hash {
             return Err(Error::Stale);
         }
         budget.check()?;
         let mut archive = self.archive()?;
+        budget.check()?;
         archive.commit_scan(batch)?;
         archive.status()
     }

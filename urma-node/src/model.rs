@@ -5,6 +5,38 @@ use urma_chain::observation::Chain;
 pub const API_VERSION: u32 = 1;
 pub const SCAN_RULES_VERSION: u32 = 1;
 
+/// Transport data, never trusted merely because it came from another node.
+/// The receiver selects the header independently before verifying this proof.
+/// `commit` authenticates the exact prevout through its TXID; this package does
+/// NOT assert the commit's inclusion, ordering, or witness authenticity. Names
+/// must obtain independently anchored commit placement before applying a record.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RecordPackage {
+    pub version: u32,
+    pub chain_genesis: BlockHash,
+    pub block: ChainPoint,
+    pub reveal: urma_chain::inclusion::TransactionProof,
+    pub commit: Vec<u8>,
+}
+
+/// Local evidence at one archive generation. Selective admission establishes
+/// membership and the URMA proof, never a full-block scan or interval coverage.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RecordReceipt {
+    pub generation: u64,
+    pub block: ChainPoint,
+    pub position: u32,
+    pub txid: bitcoin::Txid,
+    pub wtxid: bitcoin::Wtxid,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ArchivedRecord {
+    pub receipt: RecordReceipt,
+    pub package: RecordPackage,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ChainPoint {
     pub height: u64,

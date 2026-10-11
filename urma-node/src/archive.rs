@@ -294,6 +294,77 @@ impl Archive {
         ).optional()?)
     }
 
+    /// Orphan bytes remain archived but are never returned as selected evidence.
+    pub(crate) fn record(&self, txid: bitcoin::Txid) -> Result<Option<ArchivedRecord>, Error> {
+        let row: Option<(ChainPoint, u32, String, Vec<u8>, Vec<u8>)> = self
+            .db
+            .query_row(
+                "SELECT s.height,s.hash,r.position,r.wtxid,r.proof,t.raw FROM records r
+             JOIN selected s ON s.hash=r.block_hash
+             JOIN transactions reveal ON reveal.wtxid=r.wtxid
+             JOIN transactions t ON t.wtxid=r.commit_wtxid
+             WHERE reveal.txid=?1 ORDER BY s.height,r.position LIMIT 1",
+                [txid.to_string()],
+                |r| Ok((point(r)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .optional()?;
+        let Some((block, position, wtxid, proof, commit)) = row else {
+            return Ok(None);
+        };
+        Ok(Some(ArchivedRecord {
+            receipt: RecordReceipt {
+                generation: generation(&self.db)?,
+                block,
+                position,
+                txid,
+                wtxid: wtxid
+                    .parse()
+                    .map_err(|e| Error::Invalid(format!("stored WTXID: {e}")))?,
+            },
+            package: RecordPackage {
+                version: API_VERSION,
+                chain_genesis: self
+                    .config
+                    .chain
+                    .genesis()
+                    .map_err(|e| Error::Invalid(e.to_string()))?
+                    .0,
+                block,
+                reveal: serde_json::from_slice(&proof)?,
+                commit,
+            },
+        }))
+    }
+
+    pub(crate) fn admit_record(
+        &mut self,
+        ticket: ScanTicket,
+        record: crate::scan::Record,
+    ) -> Result<RecordReceipt, Error> {
+        self.check_ticket(ticket)?;
+        let receipt = RecordReceipt {
+            generation: ticket.generation,
+            block: ticket.point,
+            position: record.position,
+            txid: record.verified.txid(),
+            wtxid: record.wtxid,
+        };
+        let tx = self.db.transaction()?;
+        store_record(&tx, &ticket.point.hash.to_string(), &record)?;
+        tx.execute(
+            "INSERT INTO events(generation,kind,height,block_hash) VALUES(?1,'record',?2,?3)",
+            params![
+                sql_integer(ticket.generation)?,
+                sql_integer(ticket.point.height)?,
+                ticket.point.hash.to_string()
+            ],
+        )?;
+        // No locators, scan marks, dependency resolution, or completeness claims
+        // are inferred from a selective package.
+        tx.commit()?;
+        Ok(receipt)
+    }
+
     pub(crate) fn commit_scan(&mut self, batch: crate::scan::ScanBatch) -> Result<(), Error> {
         self.check_ticket(batch.ticket)?;
         let point = batch.ticket.point;
@@ -307,26 +378,7 @@ impl Archive {
         // An I/O/constraint failure rolls it all back, including progress.
         tx.execute("DELETE FROM dependencies WHERE block_hash=?1", [&hash])?;
         for record in batch.records {
-            let wtxid = batch.locators[record.position as usize].1.to_string();
-            let commit_wtxid = record.commit.compute_wtxid().to_string();
-            tx.execute(
-                "INSERT OR IGNORE INTO transactions VALUES(?1,?2,?3)",
-                params![
-                    wtxid,
-                    record.verified.txid().to_string(),
-                    record.proof.transaction
-                ],
-            )?;
-            tx.execute(
-                "INSERT OR IGNORE INTO transactions VALUES(?1,?2,?3)",
-                params![
-                    commit_wtxid,
-                    record.commit.compute_txid().to_string(),
-                    record.raw_commit
-                ],
-            )?;
-            tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(block_hash,position) DO UPDATE SET wtxid=excluded.wtxid,author=excluded.author,record=excluded.record,commit_wtxid=excluded.commit_wtxid,proof=excluded.proof",
-                params![hash, record.position, wtxid, record.verified.author().to_string(), record.verified.record_bytes(), commit_wtxid, serde_json::to_vec(&record.proof)?])?;
+            store_record(&tx, &hash, &record)?;
         }
         let unresolved = batch.dependencies.len() as u64;
         for dependency in batch.dependencies {
@@ -380,4 +432,28 @@ fn unsigned(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
             Box::new(e),
         )
     })
+}
+
+fn store_record(db: &Connection, hash: &str, record: &crate::scan::Record) -> Result<(), Error> {
+    let wtxid = record.wtxid.to_string();
+    let commit_wtxid = record.commit.compute_wtxid().to_string();
+    db.execute(
+        "INSERT OR IGNORE INTO transactions VALUES(?1,?2,?3)",
+        params![
+            wtxid,
+            record.verified.txid().to_string(),
+            record.proof.transaction
+        ],
+    )?;
+    db.execute(
+        "INSERT OR IGNORE INTO transactions VALUES(?1,?2,?3)",
+        params![
+            commit_wtxid,
+            record.commit.compute_txid().to_string(),
+            record.raw_commit
+        ],
+    )?;
+    db.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(block_hash,position) DO UPDATE SET wtxid=excluded.wtxid,author=excluded.author,record=excluded.record,commit_wtxid=excluded.commit_wtxid,proof=excluded.proof",
+        params![hash, record.position, wtxid, record.verified.author().to_string(), record.verified.record_bytes(), commit_wtxid, serde_json::to_vec(&record.proof)?])?;
+    Ok(())
 }
