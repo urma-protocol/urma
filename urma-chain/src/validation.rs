@@ -1,4 +1,4 @@
-use bitcoin::{Block, BlockHash, Network};
+use bitcoin::{Block, BlockHash, Network, hashes::Hash};
 
 #[derive(Debug)]
 pub enum BlockValidationError {
@@ -42,10 +42,46 @@ pub fn validate_block_integrity(
     if !block.check_merkle_root() {
         return Err(BlockValidationError::MerkleRootMismatch);
     }
-    if !block.check_witness_commitment() {
+    if !check_witness_commitment(block) {
         return Err(BlockValidationError::WitnessCommitmentMismatch);
     }
     Ok(())
+}
+
+fn check_witness_commitment(block: &Block) -> bool {
+    let Some(coinbase) = block.txdata.first() else {
+        return false;
+    };
+    let commitment = coinbase.output.iter().rfind(|output| {
+        let script = output.script_pubkey.as_bytes();
+        script.len() >= 38 && script.starts_with(&[0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed])
+    });
+    match commitment {
+        Some(output) => {
+            if !coinbase.is_coinbase() {
+                return false;
+            }
+            let witness = &coinbase.input[0].witness;
+            if witness.len() != 1 {
+                return false;
+            }
+            let Some(reserved) = witness.iter().next() else {
+                return false;
+            };
+            if reserved.len() != 32 {
+                return false;
+            }
+            let Some(root) = block.witness_root() else {
+                return false;
+            };
+            let expected = Block::compute_witness_commitment(&root, reserved);
+            output.script_pubkey.as_bytes()[6..38] == expected.as_byte_array()[..]
+        }
+        None => block
+            .txdata
+            .iter()
+            .all(|tx| tx.input.iter().all(|input| input.witness.is_empty())),
+    }
 }
 
 pub fn validate_block(block: &Block, expected_hash: BlockHash) -> Result<(), BlockValidationError> {
