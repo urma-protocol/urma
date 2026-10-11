@@ -64,6 +64,93 @@ impl Engine {
         self.archive()?.record(txid)
     }
 
+    pub(crate) fn chain(&self) -> Result<urma_chain::observation::Chain, Error> {
+        Ok(self.archive()?.config().chain)
+    }
+
+    /// Fetch only a known transaction location from the independent full-block
+    /// source. Standard P2P is not assumed to offer an arbitrary TXID lookup.
+    /// The block is verified in full, but this targeted path does not scan/index
+    /// every candidate and consequently does not advance coverage.
+    pub fn retrieve_located_record(
+        &self,
+        txid: bitcoin::Txid,
+    ) -> Result<Option<ArchivedRecord>, Error> {
+        if let Some(record) = self.record(txid)? {
+            return Ok(Some(record));
+        }
+        let (location, chain) = {
+            let archive = self.archive()?;
+            (archive.location(txid)?, archive.config().chain)
+        };
+        let (Some(location), Some(source)) = (location, &self.source) else {
+            return Ok(None);
+        };
+        let raw = source.block(location.height)?;
+        let decoded =
+            urma_chain::decode::esplora_block_with_transactions(&raw, chain, location.hash)
+                .map_err(|e| Error::Invalid(format!("located block: {e}")))?;
+        let (block, raw) = decoded.into_parts();
+        let Some(position) = block.txdata.iter().position(|t| t.compute_txid() == txid) else {
+            return Err(Error::Invalid(
+                "verified block contradicts stored locator".into(),
+            ));
+        };
+        let reveal = &block.txdata[position];
+        if reveal.input.len() != 1 {
+            return Err(Error::Invalid("located transaction is not a reveal".into()));
+        }
+        let parent = reveal.input[0].previous_output.txid;
+        let commit =
+            if let Some(index) = block.txdata.iter().position(|t| t.compute_txid() == parent) {
+                Some(raw[index].clone())
+            } else if let Some(raw) = self.archive()?.transaction(parent)? {
+                Some(raw)
+            } else {
+                let parent_location = self.archive()?.location(parent)?;
+                match parent_location {
+                    None => None,
+                    Some(parent_location) => {
+                        let bytes = source.block(parent_location.height)?;
+                        let parent_block = urma_chain::decode::esplora_block_with_transactions(
+                            &bytes,
+                            chain,
+                            parent_location.hash,
+                        )
+                        .map_err(|e| Error::Invalid(format!("located parent block: {e}")))?;
+                        parent_block
+                            .block()
+                            .txdata
+                            .iter()
+                            .position(|t| t.compute_txid() == parent)
+                            .map(|i| parent_block.raw_transactions()[i].clone())
+                    }
+                }
+            };
+        let Some(commit) = commit else {
+            return Ok(None);
+        };
+        let proof = urma_chain::inclusion::BlockProofBuilder::new(&block)
+            .and_then(|builder| {
+                builder.proof(position as u32, raw[position].clone(), raw[0].clone())
+            })
+            .map_err(|e| Error::Invalid(e.to_string()))?;
+        if source.header(location.height)?.block_hash() != location.hash {
+            return Err(Error::Stale);
+        }
+        self.admit_record(RecordPackage {
+            version: API_VERSION,
+            chain_genesis: chain
+                .genesis()
+                .map_err(|e| Error::Invalid(e.to_string()))?
+                .0,
+            block: location,
+            reveal: proof,
+            commit,
+        })?;
+        self.record(txid)
+    }
+
     /// Supply a missing commit by its computed TXID. This is auxiliary prevout
     /// evidence, NOT a claim about the commit's chain placement or witness.
     /// Only existing dependencies from locally scanned blocks can be resolved.
@@ -170,7 +257,7 @@ impl Engine {
                 .map_err(|e| Error::Invalid(format!("selective URMA proof: {e}")))?;
         // VerifiedRecord authenticates bytes before interpreting references.
         // Admission additionally requires a valid V0 record, as in the scanner.
-        // Validate the structure AFTER authentication, without signing twice.
+        // Validate the structure AFTER authentication, without repeating signature verification.
         urma_core::envelope::extract_reveal(reveal)
             .map_err(|e| Error::Invalid(format!("selective V0 record: {e}")))?;
         let record = crate::scan::Record {

@@ -6,6 +6,7 @@ pub mod archive;
 pub mod engine;
 mod error;
 pub mod model;
+pub mod retrieval;
 mod scan;
 pub mod service;
 pub mod source;

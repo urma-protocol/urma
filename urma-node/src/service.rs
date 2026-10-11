@@ -57,7 +57,13 @@ impl Service {
                         let result = self
                             .engine
                             .synchronize_headers_until(&self.stop)
-                            .and_then(|_| self.engine.scan_next_until(&self.stop));
+                            .and_then(|_| self.engine.scan_next_until(&self.stop))
+                            .and_then(|status| {
+                                if !self.stop.load(Ordering::Acquire) {
+                                    self.engine.resolve_cached_dependency()?;
+                                }
+                                Ok(status)
+                            });
                         if let Ok(mut error) = self.sync_error.lock() {
                             *error = result.err().map(|e| e.to_string());
                         }
