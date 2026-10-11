@@ -3,16 +3,17 @@ use crate::{
     error::{NamesError, ScanError, ensure_names},
     index::{Checkpoint, NamesIndex, WindowBlock},
     payload::Payload,
+    projection::observation_from_verified,
     state::{Commit, Observation, Outcome, Verdict},
 };
 use bitcoin::{Block, BlockHash, Transaction, Txid};
 use serde::Serialize;
-use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, path::Path};
 use urma_chain::validation::validate_block_integrity;
 use urma_core::{
-    envelope::{self, ParsedEnvelope},
+    envelope,
     format::{PublicRecord, RecordKind},
+    multipart::VerifiedRecord,
 };
 
 pub trait Source {
@@ -377,13 +378,10 @@ fn observations<S: Source>(
         if tx.input.len() != 1 || !envelope::is_candidate(&tx.input[0].witness) {
             continue;
         }
-        let payload = match names_payload(tx) {
-            Ok(payload) => payload,
-            Err(cause) => {
-                tracing::warn!(error = %cause, txid = %tx.compute_txid(), "URMA candidate is not a names record");
-                continue;
-            }
-        };
+        if let Err(cause) = names_payload(tx) {
+            tracing::warn!(error = %cause, txid = %tx.compute_txid(), "URMA candidate is not a names record");
+            continue;
+        }
         let outpoint = tx.input[0].previous_output;
         let CommitLocation::Known {
             height: commit_height,
@@ -396,27 +394,32 @@ fn observations<S: Source>(
         let commit = source
             .transaction(outpoint.txid)
             .map_err(ScanError::Source)?;
-        let verified: ParsedEnvelope = match envelope::verify_reveal(tx, &commit) {
+        let verified = match VerifiedRecord::verify(tx.compute_txid(), tx, &commit) {
             Ok(verified) => verified,
             Err(cause) => {
                 tracing::warn!(error = %cause, txid = %tx.compute_txid(), "names reveal failed the author proof");
                 continue;
             }
         };
-        observations.push(Observation {
-            txid: tx.compute_txid(),
-            author: verified.author,
-            record_sha256: Sha256::digest(&verified.record).into(),
-            payload,
+        let observation = observation_from_verified(
+            &verified,
+            tx,
             height,
-            position: u32::try_from(position)?,
-            commit: Commit {
+            u32::try_from(position)?,
+            Commit {
                 txid: outpoint.txid,
                 vout: outpoint.vout,
                 height: commit_height,
                 position: commit_position,
             },
-        });
+        );
+        match observation {
+            Ok(Some(observation)) => observations.push(observation),
+            Ok(None) => (),
+            Err(cause) => {
+                tracing::warn!(error = %cause, txid = %tx.compute_txid(), "verified names record could not be projected");
+            }
+        }
     }
     Ok(observations)
 }

@@ -11,5 +11,8 @@ pub mod error;
 pub mod index;
 pub mod name;
 pub mod payload;
+pub mod projection;
 pub mod scan;
 pub mod state;
+
+pub use projection::observation_from_verified;
