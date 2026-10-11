@@ -75,7 +75,7 @@ impl Archive {
             tx.execute_batch(include_str!("schema.sql"))?;
             tx.execute("INSERT INTO config VALUES(1,?1)", [&encoded])?;
             tx.commit()?;
-        } else if version != 1 && version != 2 {
+        } else if version != 1 && version != 2 && version != 3 {
             return Err(Error::Invalid(format!(
                 "unsupported archive schema {version}"
             )));
@@ -95,6 +95,8 @@ impl Archive {
             let tx = db.transaction()?;
             tx.execute_batch(objects::SCHEMA)?;
             tx.commit()?;
+        } else if version == 2 {
+            objects::migrate_v2(&mut db)?;
         }
         Ok(Self {
             db,

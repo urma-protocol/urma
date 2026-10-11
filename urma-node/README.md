@@ -35,8 +35,12 @@ atomically protects a complete object's evidence, including in pruned mode.
 application records, scan marks and transaction locators survive. Unpruned mode
 does not evict. Pins retain orphan bytes after reorg without claiming confirmation.
 Concurrent eviction can refuse recovery completion; it cannot publish a false
-complete/pinned state. Schema 1 archives migrate additively to schema 2 only
-after configuration identity is checked.
+complete/pinned state. A pin cannot silently move to new member placements:
+unpin explicitly before replacing its evidence after a reorg. Member hashes
+survive eviction. Schema 1 archives migrate additively to schema 3 only after
+configuration identity is checked. The interim schema 2 can migrate when all
+member identities remain recoverable locally; otherwise it is refused without
+discarding old evidence.
 
 Automatic complete-object acquisition, background cache size limits, URMA peer
 transport, application adapters and service packaging are not yet delivered.

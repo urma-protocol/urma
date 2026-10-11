@@ -25,10 +25,72 @@ CREATE TABLE object_members (
     block_hash TEXT NOT NULL REFERENCES headers(hash),
     position INTEGER NOT NULL,
     wtxid TEXT NOT NULL,
+    record_hash BLOB NOT NULL CHECK(length(record_hash)=32),
     PRIMARY KEY(root_txid,txid)
 );
 CREATE INDEX object_member_record ON object_members(block_hash,position,wtxid);
-PRAGMA user_version=2;";
+PRAGMA user_version=3;";
+
+/// Upgrade the short-lived schema-2 draft only when its missing identity hashes
+/// can be recovered from retained exact records. Never fabricate hashes for
+/// already evicted members or silently discard their historical evidence.
+pub(super) fn migrate_v2(db: &mut rusqlite::Connection) -> Result<(), Error> {
+    let tx = db.transaction()?;
+    let mut members = Vec::new();
+    {
+        let mut stmt = tx.prepare(
+            "SELECT m.root_txid,m.txid,m.block_hash,m.position,m.wtxid,r.record
+            FROM object_members m LEFT JOIN records r ON r.block_hash=m.block_hash
+            AND r.position=m.position AND r.wtxid=m.wtxid",
+        )?;
+        for row in stmt.query_map([], |r| {
+            Ok((
+                r.get::<_, String>(0)?,
+                r.get::<_, String>(1)?,
+                r.get::<_, String>(2)?,
+                r.get::<_, u32>(3)?,
+                r.get::<_, String>(4)?,
+                r.get::<_, Option<Vec<u8>>>(5)?,
+            ))
+        })? {
+            let (root, id, block, pos, wtxid, bytes) = row?;
+            let bytes = bytes.ok_or_else(|| {
+                Error::Invalid(
+                    "schema 2 member evidence was evicted; explicit identity migration required"
+                        .into(),
+                )
+            })?;
+            members.push((
+                root,
+                id,
+                block,
+                pos,
+                wtxid,
+                sha256::Hash::hash(&bytes).to_byte_array(),
+            ));
+        }
+    }
+    tx.execute_batch(
+        "CREATE TABLE object_members_v3 (
+        root_txid TEXT NOT NULL REFERENCES objects(root_txid) ON DELETE CASCADE,
+        txid TEXT NOT NULL, block_hash TEXT NOT NULL REFERENCES headers(hash),
+        position INTEGER NOT NULL, wtxid TEXT NOT NULL,
+        record_hash BLOB NOT NULL CHECK(length(record_hash)=32), PRIMARY KEY(root_txid,txid));",
+    )?;
+    for (root, id, block, pos, wtxid, hash) in members {
+        tx.execute(
+            "INSERT INTO object_members_v3 VALUES(?1,?2,?3,?4,?5,?6)",
+            params![root, id, block, pos, wtxid, hash.as_slice()],
+        )?;
+    }
+    tx.execute_batch(
+        "DROP TABLE object_members; ALTER TABLE object_members_v3 RENAME TO object_members;
+        CREATE INDEX object_member_record ON object_members(block_hash,position,wtxid);
+        PRAGMA user_version=3;",
+    )?;
+    tx.commit()?;
+    Ok(())
+}
 
 /// Only reconstruction collects these, from authenticated records it consumed.
 /// Retaining identities instead of payloads bounds bookkeeping by node count.
@@ -130,13 +192,45 @@ impl Archive {
                 if sha256::Hash::hash(&bytes).to_byte_array() == member.hash
                     && author == member.author.to_string()
                 {
-                    found = Some((member.txid.to_string(), block, position, wtxid));
+                    found = Some((member.txid.to_string(), block, position, wtxid, member.hash));
                     break;
                 }
             }
             locations.push(found.ok_or_else(|| {
                 Error::Busy("object member no longer retained in selected view".into())
             })?);
+        }
+        if self.has_pin(root)? {
+            let mut stmt = self.db.prepare("SELECT txid,block_hash,position,wtxid,record_hash FROM object_members WHERE root_txid=?1 ORDER BY txid")?;
+            let existing = stmt
+                .query_map([root.to_string()], |r| {
+                    Ok((
+                        r.get::<_, String>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, u32>(2)?,
+                        r.get::<_, String>(3)?,
+                        r.get::<_, Vec<u8>>(4)?,
+                    ))
+                })?
+                .collect::<Result<Vec<_>, _>>()?;
+            let mut proposed = locations
+                .iter()
+                .map(|(id, block, pos, wtxid, hash)| {
+                    (
+                        id.clone(),
+                        block.clone(),
+                        *pos,
+                        wtxid.clone(),
+                        hash.to_vec(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            proposed.sort_by(|a, b| a.0.cmp(&b.0));
+            if existing != proposed {
+                return Err(Error::Invalid(
+                    "pinned object membership differs; explicitly unpin before replacing it".into(),
+                ));
+            }
         }
         let tx = self.db.transaction()?;
         tx.execute("INSERT INTO objects VALUES(?1,?2,?3,?4) ON CONFLICT(root_txid) DO UPDATE SET
@@ -146,10 +240,17 @@ impl Archive {
             "DELETE FROM object_members WHERE root_txid=?1",
             [root.to_string()],
         )?;
-        for (txid, block, position, wtxid) in locations {
+        for (txid, block, position, wtxid, hash) in locations {
             tx.execute(
-                "INSERT INTO object_members VALUES(?1,?2,?3,?4,?5)",
-                params![root.to_string(), txid, block, position, wtxid],
+                "INSERT INTO object_members VALUES(?1,?2,?3,?4,?5,?6)",
+                params![
+                    root.to_string(),
+                    txid,
+                    block,
+                    position,
+                    wtxid,
+                    hash.as_slice()
+                ],
             )?;
         }
         if pin {
@@ -170,7 +271,7 @@ impl Archive {
                 "pin requires a verified object complete in local storage".into(),
             ));
         }
-        if status.as_ref().is_some_and(|s| s.pinned) == pin {
+        if self.has_pin(root)? == pin {
             return Ok(());
         }
         let tx = self.db.transaction()?;
@@ -185,6 +286,14 @@ impl Archive {
         )?;
         tx.commit()?;
         Ok(())
+    }
+
+    fn has_pin(&self, root: Txid) -> Result<bool, Error> {
+        Ok(self.db.query_row(
+            "SELECT EXISTS(SELECT 1 FROM pins WHERE root_txid=?1)",
+            [root.to_string()],
+            |r| r.get(0),
+        )?)
     }
 
     /// Evict only unpinned multipart child records, including orphan cache.
@@ -216,9 +325,6 @@ impl Archive {
                 }
             }
         }
-        if candidates.is_empty() {
-            return Ok(0);
-        }
         let tx = self.db.transaction()?;
         let mut count = 0u64;
         for (block, position) in candidates {
@@ -228,12 +334,14 @@ impl Archive {
             )? as u64;
         }
         // Parents used by pending dependencies must not disappear during GC.
-        tx.execute("DELETE FROM transactions WHERE NOT EXISTS(SELECT 1 FROM records r WHERE r.wtxid=transactions.wtxid OR r.commit_wtxid=transactions.wtxid)
+        let raw_removed = tx.execute("DELETE FROM transactions WHERE NOT EXISTS(SELECT 1 FROM records r WHERE r.wtxid=transactions.wtxid OR r.commit_wtxid=transactions.wtxid)
             AND NOT EXISTS(SELECT 1 FROM dependencies d WHERE d.commit_txid=transactions.txid)", [])?;
-        tx.execute(
-            "INSERT INTO events(generation,kind) SELECT generation,'prune' FROM state",
-            [],
-        )?;
+        if count != 0 || raw_removed != 0 {
+            tx.execute(
+                "INSERT INTO events(generation,kind) SELECT generation,'prune' FROM state",
+                [],
+            )?;
+        }
         tx.commit()?;
         Ok(count)
     }
