@@ -449,7 +449,7 @@ fn offline_status_requires_auth_and_rejects_duplicate_auth_and_request_bodies() 
     assert_eq!(observed["last_sync_error"], Value::Null);
     assert_eq!(
         observed["capabilities"],
-        json!(["status", "header-sync", "full-block-scan"])
+        json!(["status", "header-sync", "full-block-scan", "record-read"])
     );
     assert!(!fixture.data.join("headers").exists());
     let response = exchange(

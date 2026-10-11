@@ -151,6 +151,23 @@ impl Service {
             return respond(stream, 401, json!({"error":"authentication required"}));
         }
         match first {
+            line if line.starts_with("GET /v1/records/") && line.ends_with(" HTTP/1.1") => {
+                let id = &line["GET /v1/records/".len()..line.len() - " HTTP/1.1".len()];
+                if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return respond(stream, 400, json!({"error":"invalid transaction ID"}));
+                }
+                let txid = id
+                    .parse()
+                    .map_err(|e| Error::Invalid(format!("TXID: {e}")))?;
+                match self.engine.record(txid)? {
+                    Some(record) => respond(stream, 200, serde_json::to_value(record)?),
+                    None => respond(
+                        stream,
+                        404,
+                        json!({"error":"record is not locally available in the selected view"}),
+                    ),
+                }
+            }
             "GET /v1/status HTTP/1.1" => {
                 let status = self.engine.status()?;
                 let error = self
@@ -161,7 +178,7 @@ impl Service {
                 respond(
                     stream,
                     200,
-                    json!({"archive":status,"last_sync_error":error,"capabilities":["status","header-sync","full-block-scan"]}),
+                    json!({"archive":status,"last_sync_error":error,"capabilities":["status","header-sync","full-block-scan","record-read"]}),
                 )
             }
             "POST /v1/shutdown HTTP/1.1" => {
@@ -186,10 +203,18 @@ fn equal_token(left: &str, right: &str) -> bool {
 
 fn respond(stream: &mut TcpStream, code: u16, body: serde_json::Value) -> Result<(), Error> {
     let body = serde_json::to_vec(&body)?;
+    if body.len() > 32 * 1024 * 1024 {
+        return respond(
+            stream,
+            413,
+            json!({"error":"record exceeds local API response limit"}),
+        );
+    }
     let reason = match code {
         200 => "OK",
         400 => "Bad Request",
         401 => "Unauthorized",
+        413 => "Content Too Large",
         _ => "Not Found",
     };
     write!(
