@@ -1,0 +1,383 @@
+//! Transactional archive owned by one process. Readers use the owning engine or
+//! its API; consumers never open the service database for independent writes.
+
+use crate::{Error, model::*};
+use bitcoin::{BlockHash, block::Header, consensus::serialize};
+use rusqlite::{Connection, OptionalExtension, params};
+use std::{
+    fs::{File, OpenOptions},
+    path::Path,
+    time::Duration,
+};
+
+pub struct Archive {
+    // Keep the OS lock until after the connection has closed.
+    db: Connection,
+    _lock: File,
+    config: ArchiveConfig,
+}
+
+impl Archive {
+    /// Opens only local state. The directory is a local-filesystem archive, not
+    /// a network share; SQLite WAL relies on local shared-memory coordination.
+    pub fn open(directory: &Path, config: ArchiveConfig) -> Result<Self, Error> {
+        if config.application_start.height > i64::MAX as u64 {
+            return Err(Error::Invalid(
+                "application start exceeds storage range".into(),
+            ));
+        }
+        let mut builder = std::fs::DirBuilder::new();
+        builder.recursive(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::DirBuilderExt;
+            builder.mode(0o700);
+        }
+        builder.create(directory)?;
+        if std::fs::symlink_metadata(directory)?
+            .file_type()
+            .is_symlink()
+        {
+            return Err(Error::Invalid(
+                "archive directory must not be a symlink".into(),
+            ));
+        }
+        let lock_path = directory.join("owner.lock");
+        for path in [&lock_path, &directory.join("archive.sqlite3")] {
+            match std::fs::symlink_metadata(path) {
+                Ok(meta) if !meta.is_file() => {
+                    return Err(Error::Invalid("archive files must be regular files".into()));
+                }
+                Ok(_) => (),
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => (),
+                Err(e) => return Err(e.into()),
+            }
+        }
+        let lock = OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(lock_path)?;
+        lock.try_lock().map_err(|e| Error::Busy(e.to_string()))?;
+        let mut db = Connection::open(directory.join("archive.sqlite3"))?;
+        db.busy_timeout(Duration::from_secs(5))?;
+        db.execute_batch(
+            "PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;",
+        )?;
+        let version: u32 = db.pragma_query_value(None, "user_version", |r| r.get(0))?;
+        let encoded = serde_json::to_string(&config)?;
+        if version == 0 {
+            let tx = db.transaction()?;
+            tx.execute_batch(include_str!("schema.sql"))?;
+            tx.execute("INSERT INTO config VALUES(1,?1)", [&encoded])?;
+            tx.commit()?;
+        } else if version != 1 {
+            return Err(Error::Invalid(format!(
+                "unsupported archive schema {version}"
+            )));
+        }
+        let saved: String =
+            db.query_row("SELECT value FROM config WHERE singleton=1", [], |r| {
+                r.get(0)
+            })?;
+        if saved != encoded {
+            return Err(Error::Invalid(
+                "archive configuration differs; explicit migration required".into(),
+            ));
+        }
+        Ok(Self {
+            db,
+            _lock: lock,
+            config,
+        })
+    }
+
+    pub fn config(&self) -> &ArchiveConfig {
+        &self.config
+    }
+
+    pub fn status(&self) -> Result<ArchiveStatus, Error> {
+        let generation = generation(&self.db)?;
+        let selected_tip = self
+            .db
+            .query_row(
+                "SELECT height,hash FROM selected ORDER BY height DESC LIMIT 1",
+                [],
+                point,
+            )
+            .optional()?;
+        let start = self.config.application_start.height;
+        let mut next = start;
+        let mut indexed_through = None;
+        let mut rows = self.db.prepare(
+            "SELECT s.height,s.hash FROM selected s JOIN scans c ON c.block_hash=s.hash
+             WHERE s.height>=?1 AND c.rules=?2 AND c.unresolved=0 ORDER BY s.height",
+        )?;
+        for row in rows.query_map(params![sql_integer(start)?, SCAN_RULES_VERSION], point)? {
+            let current = row?;
+            if current.height != next {
+                break;
+            }
+            next += 1;
+            indexed_through = Some(current);
+        }
+        let scanned_blocks = self.db.query_row(
+            "SELECT count(*) FROM scans c JOIN selected s ON s.hash=c.block_hash WHERE c.rules=?1",
+            [SCAN_RULES_VERSION],
+            |r| unsigned(r, 0),
+        )?;
+        let unresolved_dependencies = self.db.query_row(
+            "SELECT count(*) FROM dependencies d JOIN selected s ON s.hash=d.block_hash",
+            [],
+            |r| unsigned(r, 0),
+        )?;
+        let stored_transactions =
+            self.db
+                .query_row("SELECT count(*) FROM transactions", [], |r| unsigned(r, 0))?;
+        Ok(ArchiveStatus {
+            api_version: API_VERSION,
+            chain_genesis: self
+                .config
+                .chain
+                .genesis()
+                .map_err(|e| Error::Invalid(e.to_string()))?
+                .0,
+            application_start: self.config.application_start,
+            retention: self.config.retention,
+            generation,
+            selected_tip,
+            indexed_through,
+            scanned_blocks,
+            unresolved_dependencies,
+            stored_transactions,
+            scan_rules_version: SCAN_RULES_VERSION,
+        })
+    }
+
+    pub fn ticket(&self, height: u64) -> Result<ScanTicket, Error> {
+        let point = self
+            .db
+            .query_row(
+                "SELECT height,hash FROM selected WHERE height=?1",
+                [sql_integer(height)?],
+                point,
+            )
+            .optional()?
+            .ok_or_else(|| Error::Invalid("block is not in the selected view".into()))?;
+        Ok(ScanTicket {
+            generation: generation(&self.db)?,
+            point,
+        })
+    }
+
+    pub(crate) fn header_at(&self, height: u64) -> Result<Option<Header>, Error> {
+        let raw: Option<Vec<u8>> = self
+            .db
+            .query_row(
+                "SELECT h.bytes FROM selected s JOIN headers h ON h.hash=s.hash WHERE s.height=?1",
+                [sql_integer(height)?],
+                |r| r.get(0),
+            )
+            .optional()?;
+        raw.map(|raw| {
+            bitcoin::consensus::deserialize(&raw)
+                .map_err(|e| Error::Invalid(format!("stored header: {e}")))
+        })
+        .transpose()
+    }
+
+    /// Only the chain coordinator calls this, after the header engine selected
+    /// the branch. This validates archive continuity, not difficulty/chainwork.
+    /// Untrusted peers and API clients cannot supply a branch to this method.
+    pub(crate) fn select(&mut self, start: u64, headers: &[Header]) -> Result<(), Error> {
+        if headers.is_empty() || start < self.config.application_start.height {
+            return Err(Error::Invalid("empty or out-of-domain chain update".into()));
+        }
+        let end = start
+            .checked_add(headers.len() as u64 - 1)
+            .filter(|h| *h <= i64::MAX as u64)
+            .ok_or_else(|| Error::Invalid("chain update height overflow".into()))?;
+        if start == self.config.application_start.height {
+            if headers[0].block_hash() != self.config.application_start.hash {
+                return Err(Error::Invalid(
+                    "selected chain does not contain configured application start".into(),
+                ));
+            }
+        } else {
+            let previous = self
+                .header_at(start - 1)?
+                .ok_or_else(|| Error::Invalid("chain update has a gap".into()))?;
+            if headers[0].prev_blockhash != previous.block_hash() {
+                return Err(Error::Invalid(
+                    "chain update does not join selected parent".into(),
+                ));
+            }
+        }
+        for pair in headers.windows(2) {
+            if pair[1].prev_blockhash != pair[0].block_hash() {
+                return Err(Error::Invalid("noncontiguous selected headers".into()));
+            }
+        }
+        let mut changed_at = None;
+        for (offset, header) in headers.iter().enumerate() {
+            let height = start + offset as u64;
+            if self.header_at(height)?.is_some_and(|old| old != *header) {
+                changed_at = Some(height);
+                break;
+            }
+        }
+        let tx = self.db.transaction()?;
+        if let Some(height) = changed_at {
+            tx.execute(
+                "DELETE FROM selected WHERE height>=?1",
+                [sql_integer(height)?],
+            )?;
+            tx.execute(
+                "UPDATE state SET generation=generation+1 WHERE singleton=1",
+                [],
+            )?;
+            tx.execute("INSERT INTO events(generation,kind,height) SELECT generation,'reorg',?1 FROM state", [sql_integer(height)?])?;
+        }
+        for (offset, header) in headers.iter().enumerate() {
+            let hash = header.block_hash().to_string();
+            tx.execute(
+                "INSERT OR IGNORE INTO headers VALUES(?1,?2)",
+                params![hash, serialize(header)],
+            )?;
+            tx.execute("INSERT INTO selected VALUES(?1,?2) ON CONFLICT(height) DO UPDATE SET hash=excluded.hash",
+                params![sql_integer(start + offset as u64)?, hash])?;
+        }
+        tx.execute("INSERT INTO events(generation,kind,height,block_hash) SELECT generation,'chain',?1,?2 FROM state",
+            params![sql_integer(end)?, headers.last().expect("nonempty checked").block_hash().to_string()])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub(crate) fn check_ticket(&self, ticket: ScanTicket) -> Result<(), Error> {
+        if generation(&self.db)? != ticket.generation
+            || self.ticket(ticket.point.height)?.point != ticket.point
+        {
+            return Err(Error::Stale);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn next_scan(&self) -> Result<Option<ScanTicket>, Error> {
+        let height: Option<u64> = self
+            .db
+            .query_row(
+                "SELECT s.height FROM selected s LEFT JOIN scans c ON c.block_hash=s.hash
+             WHERE c.block_hash IS NULL OR c.rules!=?1 ORDER BY s.height LIMIT 1",
+                [SCAN_RULES_VERSION],
+                |r| unsigned(r, 0),
+            )
+            .optional()?;
+        height.map(|h| self.ticket(h)).transpose()
+    }
+
+    pub(crate) fn transaction(&self, txid: bitcoin::Txid) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT raw FROM transactions WHERE txid=?1 LIMIT 1",
+                [txid.to_string()],
+                |r| r.get(0),
+            )
+            .optional()?)
+    }
+
+    pub(crate) fn location(&self, txid: bitcoin::Txid) -> Result<Option<ChainPoint>, Error> {
+        Ok(self.db.query_row(
+            "SELECT s.height,s.hash FROM locators l JOIN selected s ON s.hash=l.block_hash WHERE l.txid=?1 ORDER BY s.height LIMIT 1",
+            [txid.to_string()], point,
+        ).optional()?)
+    }
+
+    pub(crate) fn commit_scan(&mut self, batch: crate::scan::ScanBatch) -> Result<(), Error> {
+        self.check_ticket(batch.ticket)?;
+        let point = batch.ticket.point;
+        let hash = point.hash.to_string();
+        let tx = self.db.transaction()?;
+        for (position, (txid, wtxid)) in batch.locators.iter().enumerate() {
+            tx.execute("INSERT INTO locators VALUES(?1,?2,?3,?4) ON CONFLICT(block_hash,position) DO UPDATE SET txid=excluded.txid,wtxid=excluded.wtxid",
+                params![hash, sql_integer(position as u64)?, txid.to_string(), wtxid.to_string()])?;
+        }
+        // One transaction includes all records, dependencies, progress and event.
+        // An I/O/constraint failure rolls it all back, including progress.
+        tx.execute("DELETE FROM dependencies WHERE block_hash=?1", [&hash])?;
+        for record in batch.records {
+            let wtxid = batch.locators[record.position as usize].1.to_string();
+            let commit_wtxid = record.commit.compute_wtxid().to_string();
+            tx.execute(
+                "INSERT OR IGNORE INTO transactions VALUES(?1,?2,?3)",
+                params![
+                    wtxid,
+                    record.verified.txid().to_string(),
+                    record.proof.transaction
+                ],
+            )?;
+            tx.execute(
+                "INSERT OR IGNORE INTO transactions VALUES(?1,?2,?3)",
+                params![
+                    commit_wtxid,
+                    record.commit.compute_txid().to_string(),
+                    record.raw_commit
+                ],
+            )?;
+            tx.execute("INSERT INTO records VALUES(?1,?2,?3,?4,?5,?6,?7) ON CONFLICT(block_hash,position) DO UPDATE SET wtxid=excluded.wtxid,author=excluded.author,record=excluded.record,commit_wtxid=excluded.commit_wtxid,proof=excluded.proof",
+                params![hash, record.position, wtxid, record.verified.author().to_string(), record.verified.record_bytes(), commit_wtxid, serde_json::to_vec(&record.proof)?])?;
+        }
+        let unresolved = batch.dependencies.len() as u64;
+        for dependency in batch.dependencies {
+            tx.execute(
+                "INSERT INTO dependencies VALUES(?1,?2,?3,?4)",
+                params![
+                    hash,
+                    dependency.position,
+                    dependency.commit.to_string(),
+                    serde_json::to_vec(&dependency.proof)?
+                ],
+            )?;
+        }
+        tx.execute("INSERT INTO scans VALUES(?1,?2,?3) ON CONFLICT(block_hash) DO UPDATE SET rules=excluded.rules,unresolved=excluded.unresolved",
+            params![hash, SCAN_RULES_VERSION, sql_integer(unresolved)?])?;
+        tx.execute("INSERT INTO events(generation,kind,height,block_hash) SELECT generation,'scan',?1,?2 FROM state",
+            params![sql_integer(point.height)?, hash])?;
+        tx.commit()?;
+        Ok(())
+    }
+}
+
+fn generation(db: &Connection) -> Result<u64, Error> {
+    Ok(
+        db.query_row("SELECT generation FROM state WHERE singleton=1", [], |r| {
+            unsigned(r, 0)
+        })?,
+    )
+}
+
+fn point(row: &rusqlite::Row<'_>) -> rusqlite::Result<ChainPoint> {
+    let hash: String = row.get(1)?;
+    Ok(ChainPoint {
+        height: unsigned(row, 0)?,
+        hash: hash.parse::<BlockHash>().map_err(|e| {
+            rusqlite::Error::FromSqlConversionFailure(1, rusqlite::types::Type::Text, Box::new(e))
+        })?,
+    })
+}
+
+fn sql_integer(value: u64) -> Result<i64, Error> {
+    i64::try_from(value).map_err(|_| Error::Invalid("integer exceeds archive range".into()))
+}
+
+fn unsigned(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<u64> {
+    let value: i64 = row.get(column)?;
+    u64::try_from(value).map_err(|e| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Integer,
+            Box::new(e),
+        )
+    })
+}

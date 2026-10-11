@@ -51,6 +51,9 @@
 !/urma-io/LICENSE
 !/urma-names/README.md
 !/urma-names/LICENSE
+!/urma-node/README.md
+!/urma-node/LICENSE
+!/urma-node/src/schema.sql
 !/urma-profiles/README.md
 !/urma-profiles/LICENSE
 !/urma-runtime/README.md
