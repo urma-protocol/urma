@@ -7,7 +7,11 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc;
-use urma_core::{envelope, format::RecordKind};
+use urma_core::{
+    envelope,
+    format::{PublicRecord, RecordKind},
+    multipart::VerifiedRecord,
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -18,6 +22,48 @@ pub struct Entry {
     pub author: String,
     pub record: String,
 }
+
+/// Projects an authenticated record into a Wire entry without I/O.
+///
+/// Only Post, Reply, Profile, Avatar, WirePost and WireReply are included.
+/// Other URMA kinds return `None`. Wire payloads are decoded strictly: proof
+/// verification by `VerifiedRecord` does not establish payload validity, and
+/// legacy cache exceptions do not apply here.
+///
+/// The original record bytes, author and TXID are preserved. `height` and
+/// `position` are caller-supplied metadata; this function neither verifies
+/// inclusion in a block nor establishes confirmation or active-chain membership.
+pub fn entry_from_verified(
+    record: &VerifiedRecord,
+    height: u64,
+    position: u32,
+) -> Result<Option<Entry>, Error> {
+    let bytes = record.record_bytes();
+    if !is_wire_kind(RecordKind::parse(bytes)?) {
+        return Ok(None);
+    }
+    PublicRecord::decode(bytes)?;
+    Ok(Some(Entry {
+        height,
+        position,
+        txid: record.txid().to_string(),
+        author: record.author().to_string(),
+        record: hex::encode(bytes),
+    }))
+}
+
+fn is_wire_kind(kind: RecordKind) -> bool {
+    matches!(
+        kind,
+        RecordKind::Post
+            | RecordKind::Reply
+            | RecordKind::Profile
+            | RecordKind::Avatar
+            | RecordKind::WirePost
+            | RecordKind::WireReply
+    )
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Checkpoint {
@@ -338,17 +384,10 @@ fn read_entries<R: Reader>(
                 continue;
             }
         };
-        match RecordKind::parse(&candidate.record).map_err(Error::from)? {
-            RecordKind::Post
-            | RecordKind::Reply
-            | RecordKind::Profile
-            | RecordKind::Avatar
-            | RecordKind::WirePost
-            | RecordKind::WireReply => {}
-            other => {
-                tracing::trace!(?other, "non-Wire URMA record");
-                continue;
-            }
+        let kind = RecordKind::parse(&candidate.record).map_err(Error::from)?;
+        if !is_wire_kind(kind) {
+            tracing::trace!(?kind, "non-Wire URMA record");
+            continue;
         }
         let commit = reader
             .transaction(tx.input[0].previous_output.txid)
@@ -359,8 +398,9 @@ fn read_entries<R: Reader>(
             height,
             u32::try_from(position).map_err(Error::from)?,
         ) {
-            Ok(entry) => entries.push(entry),
-            Err(cause) => tracing::warn!(error = %cause, "rejected Wire author proof"),
+            Ok(Some(entry)) => entries.push(entry),
+            Ok(None) => (),
+            Err(cause) => tracing::warn!(error = %cause, "rejected Wire record or author proof"),
         }
     }
     Ok(entries)
@@ -370,13 +410,7 @@ fn verified_entry(
     commit: &Transaction,
     height: u64,
     position: u32,
-) -> Result<Entry, Error> {
-    let parsed = urma_profiles::wire::verify(tx, commit)?;
-    Ok(Entry {
-        height,
-        position,
-        txid: tx.compute_txid().to_string(),
-        author: parsed.author().0.to_string(),
-        record: hex::encode(parsed.raw_record()),
-    })
+) -> Result<Option<Entry>, Error> {
+    let record = VerifiedRecord::verify(tx.compute_txid(), tx, commit)?;
+    entry_from_verified(&record, height, position)
 }
