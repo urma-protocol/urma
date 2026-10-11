@@ -64,6 +64,72 @@ impl Engine {
         self.archive()?.record(txid)
     }
 
+    /// Supply a missing commit by its computed TXID. This is auxiliary prevout
+    /// evidence, NOT a claim about the commit's chain placement or witness.
+    /// Only existing dependencies from locally scanned blocks can be resolved.
+    /// At most 128 references are processed per call; repeat for a shared parent.
+    pub fn resolve_commit(&self, raw: &[u8]) -> Result<usize, Error> {
+        let (chain, retention) = {
+            let archive = self.archive()?;
+            (archive.config().chain, archive.config().retention)
+        };
+        let commit = urma_chain::decode::transaction(raw, chain)
+            .map_err(|e| Error::Invalid(format!("dependency commit: {e}")))?;
+        let pending = self.archive()?.pending_for(commit.compute_txid())?;
+        let mut completed = Vec::new();
+        for (ticket, position, proof) in pending {
+            let header = self
+                .archive()?
+                .header_at(ticket.point().height)?
+                .ok_or(Error::Stale)?;
+            if header.block_hash() != ticket.point().hash {
+                return Err(Error::Stale);
+            }
+            let included = proof
+                .verify(chain, &header)
+                .map_err(|e| Error::Invalid(format!("stored dependency proof: {e}")))?;
+            if included.position() != position {
+                return Err(Error::Invalid("stored dependency position mismatch".into()));
+            }
+            let reveal = included.transaction();
+            // The exact parent TXID fixes the output values/script. Failure
+            // here classifies this candidate, rather than trusting a peer's
+            // declaration that a dependency or signed object is invalid.
+            let verified = urma_core::multipart::VerifiedRecord::verify(
+                reveal.compute_txid(),
+                reveal,
+                &commit,
+            );
+            let record = match verified {
+                Ok(verified) => {
+                    let kind = urma_core::format::RecordKind::parse(verified.record_bytes())
+                        .map_err(|e| Error::Invalid(e.to_string()))?;
+                    if retention == Retention::Pruned
+                        && matches!(
+                            kind,
+                            urma_core::format::RecordKind::DataPart
+                                | urma_core::format::RecordKind::LeafManifest
+                        )
+                    {
+                        None
+                    } else {
+                        Some(crate::scan::Record {
+                            position,
+                            wtxid: reveal.compute_wtxid(),
+                            verified,
+                            commit: commit.clone(),
+                            raw_commit: raw.to_vec(),
+                            proof,
+                        })
+                    }
+                }
+                Err(_) => None,
+            };
+            completed.push((ticket, position, record));
+        }
+        self.archive()?.finish_dependencies(completed)
+    }
+
     /// Cache an explicitly requested record, including children in pruned mode.
     /// This is not a pin or a statement that the multipart object is complete.
     /// Header selection is independent of the sender; reorg invalidates the

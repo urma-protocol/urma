@@ -336,6 +336,65 @@ impl Archive {
         }))
     }
 
+    pub(crate) fn pending_for(
+        &self,
+        txid: bitcoin::Txid,
+    ) -> Result<Vec<(ScanTicket, u32, urma_chain::inclusion::TransactionProof)>, Error> {
+        let mut stmt = self.db.prepare(
+            "SELECT s.height,s.hash,d.position,d.proof FROM dependencies d
+             JOIN selected s ON s.hash=d.block_hash WHERE d.commit_txid=?1
+             ORDER BY s.height,d.position LIMIT 128",
+        )?;
+        let rows = stmt.query_map([txid.to_string()], |r| {
+            Ok((point(r)?, r.get::<_, u32>(2)?, r.get::<_, Vec<u8>>(3)?))
+        })?;
+        let epoch = generation(&self.db)?;
+        rows.map(|row| {
+            let (point, position, proof) = row?;
+            Ok((
+                ScanTicket {
+                    generation: epoch,
+                    point,
+                },
+                position,
+                serde_json::from_slice(&proof)?,
+            ))
+        })
+        .collect()
+    }
+
+    /// Completion changes only evidence from blocks already fully scanned.
+    /// A supplied parent cannot create a scan mark or a transaction placement.
+    pub(crate) fn finish_dependencies(
+        &mut self,
+        completed: Vec<(ScanTicket, u32, Option<crate::scan::Record>)>,
+    ) -> Result<usize, Error> {
+        for (ticket, _, _) in &completed {
+            self.check_ticket(*ticket)?;
+        }
+        let tx = self.db.transaction()?;
+        let mut count = 0;
+        for (ticket, position, record) in completed {
+            let hash = ticket.point.hash.to_string();
+            let removed = tx.execute(
+                "DELETE FROM dependencies WHERE block_hash=?1 AND position=?2",
+                params![hash, position],
+            )?;
+            if removed == 0 {
+                continue;
+            }
+            if let Some(record) = record {
+                store_record(&tx, &hash, &record)?;
+            }
+            tx.execute("UPDATE scans SET unresolved=(SELECT count(*) FROM dependencies WHERE block_hash=?1) WHERE block_hash=?1", [&hash])?;
+            tx.execute("INSERT INTO events(generation,kind,height,block_hash) VALUES(?1,'dependency',?2,?3)",
+                params![sql_integer(ticket.generation)?, sql_integer(ticket.point.height)?, hash])?;
+            count += 1;
+        }
+        tx.commit()?;
+        Ok(count)
+    }
+
     pub(crate) fn admit_record(
         &mut self,
         ticket: ScanTicket,
