@@ -69,6 +69,8 @@ Technical timings use DEBUG events on target `urma_startup`, with `stage`, `chai
 
 Although P2P cache loading itself is offline, constructing a `Node` separately verifies the selected network through `getblockhash(0)`. The complete `Node::public_in` constructor therefore requires a network response.
 
+On native targets, `Node::public_in_with_providers(chain, cache_dir, additional)` adds caller-owned providers to the standard public pool while retaining its light client, pins, validation and routing. Providers can change their supported read capabilities at runtime; an existing node and reader then see their availability without replacement. Callers remain responsible for authenticating custom providers and limiting their methods. Constructing the node still verifies the selected network.
+
 ### Provider kinds
 
 | Provider | Transport | Serves | Does not serve |

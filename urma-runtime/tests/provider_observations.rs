@@ -348,3 +348,25 @@ fn evidence_is_the_weakest_tier_and_never_local() {
     assert_eq!(light_only.evidence(), Evidence::LightClientInclusion);
     assert_eq!(light_only.evidence().label(), "light_client_inclusion");
 }
+
+#[test]
+fn public_pool_keeps_defaults_and_prefers_an_additional_local_block_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let genesis = json!(Chain::LitecoinTestnet.genesis().unwrap().0.to_string());
+    let mut local = Fake::new("fixture-local", vec![Ok(genesis), Ok(hash())]);
+    local.evidence = Evidence::LocalValidatingNode;
+    let calls = local.calls.clone();
+    let node = Node::public_in_with_providers(
+        Chain::LitecoinTestnet,
+        directory.path(),
+        vec![local.boxed()],
+    )
+    .unwrap();
+    let actual = node.provider_labels();
+    assert!(actual.len() > 1);
+    assert!(actual.iter().any(|label| label == "fixture-local"));
+    let answer = node.observe("getblockhash", &[json!(42)]).unwrap();
+    assert_eq!(answer.value, hash());
+    assert_eq!(answer.provider, "fixture-local");
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
