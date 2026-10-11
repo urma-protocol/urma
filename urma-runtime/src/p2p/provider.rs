@@ -3,14 +3,16 @@ use crate::error::{Context, Error, ensure};
 use crate::light::{LightSync, Progress};
 use crate::p2p::blocks::BlockCache;
 use crate::p2p::headers::{Anchor, HeaderChain};
+use crate::p2p::source::{VerifiedBlock, decode_verified};
 use crate::p2p::worker::{self, Command, Freshness, Shared, Status, locked};
 use crate::transport::{BlockEncoding, Evidence, Provider};
 use bitcoin::BlockHash;
+use bitcoin::block::Header;
 use serde_json::{Value, json};
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, SyncSender};
+use std::sync::mpsc::{self, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use urma_chain::observation::Chain;
@@ -20,6 +22,8 @@ enum Engine {
     Running(SyncSender<Command>),
 }
 
+/// P2P header view rooted in a trusted checkpoint and existing local cache.
+/// Typed results establish the limited verification described by `VerifiedBlock`.
 pub struct P2pProvider {
     chain: Chain,
     shared: Arc<Shared>,
@@ -128,9 +132,74 @@ impl P2pProvider {
             }
             Engine::Running(sender) => sender.clone(),
         };
-        sender
-            .send(command)
-            .map_err(|error| Error::Unsupported(format!("light client worker stopped: {error}")))
+        match sender.try_send(command) {
+            Ok(()) => Ok(()),
+            Err(TrySendError::Full(_command)) => {
+                Err(Error::Capacity("light client command queue is full".into()))
+            }
+            Err(TrySendError::Disconnected(_command)) => {
+                Err(Error::Unsupported("light client worker stopped".into()))
+            }
+        }
+    }
+
+    fn source_ready(&self) -> Result<(), Error> {
+        self.warm()?;
+        if !self.ready() {
+            return Err(Error::Unsupported(
+                "verified P2P source is not ready; retry after header sync and peer connection"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Snapshot of the active header tip, relative to the configured trusted
+    /// checkpoint and local header cache, not full consensus validation.
+    /// Starts the worker if cold and fails immediately while it is not ready.
+    /// Stale-tip refresh waits at most `P2P_BLOCK_TIMEOUT_SECS` for its reply;
+    /// a full command queue is refused immediately. No other source is used.
+    pub fn verified_tip(&self) -> Result<(u64, Header), Error> {
+        self.source_ready()?;
+        self.refresh_if_stale()?;
+        self.source_ready()?;
+        let headers = locked(&self.shared.headers, "headers");
+        let height = headers.tip_height();
+        Ok((height, headers.header_at(height)?))
+    }
+
+    /// Active header at `height`, under the same trust and readiness contract
+    /// as `verified_tip()`. Heights before the checkpoint are unavailable.
+    pub fn verified_header(&self, height: u64) -> Result<Header, Error> {
+        self.source_ready()?;
+        self.refresh_if_stale()?;
+        self.source_ready()?;
+        locked(&self.shared.headers, "headers").header_at(height)
+    }
+
+    /// Fetch by the captured active header's hash, check block integrity, and
+    /// refuse the result if that header was replaced or removed during fetch.
+    /// Retains original bytes; see `VerifiedBlock` for verification limits.
+    /// Readiness and queue admission fail fast. Refresh and block replies each
+    /// wait at most `P2P_BLOCK_TIMEOUT_SECS`; no router or fallback is involved.
+    pub fn verified_block(&self, height: u64) -> Result<VerifiedBlock, Error> {
+        let header = self.verified_header(height)?;
+        let raw = self.fetch_raw(header.block_hash())?;
+        let block = decode_verified(self.chain, height, header, raw)?;
+        let headers = locked(&self.shared.headers, "headers");
+        ensure!(
+            headers.header_at(height)? == header,
+            "active verified header changed during block fetch at height {height}"
+        );
+        Ok(block)
+    }
+
+    fn fetch_raw(&self, hash: BlockHash) -> Result<Vec<u8>, Error> {
+        let (reply, answer) = mpsc::sync_channel(1);
+        self.command(Command::Block { hash, reply })?;
+        answer
+            .recv_timeout(Duration::from_secs(P2P_BLOCK_TIMEOUT_SECS))
+            .map_err(|error| Error::Unsupported(format!("block fetch did not complete: {error}")))?
     }
 
     fn refresh_if_stale(&self) -> Result<(), Error> {
@@ -202,13 +271,7 @@ impl P2pProvider {
             args.get(1).context("missing block verbosity")? == &json!(0),
             "the light client serves raw blocks only (verbosity 0)"
         );
-        let (reply, answer) = mpsc::sync_channel(1);
-        self.command(Command::Block { hash, reply })?;
-        let raw = answer
-            .recv_timeout(Duration::from_secs(P2P_BLOCK_TIMEOUT_SECS))
-            .map_err(|error| {
-                Error::Unsupported(format!("block fetch did not complete: {error}"))
-            })??;
+        let raw = self.fetch_raw(hash)?;
         Ok(json!(hex::encode(raw)))
     }
 }
@@ -291,3 +354,7 @@ impl Drop for P2pProvider {
         self.shared.stop.store(true, Ordering::Release);
     }
 }
+
+#[cfg(test)]
+#[path = "source_tests.rs"]
+mod source_tests;
