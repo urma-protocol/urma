@@ -1,6 +1,9 @@
 use crate::observation::Chain;
 use crate::validation::{BlockValidationError, validate_block_integrity};
-use bitcoin::{Block, BlockHash, Transaction, consensus::deserialize};
+use bitcoin::{
+    Block, BlockHash, Transaction,
+    consensus::{deserialize, deserialize_partial},
+};
 use litecoin::block::MwebBlock;
 use litecoin::consensus::{Decodable, Encodable, serialize};
 
@@ -8,6 +11,32 @@ use litecoin::consensus::{Decodable, Encodable, serialize};
 enum Encoding {
     Core,
     Esplora,
+}
+
+/// An integrity-checked transparent block projection with its original
+/// transaction encodings, in the same order as `Block::txdata`.
+///
+/// Litecoin HogEx metadata is retained in the raw transactions, even though it
+/// is stripped from the transparent projection. The block extension suffix is
+/// not part of any transaction. Extension parsing does not validate MWEB consensus.
+#[derive(Debug)]
+pub struct DecodedBlock {
+    block: Block,
+    raw_transactions: Vec<Vec<u8>>,
+}
+
+impl DecodedBlock {
+    pub fn block(&self) -> &Block {
+        &self.block
+    }
+
+    pub fn raw_transactions(&self) -> &[Vec<u8>] {
+        &self.raw_transactions
+    }
+
+    pub fn into_parts(self) -> (Block, Vec<Vec<u8>>) {
+        (self.block, self.raw_transactions)
+    }
 }
 
 #[derive(Debug)]
@@ -51,7 +80,7 @@ impl std::error::Error for DecodeError {
 }
 
 pub fn block(raw: &[u8], chain: Chain, expected_hash: BlockHash) -> Result<Block, DecodeError> {
-    decode_block(raw, chain, expected_hash, Encoding::Core)
+    block_with_transactions(raw, chain, expected_hash).map(|decoded| decoded.block)
 }
 
 pub fn esplora_block(
@@ -59,6 +88,24 @@ pub fn esplora_block(
     chain: Chain,
     expected_hash: BlockHash,
 ) -> Result<Block, DecodeError> {
+    esplora_block_with_transactions(raw, chain, expected_hash).map(|decoded| decoded.block)
+}
+
+/// Decodes strict Core block encoding and retains each original transaction.
+pub fn block_with_transactions(
+    raw: &[u8],
+    chain: Chain,
+    expected_hash: BlockHash,
+) -> Result<DecodedBlock, DecodeError> {
+    decode_block(raw, chain, expected_hash, Encoding::Core)
+}
+
+/// Decodes Esplora block encoding and retains each original transaction.
+pub fn esplora_block_with_transactions(
+    raw: &[u8],
+    chain: Chain,
+    expected_hash: BlockHash,
+) -> Result<DecodedBlock, DecodeError> {
     decode_block(raw, chain, expected_hash, Encoding::Esplora)
 }
 
@@ -67,16 +114,35 @@ fn decode_block(
     chain: Chain,
     expected_hash: BlockHash,
     encoding: Encoding,
-) -> Result<Block, DecodeError> {
+) -> Result<DecodedBlock, DecodeError> {
     bounded(raw)?;
     let block = match chain {
-        Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => {
-            deserialize(raw).map_err(DecodeError::Bitcoin)?
-        }
+        Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => bitcoin_decoded_block(raw)?,
         Chain::LitecoinMainnet | Chain::LitecoinTestnet => litecoin_block(raw, encoding)?,
     };
-    validate_block_integrity(&block, expected_hash).map_err(DecodeError::Integrity)?;
+    validate_block_integrity(block.block(), expected_hash).map_err(DecodeError::Integrity)?;
     Ok(block)
+}
+
+fn bitcoin_decoded_block(raw: &[u8]) -> Result<DecodedBlock, DecodeError> {
+    // Keep the existing whole-block decoder and its EOF/error semantics. The
+    // second pass measures consumed spans rather than serializing the projection.
+    let block: Block = deserialize(raw).map_err(DecodeError::Bitcoin)?;
+    let mut remaining = &raw[bitcoin::block::Header::SIZE..];
+    let (_, prefix_bytes) = deserialize_partial::<bitcoin::consensus::encode::VarInt>(remaining)
+        .map_err(DecodeError::Bitcoin)?;
+    remaining = &remaining[prefix_bytes..];
+    let mut raw_transactions = Vec::new();
+    for _tx in &block.txdata {
+        let (_, consumed) =
+            deserialize_partial::<Transaction>(remaining).map_err(DecodeError::Bitcoin)?;
+        raw_transactions.push(remaining[..consumed].to_vec());
+        remaining = &remaining[consumed..];
+    }
+    Ok(DecodedBlock {
+        block,
+        raw_transactions,
+    })
 }
 
 pub fn bitcoin_block(raw: &[u8], expected_hash: BlockHash) -> Result<Block, DecodeError> {
@@ -129,13 +195,23 @@ fn transparent(mut tx: litecoin::Transaction) -> Result<Transaction, DecodeError
     deserialize(&serialize(&tx)).map_err(DecodeError::Bitcoin)
 }
 
-fn litecoin_block(raw: &[u8], encoding: Encoding) -> Result<Block, DecodeError> {
+fn litecoin_block(raw: &[u8], encoding: Encoding) -> Result<DecodedBlock, DecodeError> {
     let mut remaining = raw;
     let header = canonical::<litecoin::block::Header>(&mut remaining)?;
+    let transactions_start = remaining;
     let transactions = canonical::<Vec<litecoin::Transaction>>(&mut remaining)?;
+    let mut transaction_bytes = &transactions_start[..transactions_start.len() - remaining.len()];
+    canonical::<litecoin::consensus::encode::VarInt>(&mut transaction_bytes)?;
     let count = transactions.len();
     let mut txdata = Vec::new();
+    let mut raw_transactions = Vec::new();
     for (index, tx) in transactions.into_iter().enumerate() {
+        // The canonical vector check already proved these original Litecoin
+        // encodings byte-identical to the consumed span. Use their lengths only
+        // to split the original bytes, before `transparent` strips HogEx metadata.
+        let length = serialize(&tx).len();
+        raw_transactions.push(transaction_bytes[..length].to_vec());
+        transaction_bytes = &transaction_bytes[length..];
         if tx.is_hog_ex {
             if index == 0 || index + 1 != count {
                 return Err(DecodeError::InvalidHogEx);
@@ -153,8 +229,11 @@ fn litecoin_block(raw: &[u8], encoding: Encoding) -> Result<Block, DecodeError> 
         txdata.push(transparent(tx)?);
     }
     finished(remaining)?;
-    Ok(Block {
-        header: deserialize(&serialize(&header)).map_err(DecodeError::Bitcoin)?,
-        txdata,
+    Ok(DecodedBlock {
+        block: Block {
+            header: deserialize(&serialize(&header)).map_err(DecodeError::Bitcoin)?,
+            txdata,
+        },
+        raw_transactions,
     })
 }

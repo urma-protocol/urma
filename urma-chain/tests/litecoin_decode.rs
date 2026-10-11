@@ -1,6 +1,7 @@
 use bitcoin::{
-    Block, Network,
+    Amount, Block, Network, ScriptBuf, Transaction, Txid, Witness,
     consensus::{deserialize, serialize},
+    hashes::Hash,
 };
 use urma_chain::{decode, observation::Chain};
 
@@ -12,7 +13,30 @@ fn public_litecoin_block_preserves_transparent_ids_and_witnesses() {
         .unwrap();
     assert!(deserialize::<Block>(raw).is_err());
     assert!(decode::block(raw, Chain::LitecoinTestnet, hash).is_err());
-    let block = decode::esplora_block(raw, Chain::LitecoinTestnet, hash).unwrap();
+    let decoded =
+        decode::esplora_block_with_transactions(raw, Chain::LitecoinTestnet, hash).unwrap();
+    let block = decoded.block();
+    assert_eq!(
+        decode::esplora_block(raw, Chain::LitecoinTestnet, hash).unwrap(),
+        *block
+    );
+    assert_eq!(decoded.raw_transactions().len(), block.txdata.len());
+    assert_eq!(
+        [raw[..81].to_vec(), decoded.raw_transactions().concat()].concat(),
+        &raw[..]
+    );
+    for (original, projected) in decoded.raw_transactions().iter().zip(&block.txdata) {
+        let tx = decode::transaction(original, Chain::LitecoinTestnet).unwrap();
+        assert_eq!(tx.compute_txid(), projected.compute_txid());
+        assert_eq!(tx.compute_wtxid(), projected.compute_wtxid());
+        assert_eq!(tx.input, projected.input);
+        assert_eq!(tx, *projected);
+    }
+    assert_eq!(decoded.raw_transactions()[3], raw[1150..]);
+    assert_ne!(decoded.raw_transactions()[3], serialize(&block.txdata[3]));
+    for (original, projected) in decoded.raw_transactions()[..3].iter().zip(&block.txdata) {
+        assert_eq!(*original, serialize(projected));
+    }
     assert_eq!(
         block
             .txdata
@@ -30,16 +54,28 @@ fn public_litecoin_block_preserves_transparent_ids_and_witnesses() {
     assert!(block.check_witness_commitment());
     let mut corrupt = raw.to_vec();
     corrupt[0] ^= 1;
-    assert!(decode::esplora_block(&corrupt, Chain::LitecoinTestnet, hash).is_err());
+    assert!(
+        decode::esplora_block_with_transactions(&corrupt, Chain::LitecoinTestnet, hash).is_err()
+    );
     let mut trailing = raw.to_vec();
     trailing.extend_from_slice(&[0, 0]);
-    assert!(decode::esplora_block(&trailing, Chain::LitecoinTestnet, hash).is_err());
-    assert!(decode::esplora_block(&raw[..raw.len() - 1], Chain::LitecoinTestnet, hash).is_err());
-    assert!(decode::esplora_block(raw, Chain::BitcoinTestnet4, hash).is_err());
+    assert!(matches!(
+        decode::esplora_block_with_transactions(&trailing, Chain::LitecoinTestnet, hash),
+        Err(decode::DecodeError::NonCanonical)
+    ));
+    assert!(
+        decode::esplora_block_with_transactions(
+            &raw[..raw.len() - 1],
+            Chain::LitecoinTestnet,
+            hash
+        )
+        .is_err()
+    );
+    assert!(decode::esplora_block_with_transactions(raw, Chain::BitcoinTestnet4, hash).is_err());
     let mut witness = raw.to_vec();
     witness[214] ^= 1;
     assert!(matches!(
-        decode::esplora_block(&witness, Chain::LitecoinTestnet, hash),
+        decode::esplora_block_with_transactions(&witness, Chain::LitecoinTestnet, hash),
         Err(decode::DecodeError::Integrity(
             urma_chain::validation::BlockValidationError::WitnessCommitmentMismatch
         ))
@@ -47,11 +83,17 @@ fn public_litecoin_block_preserves_transparent_ids_and_witnesses() {
     let mut merkle = raw.to_vec();
     merkle[120] ^= 1;
     assert!(matches!(
-        decode::esplora_block(&merkle, Chain::LitecoinTestnet, hash),
+        decode::esplora_block_with_transactions(&merkle, Chain::LitecoinTestnet, hash),
         Err(decode::DecodeError::Integrity(
             urma_chain::validation::BlockValidationError::MerkleRootMismatch
         ))
     ));
+    let (owned_block, original_transactions) = decoded.into_parts();
+    assert_eq!(owned_block.txdata.len(), original_transactions.len());
+    assert_eq!(
+        owned_block.txdata[3],
+        decode::transaction(&original_transactions[3], Chain::LitecoinTestnet).unwrap()
+    );
 }
 
 #[test]
@@ -97,35 +139,68 @@ fn extension_suffix_is_parsed_strictly_in_both_modes() {
     let hash = "2b70f30e5c2a5e9e8510cc6a9c86339b2f7ffe618a32bc40902fd4cb842fd459"
         .parse()
         .unwrap();
-    let mut full = raw.to_vec();
-    full.push(0);
-    assert!(decode::block(&full, Chain::LitecoinTestnet, hash).is_ok());
-    full.pop();
-    full.extend_from_slice(&[1]);
-    full.extend_from_slice(&[0; 166]);
-    assert!(decode::block(&full, Chain::LitecoinTestnet, hash).is_ok());
-    assert!(decode::esplora_block(&full, Chain::LitecoinTestnet, hash).is_ok());
+    let original =
+        decode::esplora_block_with_transactions(raw, Chain::LitecoinTestnet, hash).unwrap();
+    assert!(decode::block_with_transactions(raw, Chain::LitecoinTestnet, hash).is_err());
+    for suffix in [vec![0], [vec![1], vec![0; 166]].concat()] {
+        let full = [raw.to_vec(), suffix.clone()].concat();
+        let core = decode::block_with_transactions(&full, Chain::LitecoinTestnet, hash).unwrap();
+        let esplora =
+            decode::esplora_block_with_transactions(&full, Chain::LitecoinTestnet, hash).unwrap();
+        assert_eq!(core.block(), original.block());
+        assert_eq!(core.raw_transactions(), original.raw_transactions());
+        assert_eq!(esplora.raw_transactions(), original.raw_transactions());
+        assert_eq!(
+            decode::block(&full, Chain::LitecoinTestnet, hash).unwrap(),
+            *core.block()
+        );
+        assert_eq!(
+            [
+                full[..81].to_vec(),
+                core.raw_transactions().concat(),
+                suffix
+            ]
+            .concat(),
+            full
+        );
+    }
+    let mut full = [raw.to_vec(), vec![1], vec![0; 166]].concat();
     let mut no_version_bit = full.clone();
     no_version_bit[3] = 0;
     let header: bitcoin::block::Header = deserialize(&no_version_bit[..80]).unwrap();
-    assert!(decode::block(&no_version_bit, Chain::LitecoinTestnet, header.block_hash()).is_ok());
+    assert!(
+        decode::block_with_transactions(
+            &no_version_bit,
+            Chain::LitecoinTestnet,
+            header.block_hash()
+        )
+        .is_ok()
+    );
     full.pop();
-    assert!(decode::block(&full, Chain::LitecoinTestnet, hash).is_err());
-    assert!(decode::esplora_block(&full, Chain::LitecoinTestnet, hash).is_err());
+    assert!(decode::block_with_transactions(&full, Chain::LitecoinTestnet, hash).is_err());
+    assert!(decode::esplora_block_with_transactions(&full, Chain::LitecoinTestnet, hash).is_err());
     let mut unknown = raw.to_vec();
     unknown[1155] = 0x10;
-    assert!(decode::esplora_block(&unknown, Chain::LitecoinTestnet, hash).is_err());
+    assert!(
+        decode::esplora_block_with_transactions(&unknown, Chain::LitecoinTestnet, hash).is_err()
+    );
     let mut invalid_presence = raw.to_vec();
     invalid_presence.push(2);
-    assert!(decode::esplora_block(&invalid_presence, Chain::LitecoinTestnet, hash).is_err());
+    assert!(matches!(
+        decode::esplora_block_with_transactions(&invalid_presence, Chain::LitecoinTestnet, hash),
+        Err(decode::DecodeError::NonCanonical)
+    ));
     let mut noncanonical_count = raw.to_vec();
     noncanonical_count.splice(80..81, [0xfd, 4, 0]);
-    assert!(decode::esplora_block(&noncanonical_count, Chain::LitecoinTestnet, hash).is_err());
+    assert!(
+        decode::esplora_block_with_transactions(&noncanonical_count, Chain::LitecoinTestnet, hash)
+            .is_err()
+    );
     let mut misplaced_hogex = raw.to_vec();
     misplaced_hogex[80] = 5;
     misplaced_hogex.extend_from_slice(&raw[1150..]);
     assert!(matches!(
-        decode::esplora_block(&misplaced_hogex, Chain::LitecoinTestnet, hash),
+        decode::esplora_block_with_transactions(&misplaced_hogex, Chain::LitecoinTestnet, hash),
         Err(decode::DecodeError::InvalidHogEx)
     ));
     assert!(matches!(
@@ -146,4 +221,87 @@ fn bitcoin_decoding_is_unchanged() {
         decode::transaction(&serialize(&block.txdata[0]), Chain::BitcoinRegtest).unwrap(),
         block.txdata[0]
     );
+    let decoded =
+        decode::block_with_transactions(&raw, Chain::BitcoinRegtest, block.block_hash()).unwrap();
+    assert_eq!(decoded.block(), &block);
+    assert_eq!(decoded.raw_transactions(), &[serialize(&block.txdata[0])]);
+}
+
+#[test]
+fn bitcoin_transaction_spans_preserve_witness_bytes_and_order() {
+    let mut block = bitcoin::blockdata::constants::genesis_block(Network::Regtest);
+    let mut tx = block.txdata[0].clone();
+    tx.input[0].previous_output.txid = Txid::from_byte_array([3; 32]);
+    tx.input[0].previous_output.vout = 0;
+    tx.input[0].witness = Witness::from_slice(&[vec![0xAB; 65], vec![0, 1, 2, 0xFF]]);
+    block.txdata.push(tx);
+    block.txdata[0].input[0].witness = Witness::from_slice(&[vec![0; 32]]);
+    let commitment = Block::compute_witness_commitment(&block.witness_root().unwrap(), &[0; 32]);
+    let mut script = vec![0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed];
+    script.extend_from_slice(commitment.as_byte_array());
+    block.txdata[0].output.push(bitcoin::TxOut {
+        value: Amount::ZERO,
+        script_pubkey: ScriptBuf::from_bytes(script),
+    });
+    block.header.merkle_root = block.compute_merkle_root().unwrap();
+    let raw = serialize(&block);
+    let expected: Vec<Vec<u8>> = block.txdata.iter().map(serialize).collect();
+    for chain in [Chain::BitcoinRegtest, Chain::BitcoinTestnet4] {
+        let decoded = decode::block_with_transactions(&raw, chain, block.block_hash()).unwrap();
+        assert_eq!(decoded.block(), &block);
+        assert_eq!(decoded.raw_transactions(), expected);
+        assert_eq!(
+            [raw[..81].to_vec(), decoded.raw_transactions().concat()].concat(),
+            raw
+        );
+        for (bytes, tx) in decoded.raw_transactions().iter().zip(&block.txdata) {
+            let original: Transaction = deserialize(bytes).unwrap();
+            assert_eq!(original.compute_txid(), tx.compute_txid());
+            assert_eq!(original.compute_wtxid(), tx.compute_wtxid());
+            assert_eq!(original.input[0].witness, tx.input[0].witness);
+        }
+        assert_eq!(
+            decode::block(&raw, chain, block.block_hash()).unwrap(),
+            block
+        );
+        assert_eq!(
+            decode::esplora_block_with_transactions(&raw, chain, block.block_hash())
+                .unwrap()
+                .raw_transactions(),
+            expected
+        );
+        let mut trailing = raw.clone();
+        trailing.push(0);
+        assert!(matches!(
+            decode::block_with_transactions(&trailing, chain, block.block_hash()),
+            Err(decode::DecodeError::Bitcoin(_))
+        ));
+        assert!(matches!(
+            decode::esplora_block_with_transactions(&trailing, chain, block.block_hash()),
+            Err(decode::DecodeError::Bitcoin(_))
+        ));
+    }
+}
+
+#[test]
+fn block_spans_reject_oversized_input_and_unbacked_transaction_counts() {
+    let block = bitcoin::blockdata::constants::genesis_block(Network::Regtest);
+    let mut raw = serialize(&block.header);
+    raw.extend_from_slice(&[0xFF; 9]); // canonical CompactSize(u64::MAX), no transactions
+    assert!(matches!(
+        decode::block_with_transactions(&raw, Chain::BitcoinRegtest, block.block_hash()),
+        Err(decode::DecodeError::Bitcoin(_))
+    ));
+    assert!(matches!(
+        decode::esplora_block_with_transactions(&raw, Chain::LitecoinTestnet, block.block_hash()),
+        Err(decode::DecodeError::Litecoin(_))
+    ));
+    assert!(matches!(
+        decode::block_with_transactions(
+            &vec![0; 8_000_001],
+            Chain::LitecoinTestnet,
+            block.block_hash()
+        ),
+        Err(decode::DecodeError::LimitExceeded)
+    ));
 }
