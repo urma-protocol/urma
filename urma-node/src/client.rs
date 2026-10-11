@@ -5,7 +5,10 @@
 //! verified chain evidence. A receiver using a package from a peer must pass it
 //! through `Engine::admit_record`, with its independently selected chain view.
 
-use crate::{Error, model::ArchivedRecord};
+use crate::{
+    Error,
+    model::{ArchivedRecord, ObjectStatus},
+};
 use bitcoin::Txid;
 use std::{
     io::{self, Read, Write},
@@ -76,6 +79,39 @@ impl Client {
                 Ok(None)
             }
             _ => Err(invalid(format!("local record HTTP {code}"))),
+        }
+    }
+
+    /// Read object availability reported by the configured local operator.
+    /// These are operator data, not independently verified chain evidence.
+    /// Selected member count is independent of local retention: either count
+    /// may exceed the other, but both must be within a nonzero member total.
+    /// `None` means only that no completed object is recorded locally (HTTP 404),
+    /// not global absence. Root/count sanity checks establish no crypto claims.
+    pub fn object_status(&self, root: Txid) -> Result<Option<ObjectStatus>, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        let (code, body) = self.get(&format!("/v1/objects/{root}"), deadline)?;
+        match code {
+            200 => {
+                let status: ObjectStatus = serde_json::from_slice(&body)?;
+                remaining(deadline)?;
+                if status.root != root {
+                    return Err(invalid("local object status root differs from request"));
+                }
+                if status.members_total == 0
+                    || status.members_local > status.members_total
+                    || status.members_selected > status.members_total
+                {
+                    return Err(invalid("local object status has impossible member counts"));
+                }
+                Ok(Some(status))
+            }
+            404 => {
+                let _: serde_json::Value = serde_json::from_slice(&body)?;
+                remaining(deadline)?;
+                Ok(None)
+            }
+            _ => Err(invalid(format!("local object status HTTP {code}"))),
         }
     }
 
