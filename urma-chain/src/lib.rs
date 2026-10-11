@@ -7,6 +7,7 @@
 )]
 pub mod config;
 pub mod decode;
+pub mod inclusion;
 pub mod observation;
 pub mod pow;
 pub mod transaction;
