@@ -119,6 +119,15 @@ impl Client {
     }
 }
 
+/// Fetch data only from the explicitly configured local operator endpoint.
+/// This adapter performs no peer or network discovery. The receiving engine
+/// independently verifies the package against its own selected headers.
+impl crate::retrieval::RecordSource for Client {
+    fn fetch(&self, txid: Txid) -> Result<Option<crate::model::RecordPackage>, Error> {
+        Ok(self.record(txid)?.map(|record| record.package))
+    }
+}
+
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
 }
