@@ -157,6 +157,23 @@ impl Service {
             return respond(stream, 401, json!({"error":"authentication required"}));
         }
         match first {
+            line if line.starts_with("GET /v1/objects/") && line.ends_with(" HTTP/1.1") => {
+                let id = &line["GET /v1/objects/".len()..line.len() - " HTTP/1.1".len()];
+                if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return respond(stream, 400, json!({"error":"invalid root transaction ID"}));
+                }
+                let root = id
+                    .parse()
+                    .map_err(|e| Error::Invalid(format!("TXID: {e}")))?;
+                match self.engine.object_status(root)? {
+                    Some(status) => respond(stream, 200, serde_json::to_value(status)?),
+                    None => respond(
+                        stream,
+                        404,
+                        json!({"error":"no completed object recorded locally"}),
+                    ),
+                }
+            }
             line if line.starts_with("GET /v1/records/") && line.ends_with(" HTTP/1.1") => {
                 let id = &line["GET /v1/records/".len()..line.len() - " HTTP/1.1".len()];
                 if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -184,7 +201,7 @@ impl Service {
                 respond(
                     stream,
                     200,
-                    json!({"archive":status,"last_sync_error":error,"capabilities":["status","header-sync","full-block-scan","record-read"]}),
+                    json!({"archive":status,"last_sync_error":error,"capabilities":["status","header-sync","full-block-scan","record-read","object-status"]}),
                 )
             }
             "POST /v1/shutdown HTTP/1.1" => {
