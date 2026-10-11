@@ -37,6 +37,31 @@ pub struct ArchivedRecord {
     pub package: RecordPackage,
 }
 
+/// A successful complete reconstruction, distinct from interval coverage.
+/// Counts describe the current archive snapshot. A reorg can leave all bytes
+/// available locally while some memberships no longer belong to the selected chain.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ObjectStatus {
+    pub root: bitcoin::Txid,
+    pub verified_generation: u64,
+    pub payload_bytes: u64,
+    pub members_total: u64,
+    pub members_local: u64,
+    /// Previously verified placements still selected, independent of eviction.
+    pub members_selected: u64,
+    pub pinned: bool,
+}
+
+impl ObjectStatus {
+    pub fn locally_complete(&self) -> bool {
+        self.members_total > 0 && self.members_local == self.members_total
+    }
+
+    pub fn selected_complete(&self) -> bool {
+        self.locally_complete() && self.members_selected == self.members_total
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 pub struct ChainPoint {
     pub height: u64,

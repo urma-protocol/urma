@@ -4,6 +4,7 @@
 use crate::{Error, engine::Engine, model::RecordPackage};
 use bitcoin::Txid;
 use std::{
+    collections::BTreeMap,
     path::Path,
     time::{Duration, Instant},
 };
@@ -131,6 +132,30 @@ pub fn recover(
     limits: RecoveryLimits,
     scratch: &Path,
 ) -> Result<RecoveredObject, Error> {
+    recover_inner(engine, root, sources, limits, scratch, false)
+}
+
+/// Recover and protect all exact members in the same completion transaction.
+/// On failure, no new completion or pin is published; independently verified
+/// partial cache entries may remain. No user decryption key is required.
+pub fn recover_and_pin(
+    engine: &Engine,
+    root: Txid,
+    sources: &[&dyn RecordSource],
+    limits: RecoveryLimits,
+    scratch: &Path,
+) -> Result<RecoveredObject, Error> {
+    recover_inner(engine, root, sources, limits, scratch, true)
+}
+
+fn recover_inner(
+    engine: &Engine,
+    root: Txid,
+    sources: &[&dyn RecordSource],
+    limits: RecoveryLimits,
+    scratch: &Path,
+    pin: bool,
+) -> Result<RecoveredObject, Error> {
     let generation = engine.status()?.generation;
     let began = Instant::now();
     let fetch_limits = FetchLimits {
@@ -146,12 +171,18 @@ pub fn recover(
         sources,
         fetch_limits,
         began,
+        members: BTreeMap::from([(root.txid(), crate::archive::ObjectMember::from(&root))]),
     };
     let object = urma_runtime::multipart::reconstruct(&root, &mut adapter, remaining, scratch)
         .map_err(|e| Error::Source(Box::new(e)))?;
-    if engine.status()?.generation != generation {
-        return Err(Error::Stale);
-    }
+    // Completion atomically rechecks the epoch and retained identities. A
+    // concurrent prune may refuse completion, never create false availability.
+    engine.complete_object(
+        &object,
+        generation,
+        &adapter.members.into_values().collect::<Vec<_>>(),
+        pin,
+    )?;
     Ok(object)
 }
 
@@ -160,6 +191,7 @@ struct Adapter<'a> {
     sources: &'a [&'a dyn RecordSource],
     fetch_limits: FetchLimits,
     began: Instant,
+    members: BTreeMap<Txid, crate::archive::ObjectMember>,
 }
 impl MultipartSource for Adapter<'_> {
     fn fetch(
@@ -181,10 +213,14 @@ impl MultipartSource for Adapter<'_> {
                 ..self.fetch_limits
             },
         ) {
-            Ok(Some(record)) => Ok(Candidate {
-                origin: "node-selected-view".into(),
-                record,
-            }),
+            Ok(Some(record)) => {
+                self.members
+                    .insert(record.txid(), crate::archive::ObjectMember::from(&record));
+                Ok(Candidate {
+                    origin: "node-selected-view".into(),
+                    record,
+                })
+            }
             Ok(None) => Err(FetchError::Unavailable),
             Err(error) => Err(FetchError::Source(urma_runtime::error::Error::Io(
                 std::io::Error::other(error.to_string()),

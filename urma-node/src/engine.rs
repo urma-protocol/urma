@@ -64,6 +64,40 @@ impl Engine {
         self.archive()?.record(txid)
     }
 
+    pub fn object_status(&self, root: bitcoin::Txid) -> Result<Option<ObjectStatus>, Error> {
+        self.archive()?.object_status(root)
+    }
+
+    /// Pin a previously reconstructed object only if all its evidence remains
+    /// local. This does not claim current chain selection or fetch missing data.
+    /// Use retrieval::recover_and_pin to acquire and pin an incomplete object.
+    pub fn set_pin(&self, root: bitcoin::Txid, pin: bool) -> Result<(), Error> {
+        self.archive()?.set_pin(root, pin)
+    }
+
+    /// Explicit cache maintenance; no-op for unpruned archives. Returns child
+    /// record count removed. Pins protect exact members even after a reorg.
+    pub fn prune_cache(&self) -> Result<u64, Error> {
+        self.archive()?.prune_cache()
+    }
+
+    pub(crate) fn complete_object(
+        &self,
+        object: &urma_runtime::multipart::RecoveredObject,
+        generation: u64,
+        members: &[crate::archive::ObjectMember],
+        pin: bool,
+    ) -> Result<(), Error> {
+        self.archive()?.complete_object(
+            object.root(),
+            generation,
+            object.manifest().length,
+            object.manifest().payload_hash,
+            members,
+            pin,
+        )
+    }
+
     pub(crate) fn chain(&self) -> Result<urma_chain::observation::Chain, Error> {
         Ok(self.archive()?.config().chain)
     }
@@ -444,12 +478,15 @@ impl Engine {
                 return Ok(None);
             };
             let raw = source.block(location.height)?;
+            budget.check()?;
             let decoded =
                 urma_chain::decode::esplora_block_with_transactions(&raw, chain, location.hash)
                     .map_err(|e| Error::Invalid(format!("dependency block: {e}")))?;
+            budget.check()?;
             if source.header(location.height)?.block_hash() != location.hash {
                 return Err(Error::Stale);
             }
+            budget.check()?;
             Ok(decoded
                 .block()
                 .txdata

@@ -10,6 +10,9 @@ use std::{
     time::Duration,
 };
 
+mod objects;
+pub(crate) use objects::ObjectMember;
+
 pub struct Archive {
     // Keep the OS lock until after the connection has closed.
     db: Connection,
@@ -72,7 +75,7 @@ impl Archive {
             tx.execute_batch(include_str!("schema.sql"))?;
             tx.execute("INSERT INTO config VALUES(1,?1)", [&encoded])?;
             tx.commit()?;
-        } else if version != 1 {
+        } else if version != 1 && version != 2 {
             return Err(Error::Invalid(format!(
                 "unsupported archive schema {version}"
             )));
@@ -85,6 +88,13 @@ impl Archive {
             return Err(Error::Invalid(
                 "archive configuration differs; explicit migration required".into(),
             ));
+        }
+        // Configuration identity is checked before any existing archive migration.
+        // Schema 1 remains intact if the additive migration fails.
+        if version < 2 {
+            let tx = db.transaction()?;
+            tx.execute_batch(objects::SCHEMA)?;
+            tx.commit()?;
         }
         Ok(Self {
             db,

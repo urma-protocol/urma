@@ -20,9 +20,27 @@ bootstrap context is still being implemented; starting the daemon is not
 evidence of historical coverage.
 
 The `Retention` configuration distinguishes pruned multipart roots from
-unpruned record retention. Object recovery, pinning, complete-object status,
-dependency retry, URMA peer transport, consumer adapters and service packaging
-are not yet delivered. Windows private-file ACL and existing runtime I/O
+unpruned record retention. On-demand recovery follows authenticated references,
+using selective packages or full blocks at known transaction locations. Missing
+commit dependencies remain visible and can be resolved later. Local clients can
+share packages through the optional authenticated service; each receiving engine
+verifies them against its own selected headers.
+
+Successful reconstruction records exact object members separately from scan
+coverage. `object_status` distinguishes historical verification, current local
+availability and whether the recorded placements remain selected. `recover_and_pin`
+atomically protects a complete object's evidence, including in pruned mode.
+`set_pin` can protect an already verified object if all members remain local.
+`prune_cache` explicitly evicts unpinned multipart leaf/data records only; roots,
+application records, scan marks and transaction locators survive. Unpruned mode
+does not evict. Pins retain orphan bytes after reorg without claiming confirmation.
+Concurrent eviction can refuse recovery completion; it cannot publish a false
+complete/pinned state. Schema 1 archives migrate additively to schema 2 only
+after configuration identity is checked.
+
+Automatic complete-object acquisition, background cache size limits, URMA peer
+transport, application adapters and service packaging are not yet delivered.
+Windows private-file ACL and existing runtime I/O
 porting are also outstanding. This is not a release candidate.
 
 ## Local development
@@ -35,7 +53,8 @@ is no fabricated project-start default.
 `urma-node --data DIR --config CONFIG status` opens local state without
 connecting to any peer. `create-token PATH` creates a new private bearer token.
 `serve --token-file PATH` starts on loopback only, offline by default; `--p2p`
-opts into the Litecoin source. `GET /v1/status` and `POST /v1/shutdown` require
+opts into the Litecoin source. `GET /v1/status`, `GET /v1/records/TXID` and
+`POST /v1/shutdown` require
 `Authorization: Bearer TOKEN`. Clients do not open the service database for
 writing. The archive uses a process ownership lock and SQLite WAL/FULL on a
 local filesystem.
