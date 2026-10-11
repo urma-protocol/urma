@@ -2,11 +2,11 @@ use bitcoin::{
     Amount, Block, Network, OutPoint, ScriptBuf, Transaction, Txid, Witness,
     blockdata::constants::genesis_block,
     consensus::{deserialize, serialize},
-    hashes::Hash,
+    hashes::{Hash, sha256d},
 };
 use urma_chain::{
     decode,
-    inclusion::{InclusionError, TransactionProof},
+    inclusion::{BlockProofBuilder, InclusionError, MerklePath, TransactionProof},
     observation::Chain,
 };
 
@@ -50,6 +50,65 @@ fn proof(block: &Block, position: u32) -> TransactionProof {
     .unwrap()
 }
 
+// Frozen path generation from 405c993: rebuilding each tree for each proof.
+// This reference guards byte-for-byte compatibility with the reusable builder.
+fn legacy_path(mut hashes: Vec<[u8; 32]>, position: u32) -> MerklePath {
+    let tx_count = hashes.len() as u32;
+    let mut index = position as usize;
+    let mut siblings = Vec::new();
+    while hashes.len() > 1 {
+        siblings.push(hashes.get(index ^ 1).copied().unwrap_or(hashes[index]));
+        hashes = hashes
+            .chunks(2)
+            .map(|pair| {
+                let mut bytes = [0; 64];
+                bytes[..32].copy_from_slice(&pair[0]);
+                bytes[32..].copy_from_slice(pair.get(1).unwrap_or(&pair[0]));
+                sha256d::Hash::hash(&bytes).to_byte_array()
+            })
+            .collect();
+        index /= 2;
+    }
+    MerklePath {
+        index: position,
+        tx_count,
+        siblings,
+    }
+}
+
+fn legacy_proof(
+    block: &Block,
+    position: u32,
+    transaction: Vec<u8>,
+    coinbase: Vec<u8>,
+) -> TransactionProof {
+    let txids = block
+        .txdata
+        .iter()
+        .map(|tx| tx.compute_txid().to_byte_array())
+        .collect::<Vec<_>>();
+    let witnesses = block
+        .txdata
+        .iter()
+        .enumerate()
+        .map(|(index, tx)| {
+            if index == 0 {
+                [0; 32]
+            } else {
+                tx.compute_wtxid().to_byte_array()
+            }
+        })
+        .collect::<Vec<_>>();
+    TransactionProof {
+        transaction,
+        txid_path: legacy_path(txids.clone(), position),
+        coinbase,
+        coinbase_path: legacy_path(txids, 0),
+        witness_path: legacy_path(witnesses.clone(), position),
+        coinbase_witness_path: legacy_path(witnesses, 0),
+    }
+}
+
 // The two-transaction tree permits changing coinbase non-witness bytes while
 // updating its authenticated TXID, without a second implementation of path building.
 fn replace_coinbase(block: &mut Block, proof: &mut TransactionProof, coinbase: Transaction) {
@@ -62,10 +121,20 @@ fn replace_coinbase(block: &mut Block, proof: &mut TransactionProof, coinbase: T
 
 #[test]
 fn bitcoin_inclusion_preserves_bytes_and_handles_odd_padding_at_multiple_levels() {
-    for count in [2, 3, 5, 7, 9] {
+    for count in [2, 3, 4, 5, 7, 9, 16, 17] {
         let block = block(count);
+        let builder = BlockProofBuilder::new(&block).unwrap();
         for position in 1..count as u32 {
-            let proof = proof(&block, position);
+            let raw_transaction = serialize(&block.txdata[position as usize]);
+            let raw_coinbase = serialize(&block.txdata[0]);
+            let proof = builder
+                .proof(position, raw_transaction.clone(), raw_coinbase.clone())
+                .unwrap();
+            assert_eq!(
+                proof,
+                legacy_proof(&block, position, raw_transaction, raw_coinbase)
+            );
+            assert_eq!(proof, self::proof(&block, position));
             let included = proof.verify(Chain::BitcoinRegtest, &block.header).unwrap();
             assert_eq!(included.transaction(), &block.txdata[position as usize]);
             assert_eq!(included.raw(), serialize(included.transaction()));
@@ -73,6 +142,95 @@ fn bitcoin_inclusion_preserves_bytes_and_handles_odd_padding_at_multiple_levels(
             assert_eq!(included.position(), position);
         }
     }
+}
+
+#[test]
+fn reusable_builder_owns_a_snapshot_and_rejects_mismatched_raw() {
+    let block = block(3);
+    let builder = BlockProofBuilder::new(&block).unwrap();
+    let header = block.header;
+    let raw_first = serialize(&block.txdata[1]);
+    let raw_second = serialize(&block.txdata[2]);
+    let raw_coinbase = serialize(&block.txdata[0]);
+    let mut altered = block.txdata[1].clone();
+    altered.input[0].witness = Witness::from_slice(&[b"mismatched witness"]);
+    drop(block);
+    builder
+        .proof(1, raw_first.clone(), raw_coinbase.clone())
+        .unwrap()
+        .verify(Chain::BitcoinRegtest, &header)
+        .unwrap();
+    assert!(matches!(
+        builder
+            .proof(1, raw_second.clone(), raw_coinbase.clone())
+            .unwrap()
+            .verify(Chain::BitcoinRegtest, &header),
+        Err(InclusionError::MerkleRootMismatch)
+    ));
+    assert!(matches!(
+        builder
+            .proof(1, serialize(&altered), raw_coinbase.clone())
+            .unwrap()
+            .verify(Chain::BitcoinRegtest, &header),
+        Err(InclusionError::WitnessRootMismatch)
+    ));
+    assert!(matches!(
+        builder
+            .proof(1, raw_first, raw_second.clone())
+            .unwrap()
+            .verify(Chain::BitcoinRegtest, &header),
+        Err(InclusionError::InvalidCoinbase)
+    ));
+    builder
+        .proof(2, raw_second, raw_coinbase)
+        .unwrap()
+        .verify(Chain::BitcoinRegtest, &header)
+        .unwrap();
+}
+
+#[test]
+fn reusable_builder_refuses_invalid_integrity_and_invalid_target_positions() {
+    let mut block = block(3);
+    let builder = BlockProofBuilder::new(&block).unwrap();
+    assert!(matches!(
+        builder.proof(0, vec![], vec![]),
+        Err(InclusionError::CoinbaseTarget)
+    ));
+    for position in [3, u32::MAX] {
+        assert!(matches!(
+            builder.proof(position, vec![], vec![]),
+            Err(InclusionError::InvalidPath)
+        ));
+    }
+    block.txdata[2].input[0].witness = Witness::new();
+    assert!(matches!(
+        BlockProofBuilder::new(&block),
+        Err(InclusionError::Integrity(_))
+    ));
+    block.txdata[2] = block.txdata[0].clone();
+    block.txdata[0].output.last_mut().unwrap().script_pubkey = commitment_script(&block);
+    block.header.merkle_root = block.compute_merkle_root().unwrap();
+    let builder = BlockProofBuilder::new(&block).unwrap();
+    assert!(matches!(
+        builder.proof(2, vec![], vec![]),
+        Err(InclusionError::CoinbaseTarget)
+    ));
+    let singleton = genesis_block(Network::Regtest);
+    let builder = BlockProofBuilder::new(&singleton).unwrap();
+    assert!(matches!(
+        builder.proof(0, vec![], vec![]),
+        Err(InclusionError::CoinbaseTarget)
+    ));
+    assert!(matches!(
+        builder.proof(1, vec![], vec![]),
+        Err(InclusionError::InvalidPath)
+    ));
+    let mut empty = singleton;
+    empty.txdata.clear();
+    assert!(matches!(
+        BlockProofBuilder::new(&empty),
+        Err(InclusionError::Integrity(_))
+    ));
 }
 
 #[test]
@@ -388,14 +546,34 @@ fn real_litecoin_fixture_preserves_raw_transparent_and_hogex_bytes() {
         transactions.push(before[..before.len() - remaining.len()].to_vec());
     }
     assert!(remaining.is_empty());
+    let builder = BlockProofBuilder::new(&block).unwrap();
     for position in 1..4 {
-        let proof = TransactionProof::from_block(
-            &block,
-            position,
-            transactions[position as usize].clone(),
-            transactions[0].clone(),
-        )
-        .unwrap();
+        let proof = builder
+            .proof(
+                position,
+                transactions[position as usize].clone(),
+                transactions[0].clone(),
+            )
+            .unwrap();
+        assert_eq!(
+            proof,
+            legacy_proof(
+                &block,
+                position,
+                transactions[position as usize].clone(),
+                transactions[0].clone()
+            )
+        );
+        assert_eq!(
+            proof,
+            TransactionProof::from_block(
+                &block,
+                position,
+                transactions[position as usize].clone(),
+                transactions[0].clone()
+            )
+            .unwrap()
+        );
         let included = proof.verify(Chain::LitecoinTestnet, &block.header).unwrap();
         assert_eq!(included.transaction(), &block.txdata[position as usize]);
         assert_eq!(included.raw(), transactions[position as usize]);

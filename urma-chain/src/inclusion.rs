@@ -38,6 +38,17 @@ pub struct TransactionProof {
     pub coinbase_witness_path: MerklePath,
 }
 
+/// Reusable Merkle trees for one complete transparent block projection.
+///
+/// Construction validates integrity once and takes O(n) time and storage. Each
+/// proof extracts four paths in O(log n), without retaining the block or decoding
+/// raw bytes. The original raw bytes are bound to these paths by `verify`.
+pub struct BlockProofBuilder {
+    txid_levels: Vec<Vec<[u8; 32]>>,
+    witness_levels: Vec<Vec<[u8; 32]>>,
+    coinbase_targets: Vec<bool>,
+}
+
 /// Verified inclusion, relative to the header supplied by the caller.
 #[derive(Clone, Debug)]
 pub struct IncludedTransaction {
@@ -253,18 +264,15 @@ impl TransactionProof {
         raw_transaction: Vec<u8>,
         raw_coinbase: Vec<u8>,
     ) -> Result<Self, InclusionError> {
+        BlockProofBuilder::new(block)?.proof(position, raw_transaction, raw_coinbase)
+    }
+}
+
+impl BlockProofBuilder {
+    /// Validate integrity against this block's own header, without PoW or consensus checks.
+    pub fn new(block: &Block) -> Result<Self, InclusionError> {
         if block.txdata.len() > MAX_TRANSACTIONS as usize {
             return Err(InclusionError::LimitExceeded);
-        }
-        if position == 0 {
-            return Err(InclusionError::CoinbaseTarget);
-        }
-        let target = block
-            .txdata
-            .get(position as usize)
-            .ok_or(InclusionError::InvalidPath)?;
-        if target.is_coinbase() {
-            return Err(InclusionError::CoinbaseTarget);
         }
         validate_block_integrity(block, block.block_hash()).map_err(InclusionError::Integrity)?;
         let txids = block
@@ -285,13 +293,55 @@ impl TransactionProof {
             })
             .collect::<Vec<_>>();
         Ok(Self {
-            transaction: raw_transaction,
-            txid_path: build_path(txids.clone(), position),
-            coinbase: raw_coinbase,
-            coinbase_path: build_path(txids, 0),
-            witness_path: build_path(witnesses.clone(), position),
-            coinbase_witness_path: build_path(witnesses, 0),
+            txid_levels: build_levels(txids),
+            witness_levels: build_levels(witnesses),
+            coinbase_targets: block.txdata.iter().map(Transaction::is_coinbase).collect(),
         })
+    }
+
+    /// Extract paths for a noncoinbase target, preserving the supplied raw bytes exactly.
+    /// Raw decoding and binding remain mandatory in `TransactionProof::verify`.
+    pub fn proof(
+        &self,
+        position: u32,
+        raw_transaction: Vec<u8>,
+        raw_coinbase: Vec<u8>,
+    ) -> Result<TransactionProof, InclusionError> {
+        if position == 0 {
+            return Err(InclusionError::CoinbaseTarget);
+        }
+        let is_coinbase = self
+            .coinbase_targets
+            .get(position as usize)
+            .ok_or(InclusionError::InvalidPath)?;
+        if *is_coinbase {
+            return Err(InclusionError::CoinbaseTarget);
+        }
+        Ok(TransactionProof {
+            transaction: raw_transaction,
+            txid_path: self.path(&self.txid_levels, position),
+            coinbase: raw_coinbase,
+            coinbase_path: self.path(&self.txid_levels, 0),
+            witness_path: self.path(&self.witness_levels, position),
+            coinbase_witness_path: self.path(&self.witness_levels, 0),
+        })
+    }
+
+    fn path(&self, levels: &[Vec<[u8; 32]>], position: u32) -> MerklePath {
+        let mut index = position as usize;
+        let siblings = levels[..levels.len() - 1]
+            .iter()
+            .map(|level| {
+                let sibling = level.get(index ^ 1).copied().unwrap_or(level[index]);
+                index /= 2;
+                sibling
+            })
+            .collect();
+        MerklePath {
+            index: position,
+            tx_count: self.coinbase_targets.len() as u32,
+            siblings,
+        }
     }
 }
 
@@ -302,21 +352,16 @@ fn parent(left: [u8; 32], right: [u8; 32]) -> [u8; 32] {
     sha256d::Hash::hash(&bytes).to_byte_array()
 }
 
-fn build_path(mut hashes: Vec<[u8; 32]>, position: u32) -> MerklePath {
-    let tx_count = hashes.len() as u32;
-    let mut index = position as usize;
-    let mut siblings = Vec::new();
-    while hashes.len() > 1 {
-        siblings.push(hashes.get(index ^ 1).copied().unwrap_or(hashes[index]));
-        hashes = hashes
+fn build_levels(hashes: Vec<[u8; 32]>) -> Vec<Vec<[u8; 32]>> {
+    let mut levels = vec![hashes];
+    while levels.last().unwrap().len() > 1 {
+        let next = levels
+            .last()
+            .unwrap()
             .chunks(2)
             .map(|pair| parent(pair[0], *pair.get(1).unwrap_or(&pair[0])))
             .collect();
-        index /= 2;
+        levels.push(next);
     }
-    MerklePath {
-        index: position,
-        tx_count,
-        siblings,
-    }
+    levels
 }
