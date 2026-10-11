@@ -108,7 +108,9 @@ pub fn fetch_record(
             if began.elapsed() >= limits.timeout {
                 return Err(Error::Busy("record acquisition deadline".into()));
             }
-            verify_cached(engine, txid, &record.package).map(Some)
+            let verified = verify_cached(engine, txid, &record.package)?;
+            crate::engine::check_deadline(deadline)?;
+            Ok(Some(verified))
         }
         Err(error) => Err(error),
         Ok(None) => match last {
