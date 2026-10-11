@@ -56,8 +56,14 @@ pub fn fetch_record(
     limits: FetchLimits,
 ) -> Result<Option<VerifiedRecord>, Error> {
     let began = Instant::now();
+    let deadline = began
+        .checked_add(limits.timeout)
+        .ok_or_else(|| Error::Invalid("record deadline overflow".into()))?;
+    crate::engine::check_deadline(deadline)?;
     if let Some(record) = engine.record(txid)? {
-        return verify_cached(engine, txid, &record.package).map(Some);
+        let verified = verify_cached(engine, txid, &record.package)?;
+        crate::engine::check_deadline(deadline)?;
+        return Ok(Some(verified));
     }
     let mut last = None;
     for source in sources.iter().take(limits.sources) {
@@ -82,10 +88,11 @@ pub fn fetch_record(
                 last = Some(error);
                 continue;
             }
-            Ok(verified) => match engine.admit_record(package) {
+            Ok(verified) => match engine.admit_record_before(package, Some(deadline)) {
                 Ok(_) => return Ok(Some(verified)),
-                Err(Error::Stale) => return Err(Error::Stale),
                 Err(error) => {
+                    // A peer's stale block claim must not veto another source.
+                    // Admission still checks tickets; recover checks its epoch.
                     last = Some(error);
                 }
             },
@@ -94,7 +101,9 @@ pub fn fetch_record(
     if began.elapsed() >= limits.timeout {
         return Err(Error::Busy("record acquisition deadline".into()));
     }
-    match engine.retrieve_located_record(txid) {
+    let fallback = engine.retrieve_located_record_before(txid, deadline);
+    crate::engine::check_deadline(deadline)?;
+    match fallback {
         Ok(Some(record)) => {
             if began.elapsed() >= limits.timeout {
                 return Err(Error::Busy("record acquisition deadline".into()));

@@ -76,8 +76,19 @@ impl Engine {
         &self,
         txid: bitcoin::Txid,
     ) -> Result<Option<ArchivedRecord>, Error> {
-        if let Some(record) = self.record(txid)? {
-            return Ok(Some(record));
+        self.retrieve_located_record_before(txid, Instant::now() + Duration::from_secs(30))
+    }
+
+    pub(crate) fn retrieve_located_record_before(
+        &self,
+        txid: bitcoin::Txid,
+        deadline: Instant,
+    ) -> Result<Option<ArchivedRecord>, Error> {
+        check_deadline(deadline)?;
+        let cached = self.record(txid)?;
+        check_deadline(deadline)?;
+        if cached.is_some() {
+            return Ok(cached);
         }
         let (location, chain) = {
             let archive = self.archive()?;
@@ -86,7 +97,10 @@ impl Engine {
         let (Some(location), Some(source)) = (location, &self.source) else {
             return Ok(None);
         };
-        let raw = source.block(location.height)?;
+        check_deadline(deadline)?;
+        let raw = source.block(location.height);
+        check_deadline(deadline)?;
+        let raw = raw?;
         let decoded =
             urma_chain::decode::esplora_block_with_transactions(&raw, chain, location.hash)
                 .map_err(|e| Error::Invalid(format!("located block: {e}")))?;
@@ -111,7 +125,10 @@ impl Engine {
                 match parent_location {
                     None => None,
                     Some(parent_location) => {
-                        let bytes = source.block(parent_location.height)?;
+                        check_deadline(deadline)?;
+                        let bytes = source.block(parent_location.height);
+                        check_deadline(deadline)?;
+                        let bytes = bytes?;
                         let parent_block = urma_chain::decode::esplora_block_with_transactions(
                             &bytes,
                             chain,
@@ -127,6 +144,7 @@ impl Engine {
                     }
                 }
             };
+        check_deadline(deadline)?;
         let Some(commit) = commit else {
             return Ok(None);
         };
@@ -135,20 +153,28 @@ impl Engine {
                 builder.proof(position as u32, raw[position].clone(), raw[0].clone())
             })
             .map_err(|e| Error::Invalid(e.to_string()))?;
-        if source.header(location.height)?.block_hash() != location.hash {
+        check_deadline(deadline)?;
+        let header = source.header(location.height);
+        check_deadline(deadline)?;
+        if header?.block_hash() != location.hash {
             return Err(Error::Stale);
         }
-        self.admit_record(RecordPackage {
-            version: API_VERSION,
-            chain_genesis: chain
-                .genesis()
-                .map_err(|e| Error::Invalid(e.to_string()))?
-                .0,
-            block: location,
-            reveal: proof,
-            commit,
-        })?;
-        self.record(txid)
+        self.admit_record_before(
+            RecordPackage {
+                version: API_VERSION,
+                chain_genesis: chain
+                    .genesis()
+                    .map_err(|e| Error::Invalid(e.to_string()))?
+                    .0,
+                block: location,
+                reveal: proof,
+                commit,
+            },
+            Some(deadline),
+        )?;
+        let record = self.record(txid)?;
+        check_deadline(deadline)?;
+        Ok(record)
     }
 
     /// Supply a missing commit by its computed TXID. This is auxiliary prevout
@@ -222,6 +248,17 @@ impl Engine {
     /// Header selection is independent of the sender; reorg invalidates the
     /// ticket before persistence. No source call or database lock spans proof work.
     pub fn admit_record(&self, package: RecordPackage) -> Result<RecordReceipt, Error> {
+        self.admit_record_before(package, None)
+    }
+
+    pub(crate) fn admit_record_before(
+        &self,
+        package: RecordPackage,
+        deadline: Option<Instant>,
+    ) -> Result<RecordReceipt, Error> {
+        if let Some(deadline) = deadline {
+            check_deadline(deadline)?;
+        }
         let (ticket, chain, header) = {
             let archive = self.archive()?;
             let chain = archive.config().chain;
@@ -268,7 +305,11 @@ impl Engine {
             raw_commit: package.commit,
             proof: package.reveal,
         };
-        self.archive()?.admit_record(ticket, record)
+        let mut archive = self.archive()?;
+        if let Some(deadline) = deadline {
+            check_deadline(deadline)?;
+        }
+        archive.admit_record(ticket, record)
     }
 
     /// Admit at most 2,000 headers from the selected verifier view. This makes
@@ -445,6 +486,14 @@ impl<'a> Budget<'a> {
                 "synchronization cancelled or time budget exhausted".into(),
             ));
         }
+        Ok(())
+    }
+}
+
+pub(crate) fn check_deadline(deadline: Instant) -> Result<(), Error> {
+    if Instant::now() >= deadline {
+        Err(Error::Busy("record acquisition deadline".into()))
+    } else {
         Ok(())
     }
 }
