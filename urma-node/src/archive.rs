@@ -363,6 +363,18 @@ impl Archive {
         .collect()
     }
 
+    pub(crate) fn cached_dependency(&self) -> Result<Option<Vec<u8>>, Error> {
+        Ok(self
+            .db
+            .query_row(
+                "SELECT t.raw FROM dependencies d JOIN selected s ON s.hash=d.block_hash
+             JOIN transactions t ON t.txid=d.commit_txid ORDER BY s.height,d.position LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .optional()?)
+    }
+
     /// Completion changes only evidence from blocks already fully scanned.
     /// A supplied parent cannot create a scan mark or a transaction placement.
     pub(crate) fn finish_dependencies(

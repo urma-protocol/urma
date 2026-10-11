@@ -168,6 +168,11 @@ impl Engine {
         let verified =
             urma_core::multipart::VerifiedRecord::verify(reveal.compute_txid(), reveal, &commit)
                 .map_err(|e| Error::Invalid(format!("selective URMA proof: {e}")))?;
+        // VerifiedRecord authenticates bytes before interpreting references.
+        // Admission additionally requires a valid V0 record, as in the scanner.
+        // Validate the structure AFTER authentication, without signing twice.
+        urma_core::envelope::extract_reveal(reveal)
+            .map_err(|e| Error::Invalid(format!("selective V0 record: {e}")))?;
         let record = crate::scan::Record {
             position: included.position(),
             wtxid: reveal.compute_wtxid(),
@@ -269,6 +274,16 @@ impl Engine {
     /// imports cannot call this path or manufacture a locally scanned interval.
     pub fn scan_next(&self) -> Result<ArchiveStatus, Error> {
         self.scan_next_until(&AtomicBool::new(false))
+    }
+
+    /// Retry one available parent per scheduler round. Missing dependencies do
+    /// not starve subsequent block scanning or acquire completeness from peers.
+    pub fn resolve_cached_dependency(&self) -> Result<usize, Error> {
+        let raw = self.archive()?.cached_dependency()?;
+        match raw {
+            Some(raw) => self.resolve_commit(&raw),
+            None => Ok(0),
+        }
     }
 
     pub fn scan_next_until(&self, cancelled: &AtomicBool) -> Result<ArchiveStatus, Error> {
