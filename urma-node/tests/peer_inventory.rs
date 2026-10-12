@@ -1,0 +1,680 @@
+//! Fast peer synchronization through v3 inventory pages between actual
+//! TCP/Noise/Yamux endpoints on owned loopback. Genuine and locally signed
+//! records sit in mock-selected witness-authenticated blocks: no PoW, UTXO or
+//! consensus claim. Node A runs the real Service on an offline Engine whose
+//! headers were selected beforehand, so every record it holds came through the
+//! overlay and none from its own scan. A test-side proxy forwards to node B
+//! and drops one inventory entry to play an omitting peer. A subprocess
+//! supervises blocking library calls; killing it is cleanup only.
+#![cfg(target_os = "linux")]
+#[allow(dead_code)]
+mod common;
+#[path = "common/inventory_peer.rs"]
+mod inventory_peer;
+use bitcoin::{
+    Amount, Block, OutPoint, ScriptBuf, Sequence, Transaction, TxIn, TxOut, Txid, Witness,
+    absolute,
+    consensus::serialize,
+    hashes::Hash,
+    secp256k1::{Keypair as SecpKeypair, Message as Digest, Secp256k1},
+    sighash::{Prevouts, SighashCache, TapSighashType},
+    taproot::{LeafVersion, TapLeafHash},
+    transaction::Version,
+};
+use common::{FIRST_HEIGHT, MemorySource, SignedPair, config, profile, witness_block};
+use inventory_peer::RawPeer;
+use libp2p::identity::Keypair;
+use serde_json::{Value, json};
+use std::{
+    fs::{self, File},
+    io::{self, Read, Write},
+    net::{SocketAddr, TcpStream},
+    path::{Path, PathBuf},
+    process::{Child, Command, Stdio},
+    sync::{Arc, atomic::Ordering},
+    thread::{self, JoinHandle},
+    time::{Duration, Instant},
+};
+use urma_core::{envelope, format::PublicRecord, multipart::VerifiedRecord, topics::Topics};
+use urma_node::{
+    engine::Engine,
+    model::{ArchiveConfig, Retention},
+    peer::PeerNetwork,
+    peer_protocol::{INVENTORY_ENTRIES, INVENTORY_SPAN, Kind, Reply, VERSION},
+    peer_sync::{OverlayInfo, PeerSync},
+    peerbook::PeerAddress,
+    service::Service,
+};
+
+const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const CASE_TIMEOUT: Duration = Duration::from_secs(150);
+const SYNC_TIMEOUT: Duration = Duration::from_secs(90);
+const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn stage(root: &Path, text: &str) {
+    fs::write(root.join("stage"), text).unwrap();
+}
+
+// Contract values may be a bare height or a chain point; compare heights.
+fn height(value: &Value) -> Option<u64> {
+    match value {
+        Value::Null => None,
+        Value::Number(number) => number.as_u64(),
+        Value::Object(map) => map.get("height").and_then(Value::as_u64),
+        other => panic!("unexpected height shape: {other}"),
+    }
+}
+
+// Follows pruning_policy.rs: a distinct valid public Wire post per index.
+fn wire_post(index: usize) -> SignedPair {
+    let record = PublicRecord::WirePost {
+        topics: Topics {
+            wire: "news".into(),
+            hashtags: vec!["sync".into()],
+        },
+        text: format!("inventory post {index}"),
+    };
+    let bytes = record.encode().unwrap();
+    let secp = Secp256k1::new();
+    let signer = SecpKeypair::from_seckey_slice(&secp, &[4; 32]).unwrap();
+    let (script, info) = envelope::build(&bytes, &signer).unwrap();
+    let spend = |txid, vout, value, script_pubkey| Transaction {
+        version: Version::TWO,
+        lock_time: absolute::LockTime::ZERO,
+        input: vec![TxIn {
+            previous_output: OutPoint { txid, vout },
+            script_sig: ScriptBuf::new(),
+            sequence: Sequence::MAX,
+            witness: Witness::new(),
+        }],
+        output: vec![TxOut {
+            value: Amount::from_sat(value),
+            script_pubkey,
+        }],
+    };
+    let output = ScriptBuf::new_p2tr_tweaked(info.output_key());
+    let commit = spend(Txid::from_byte_array([8; 32]), 0, 3_000, output);
+    let payout = ScriptBuf::from_bytes([vec![0, 20], vec![4; 20]].concat());
+    let mut reveal = spend(commit.compute_txid(), 0, 1_500, payout);
+    let hash = SighashCache::new(&reveal)
+        .taproot_script_spend_signature_hash(
+            0,
+            &Prevouts::All(std::slice::from_ref(&commit.output[0])),
+            TapLeafHash::from_script(&script, LeafVersion::TapScript),
+            TapSighashType::Default,
+        )
+        .unwrap();
+    let signature =
+        secp.sign_schnorr_no_aux_rand(&Digest::from_digest(hash.to_byte_array()), &signer);
+    reveal.input[0].witness = envelope::witness(signature.as_ref(), &script, &info).unwrap();
+    let verified = VerifiedRecord::verify(reveal.compute_txid(), &reveal, &commit).unwrap();
+    SignedPair {
+        raw_commit: serialize(&commit),
+        raw_reveal: serialize(&reveal),
+        commit,
+        reveal,
+        verified,
+    }
+}
+
+// Pairs are spread over `blocks` blocks round-robin; one chain per salt.
+fn chain(pairs: &[SignedPair], blocks: usize, salt: u32) -> Vec<Block> {
+    let mut built: Vec<Block> = Vec::new();
+    for offset in 0..blocks {
+        let transactions: Vec<Transaction> = pairs
+            .iter()
+            .skip(offset)
+            .step_by(blocks)
+            .flat_map(SignedPair::transactions)
+            .collect();
+        let nonce = salt + u32::try_from(offset).unwrap();
+        let block = witness_block(&transactions, built.last(), nonce);
+        built.push(block);
+    }
+    built
+}
+
+fn tip(blocks: &[Block]) -> u64 {
+    FIRST_HEIGHT + u64::try_from(blocks.len()).unwrap() - 1
+}
+
+struct Server {
+    engine: Arc<Engine>,
+    chain: Arc<MemorySource>,
+    network: PeerNetwork,
+    address: PeerAddress,
+}
+
+// Node B: headers to the tip, then `scanned` full-block scans of its own.
+fn server(root: &Path, blocks: &[Block], scanned: usize) -> Server {
+    let directory = root.join("b");
+    fs::create_dir_all(&directory).unwrap();
+    let chain = Arc::new(MemorySource::new(blocks));
+    let config = config(&blocks[0], Retention::Unpruned);
+    let engine = Arc::new(Engine::open(&directory, config, Some(chain.clone())).unwrap());
+    engine.synchronize_headers().unwrap();
+    for _ in 0..scanned {
+        engine.scan_next().unwrap();
+    }
+    let key = Keypair::generate_ed25519();
+    let id = key.public().to_peer_id();
+    let listen = Some("/ip4/127.0.0.1/tcp/0".parse().unwrap());
+    let network = PeerNetwork::start(engine.clone(), key, listen).unwrap();
+    let address = PeerAddress::new(id, network.listen_address().unwrap()).unwrap();
+    Server {
+        engine,
+        chain,
+        network,
+        address,
+    }
+}
+
+impl Server {
+    // B follows a new branch with its own verifier and scans to the tip.
+    fn follow(&self, blocks: &[Block]) {
+        self.chain.replace_branch(blocks);
+        self.engine.synchronize_headers().unwrap();
+        while self.engine.status().unwrap().scanned_blocks < u64::try_from(blocks.len()).unwrap() {
+            self.engine.scan_next().unwrap();
+        }
+    }
+}
+
+struct Client {
+    directory: PathBuf,
+    config: ArchiveConfig,
+}
+
+impl Client {
+    // Same chain and application start as B; headers only, never a scan.
+    fn new(root: &Path, blocks: &[Block]) -> Self {
+        let directory = root.join("a");
+        fs::create_dir_all(&directory).unwrap();
+        let client = Self {
+            directory,
+            config: config(&blocks[0], Retention::Unpruned),
+        };
+        client.select(blocks);
+        client
+    }
+
+    fn select(&self, blocks: &[Block]) {
+        let source = Arc::new(MemorySource::new(blocks));
+        let engine = Engine::open(&self.directory, self.config.clone(), Some(source)).unwrap();
+        let status = engine.synchronize_headers().unwrap();
+        assert_eq!(height(&json!(status.selected_tip)), Some(tip(blocks)));
+    }
+
+    fn offline(&self) -> Arc<Engine> {
+        Arc::new(Engine::open(&self.directory, self.config.clone(), None).unwrap())
+    }
+
+    fn scan_all(&self, blocks: &[Block]) -> Engine {
+        let source = Arc::new(MemorySource::new(blocks));
+        let engine = Engine::open(&self.directory, self.config.clone(), Some(source)).unwrap();
+        while engine.scan_next().unwrap().scanned_blocks < u64::try_from(blocks.len()).unwrap() {}
+        engine
+    }
+}
+
+fn http_status(address: SocketAddr, path: &str) -> io::Result<Value> {
+    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
+    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
+    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
+    let request = format!(
+        "GET {path} HTTP/1.1\r\nHost: loopback\r\nConnection: close\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
+    );
+    stream.write_all(request.as_bytes())?;
+    let mut raw = Vec::new();
+    stream.take(4 * 1024 * 1024).read_to_end(&mut raw)?;
+    let split = raw
+        .windows(4)
+        .position(|window| window == b"\r\n\r\n")
+        .ok_or_else(|| io::Error::other("no header end"))?;
+    if !raw.starts_with(b"HTTP/1.1 200") {
+        return Err(io::Error::other(String::from_utf8_lossy(&raw).into_owned()));
+    }
+    serde_json::from_slice(&raw[split + 4..]).map_err(io::Error::other)
+}
+
+// The client network outlives the Service: PeerSource handles do not keep it
+// alive, so it is dropped only after the Service has joined.
+struct Running {
+    address: SocketAddr,
+    handle: urma_node::service::ShutdownHandle,
+    worker: Option<JoinHandle<Result<(), urma_node::Error>>>,
+    network: Option<PeerNetwork>,
+}
+
+impl Running {
+    // A's Service with its own client network and the given inventory peers.
+    fn start(engine: Arc<Engine>, peers: Vec<PeerAddress>) -> Self {
+        let network =
+            PeerNetwork::start(engine.clone(), Keypair::generate_ed25519(), None).unwrap();
+        let peers = peers
+            .into_iter()
+            .map(|address| (address.peer_id().to_string(), network.source(address)))
+            .collect();
+        let info = OverlayInfo {
+            peer_id: network.peer_id().to_string(),
+            listen: None,
+            peer_book: 0,
+            connected: Arc::new(|| 0),
+        };
+        let service = Service::bind("127.0.0.1:0".parse().unwrap(), TOKEN.into(), engine)
+            .unwrap()
+            .with_peer_sync(PeerSync { peers, info })
+            .unwrap();
+        let address = service.address().unwrap();
+        let handle = service.shutdown_handle();
+        let worker = Some(thread::spawn(move || service.run(true)));
+        Self {
+            address,
+            handle,
+            worker,
+            network: Some(network),
+        }
+    }
+
+    fn status(&self) -> Value {
+        http_status(self.address, "/v1/status").unwrap()
+    }
+
+    // Poll until the predicate holds, keeping every observed status.
+    fn until(&self, ready: impl Fn(&Value) -> bool) -> Vec<Value> {
+        let deadline = Instant::now() + SYNC_TIMEOUT;
+        let mut seen = Vec::new();
+        loop {
+            let status = self.status();
+            let done = ready(&status);
+            seen.push(status);
+            if done {
+                return seen;
+            }
+            assert!(Instant::now() < deadline, "sync bound: {:?}", seen.last());
+            thread::sleep(Duration::from_millis(200));
+        }
+    }
+
+    fn stop(mut self) {
+        self.join().unwrap();
+    }
+
+    // A step checks stop between requests; one in-flight peer call may still
+    // take its own 10 s bound before the worker returns.
+    fn join(&mut self) -> Result<(), String> {
+        self.handle.request();
+        let Some(worker) = self.worker.take() else {
+            return Ok(());
+        };
+        let deadline = Instant::now() + Duration::from_secs(15);
+        while !worker.is_finished() {
+            if Instant::now() >= deadline {
+                return Err("service join exceeded bound".into());
+            }
+            thread::sleep(Duration::from_millis(10));
+        }
+        let joined = match worker.join() {
+            Ok(Ok(())) => Ok(()),
+            other => Err(format!("service ended abnormally: {other:?}")),
+        };
+        if let Some(network) = self.network.take() {
+            network.shutdown().map_err(|error| error.to_string())?;
+        }
+        joined
+    }
+}
+
+impl Drop for Running {
+    fn drop(&mut self) {
+        if let Err(error) = self.join() {
+            eprintln!("{error}");
+        }
+    }
+}
+
+fn synced_through(status: &Value) -> Option<u64> {
+    height(&status["archive"]["peer_synced_through"])
+}
+
+fn assert_record(engine: &Engine, pair: &SignedPair) {
+    let record = engine.record(pair.reveal.compute_txid()).unwrap();
+    let record = record.unwrap_or_else(|| panic!("missing {}", pair.reveal.compute_txid()));
+    assert_eq!(record.package.commit, pair.raw_commit);
+    assert_eq!(record.package.reveal.transaction, pair.raw_reveal);
+}
+
+fn vectors() -> Vec<SignedPair> {
+    ["proof-post", "proof-reply", "proof-avatar-ega16-reference"]
+        .into_iter()
+        .map(SignedPair::load)
+        .chain([profile()])
+        .collect()
+}
+
+fn honest(root: &Path) -> Value {
+    let pairs = vectors();
+    let blocks = chain(&pairs, 4, 1);
+    let b = server(root, &blocks, 4);
+    assert_eq!(b.network.peer_id(), b.address.peer_id());
+    let b_status = serde_json::to_value(b.engine.status().unwrap()).unwrap();
+    let b_calls = b.chain.body_calls.load(Ordering::Relaxed);
+    let a = Client::new(root, &blocks);
+    stage(root, "A synchronizes from B through inventory pages");
+    let running = Running::start(a.offline(), vec![b.address.clone()]);
+    let seen = running.until(|s| synced_through(s) == Some(tip(&blocks)));
+    let last = seen.last().unwrap();
+    assert!(last["archive"]["indexed_through"].is_null());
+    assert_eq!(last["archive"]["scanned_blocks"], 0);
+    let peer = &last["overlay"]["peers"][0];
+    assert_eq!(height(&peer["synced_through"]), Some(tip(&blocks)));
+    assert!(peer["last_error"].is_null(), "{peer}");
+    running.stop();
+    let engine = a.offline();
+    for pair in &pairs {
+        assert_record(&engine, pair);
+    }
+    drop(engine);
+    // Serving inventory and packages is a read for B.
+    assert_eq!(
+        serde_json::to_value(b.engine.status().unwrap()).unwrap(),
+        b_status
+    );
+    assert_eq!(b.chain.body_calls.load(Ordering::Relaxed), b_calls);
+    // A's own later scan finds nothing the honest peer left out.
+    let scanned = a.scan_all(&blocks);
+    assert!(scanned.peer_omissions().unwrap().is_empty());
+    assert!(scanned.omitting_peers().unwrap().is_empty());
+    json!({"records":pairs.len(),"synced":true,"omissions":0})
+}
+
+fn omission(root: &Path) -> Value {
+    let pairs = vectors();
+    let mut blocks = chain(&pairs, 4, 1);
+    let b = server(root, &blocks, 4);
+    let hidden = pairs[1].reveal.compute_txid();
+    let liar = RawPeer::start(Some((b.address.clone(), hidden.to_string())));
+    let a = Client::new(root, &blocks);
+    stage(root, "A takes coverage from an omitting proxy");
+    let running = Running::start(a.offline(), vec![liar.address()]);
+    running.until(|s| synced_through(s) == Some(tip(&blocks)));
+    running.stop();
+    let engine = a.offline();
+    assert!(engine.record(hidden).unwrap().is_none());
+    drop(engine);
+    let scanned = a.scan_all(&blocks);
+    let liar_id = liar.address().peer_id().to_string();
+    let found = scanned.peer_omissions().unwrap();
+    assert_eq!(found.len(), 1, "{found:?}");
+    assert_eq!(
+        (found[0].peer.as_str(), found[0].txid),
+        (liar_id.as_str(), hidden)
+    );
+    assert_eq!(scanned.omitting_peers().unwrap(), vec![liar_id]);
+    let status = serde_json::to_value(scanned.status().unwrap()).unwrap();
+    assert_eq!(status["peer_omissions"], 1);
+    drop(scanned);
+    // The chain grows; only the honest peer is asked for the new height.
+    let extra = wire_post(9_000);
+    let next = witness_block(&extra.transactions(), blocks.last(), 77);
+    blocks.push(next);
+    b.follow(&blocks);
+    a.select(&blocks);
+    let asked = liar.asked();
+    let running = Running::start(a.offline(), vec![liar.address(), b.address.clone()]);
+    running.until(|s| synced_through(s) == Some(tip(&blocks)));
+    running.stop();
+    assert_eq!(liar.asked(), asked, "scheduler still asks an omitting peer");
+    assert_record(&a.offline(), &extra);
+    json!({"omission":hidden.to_string(),"liar_skipped":true})
+}
+
+fn paging(root: &Path) -> Value {
+    let pairs: Vec<SignedPair> = (0..70).map(wire_post).collect();
+    let blocks = chain(&pairs, 4, 1);
+    let b = server(root, &blocks, 4);
+    let a = Client::new(root, &blocks);
+    stage(root, "70 records over 4 blocks span several rounds");
+    let running = Running::start(a.offline(), vec![b.address.clone()]);
+    let seen = running.until(|s| synced_through(s) == Some(tip(&blocks)));
+    running.stop();
+    let mut previous = (None, None, 0);
+    let mut partial = false;
+    for status in &seen {
+        let peer = &status["overlay"]["peers"][0];
+        let sample = (
+            height(&peer["cursor"]),
+            synced_through(status),
+            status["archive"]["stored_transactions"].as_u64().unwrap(),
+        );
+        assert!(sample.0 >= previous.0 && sample.1 >= previous.1, "{seen:?}");
+        assert!(sample.2 >= previous.2, "stored transactions shrank");
+        partial |= sample.2 > 0 && sample.2 < 140;
+        previous = sample;
+    }
+    assert!(partial, "fetch budget did not span rounds");
+    let engine = a.offline();
+    for pair in &pairs {
+        assert_record(&engine, pair);
+    }
+    json!({"records":pairs.len(),"spanned_rounds":partial})
+}
+
+fn reorg(root: &Path) -> Value {
+    let pairs = vectors();
+    let blocks = chain(&pairs, 4, 1);
+    let b = server(root, &blocks, 4);
+    let a = Client::new(root, &blocks);
+    let running = Running::start(a.offline(), vec![b.address.clone()]);
+    running.until(|s| synced_through(s) == Some(tip(&blocks)));
+    running.stop();
+    // A new last block deselects the old one and its record.
+    stage(root, "reorg of the last block after coverage");
+    let fresh = wire_post(7_000);
+    let mut branch = blocks[..3].to_vec();
+    branch.push(witness_block(&fresh.transactions(), branch.last(), 500));
+    b.follow(&branch);
+    a.select(&branch);
+    let engine = a.offline();
+    let dropped = height(&serde_json::to_value(engine.peer_synced_through().unwrap()).unwrap());
+    assert_eq!(dropped, Some(tip(&branch) - 1));
+    let old = pairs[3].reveal.compute_txid();
+    assert!(
+        engine.record(old).unwrap().is_none(),
+        "orphan record selected"
+    );
+    drop(engine);
+    let running = Running::start(a.offline(), vec![b.address.clone()]);
+    running.until(|s| synced_through(s) == Some(tip(&branch)));
+    running.stop();
+    assert_record(&a.offline(), &fresh);
+    json!({"truncated_to":dropped,"resynced":true})
+}
+
+fn inventory(from_height: u64, to_height: u64, limit: u32) -> Kind {
+    Kind::Inventory {
+        from_height,
+        to_height,
+        after: None,
+        limit,
+    }
+}
+
+fn limits(root: &Path) -> Value {
+    let pairs = vectors();
+    let blocks = chain(&pairs, 4, 1);
+    let b = server(root, &blocks, 2);
+    let client = RawPeer::start(None);
+    let to = b.address.clone();
+    stage(root, "raw inventory requests against B");
+    // Span is to_height - from_height: exactly INVENTORY_SPAN is allowed.
+    let widest = inventory(FIRST_HEIGHT, FIRST_HEIGHT + INVENTORY_SPAN, 8);
+    let allowed = client.call(&to, VERSION, widest);
+    assert!(matches!(allowed, Reply::Inventory(_)), "{allowed:?}");
+    let wide = inventory(FIRST_HEIGHT, FIRST_HEIGHT + INVENTORY_SPAN + 1, 8);
+    let wide = client.call(&to, VERSION, wide);
+    assert!(matches!(wide, Reply::Refused), "{wide:?}");
+    let greedy = inventory(FIRST_HEIGHT, FIRST_HEIGHT + 1, INVENTORY_ENTRIES + 1);
+    let greedy = client.call(&to, VERSION, greedy);
+    assert!(matches!(greedy, Reply::Refused), "{greedy:?}");
+    let empty_limit = client.call(&to, VERSION, inventory(FIRST_HEIGHT, FIRST_HEIGHT, 0));
+    assert!(matches!(empty_limit, Reply::Refused), "{empty_limit:?}");
+    let old = client.call(&to, 2, inventory(FIRST_HEIGHT, FIRST_HEIGHT + 1, 8));
+    assert!(matches!(old, Reply::UnsupportedVersion), "{old:?}");
+    let upper = FIRST_HEIGHT + 2;
+    let Reply::Inventory(empty) = client.call(&to, VERSION, inventory(upper, upper + 1, 8)) else {
+        panic!("unscanned range refused");
+    };
+    assert!(empty.entries.is_empty());
+    assert_eq!(
+        height(&json!(empty.scanned_through)),
+        Some(FIRST_HEIGHT + 1)
+    );
+    let full = inventory(FIRST_HEIGHT, upper - 1, INVENTORY_ENTRIES);
+    let Reply::Inventory(page) = client.call(&to, VERSION, full) else {
+        panic!("scanned range refused");
+    };
+    // Record placements only, in (height, position) order.
+    let listed: Vec<Txid> = page.entries.iter().map(|entry| entry.txid).collect();
+    let expected: Vec<Txid> = pairs[..2].iter().map(|p| p.reveal.compute_txid()).collect();
+    assert_eq!(listed, expected);
+    let order: Vec<(u64, u32)> = page
+        .entries
+        .iter()
+        .map(|e| (e.height, e.position))
+        .collect();
+    assert!(order.windows(2).all(|pair| pair[0] < pair[1]), "{order:?}");
+    assert!(!page.more);
+    json!({"refused":3,"unscanned_empty":true,"listed":page.entries.len()})
+}
+
+#[test]
+#[ignore = "owned subprocess host, invoked only by the inventory cases"]
+fn peer_inventory_host() {
+    let root = PathBuf::from(std::env::var_os("PEER_INVENTORY_TEMP").expect("owned TEMP"));
+    let scenario = std::env::var("PEER_INVENTORY_SCENARIO").unwrap();
+    let checks = match scenario.as_str() {
+        "honest" => honest(&root),
+        "omission" => omission(&root),
+        "paging" => paging(&root),
+        "reorg" => reorg(&root),
+        "limits" => limits(&root),
+        _ => panic!("unknown owned scenario"),
+    };
+    let report = json!({"scenario":scenario,"checks":checks});
+    fs::write(
+        root.join("result.json"),
+        serde_json::to_vec(&report).unwrap(),
+    )
+    .unwrap();
+}
+
+struct OwnedChild {
+    child: Option<Child>,
+    directory: PathBuf,
+}
+
+impl OwnedChild {
+    fn logs(&self) -> String {
+        ["stage", "stdout.log", "stderr.log"]
+            .map(|name| {
+                let mut text = String::new();
+                if let Ok(file) = File::open(self.directory.join(name)) {
+                    let _ = file.take(64 * 1024).read_to_string(&mut text);
+                }
+                text
+            })
+            .join("\n")
+    }
+}
+
+impl Drop for OwnedChild {
+    fn drop(&mut self) {
+        let Some(mut child) = self.child.take() else {
+            return;
+        };
+        let _ = child.kill();
+        let deadline = Instant::now() + CLEANUP_TIMEOUT;
+        loop {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                other => {
+                    eprintln!("inventory host reap exceeded bound: {other:?}");
+                    return;
+                }
+            }
+        }
+    }
+}
+
+fn run(scenario: &str) -> Value {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path();
+    let child = Command::new(std::env::current_exe().unwrap())
+        .args(["--ignored", "--exact", "peer_inventory_host"])
+        .args(["--nocapture", "--test-threads=1"])
+        .env_clear()
+        .env("PEER_INVENTORY_TEMP", path)
+        .env("PEER_INVENTORY_SCENARIO", scenario)
+        .env("TMPDIR", path)
+        .stdin(Stdio::null())
+        .stdout(File::create(path.join("stdout.log")).unwrap())
+        .stderr(File::create(path.join("stderr.log")).unwrap())
+        .spawn()
+        .unwrap();
+    let mut owned = OwnedChild {
+        child: Some(child),
+        directory: path.to_owned(),
+    };
+    let deadline = Instant::now() + CASE_TIMEOUT;
+    loop {
+        if let Some(exit) = owned.child.as_mut().unwrap().try_wait().unwrap() {
+            owned.child.take();
+            assert!(exit.success(), "{scenario}: {exit}; {}", owned.logs());
+            let report: Value =
+                serde_json::from_slice(&fs::read(path.join("result.json")).unwrap()).unwrap();
+            assert_eq!(report["scenario"], scenario);
+            return report["checks"].clone();
+        }
+        assert!(
+            Instant::now() < deadline,
+            "{scenario} exceeded bound; kill is cleanup only; {}",
+            owned.logs()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
+}
+
+#[test]
+fn fresh_node_admits_every_record_from_inventory_before_its_own_scan() {
+    let checks = run("honest");
+    assert_eq!(checks["synced"], true);
+    assert_eq!(checks["omissions"], 0);
+}
+
+#[test]
+fn own_scan_detects_an_omitting_peer_and_the_scheduler_stops_asking_it() {
+    let checks = run("omission");
+    assert_eq!(checks["liar_skipped"], true);
+}
+
+#[test]
+fn inventory_beyond_one_round_budget_progresses_monotonically() {
+    let checks = run("paging");
+    assert_eq!(checks["records"], 70);
+    assert_eq!(checks["spanned_rounds"], true);
+}
+
+#[test]
+fn reorg_truncates_peer_coverage_and_resync_completes() {
+    let checks = run("reorg");
+    assert_eq!(checks["resynced"], true);
+}
+
+#[test]
+fn server_refuses_oversized_or_old_inventory_and_lists_only_scanned_blocks() {
+    let checks = run("limits");
+    assert_eq!(checks["refused"], 3);
+    assert_eq!(checks["listed"], 2);
+}

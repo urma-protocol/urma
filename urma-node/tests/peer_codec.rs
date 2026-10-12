@@ -1,4 +1,4 @@
-use bitcoin::{BlockHash, Txid, hashes::Hash};
+use bitcoin::{BlockHash, Txid, Wtxid, hashes::Hash};
 use libp2p::{
     StreamProtocol,
     futures::{
@@ -17,7 +17,8 @@ use urma_node::{
     model::{ChainPoint, RecordPackage},
     peer_codec::Codec,
     peer_protocol::{
-        Kind, PARENT_LIMIT, PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
+        INVENTORY_ENTRIES, INVENTORY_LIMIT, INVENTORY_SPAN, InventoryPage, Kind, PARENT_LIMIT,
+        PROTOCOL, Placement, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
     },
 };
 
@@ -38,6 +39,34 @@ fn parent_request() -> Request {
             txid: Txid::from_byte_array([2; 32]),
         },
         ..request()
+    }
+}
+fn inventory_request() -> Request {
+    let after = page(1).entries[0];
+    Request {
+        kind: Kind::Inventory {
+            from_height: 5,
+            to_height: 5 + INVENTORY_SPAN,
+            after: Some(after),
+            limit: INVENTORY_ENTRIES,
+        },
+        ..request()
+    }
+}
+// Maximal-width placement fields: every hash is a full 32-byte value.
+fn page(entries: u32) -> InventoryPage {
+    InventoryPage {
+        scanned_through: Some(u64::MAX),
+        entries: (0..entries)
+            .map(|position| Placement {
+                height: u64::MAX,
+                block_hash: BlockHash::from_byte_array([0xff; 32]),
+                position: u32::MAX - position,
+                txid: Txid::from_byte_array([0xee; 32]),
+                wtxid: Wtxid::from_byte_array([0xdd; 32]),
+            })
+            .collect(),
+        more: true,
     }
 }
 fn package() -> RecordPackage {
@@ -160,8 +189,13 @@ fn request_and_all_response_variants_round_trip_and_close_with_exact_prefix() {
     block_on(async {
         let protocol = StreamProtocol::new(PROTOCOL);
         let mut codec = Codec::default().clone();
-        for (value, kind) in [(request(), "record"), (parent_request(), "parent")] {
-            assert_eq!(serde_json::to_value(&value).unwrap()["kind"], kind);
+        for (value, kind) in [
+            (request(), "record"),
+            (parent_request(), "parent"),
+            (inventory_request(), "inventory"),
+        ] {
+            // Kind is internally tagged: {"kind":{"kind":"record","txid":…}}.
+            assert_eq!(serde_json::to_value(&value).unwrap()["kind"]["kind"], kind);
             let expected = serde_json::to_vec(&value).unwrap();
             let mut wire = Stream::new(vec![]);
             codec
@@ -189,6 +223,8 @@ fn request_and_all_response_variants_round_trip_and_close_with_exact_prefix() {
             Reply::UnsupportedVersion,
             Reply::Busy,
             Reply::TooLarge,
+            Reply::Refused,
+            Reply::Inventory(page(3)),
         ] {
             let value = response(result);
             let expected = serde_json::to_vec(&value).unwrap();
@@ -448,5 +484,52 @@ fn maximal_parent_hex_fits_the_response_frame_and_round_trips() {
         input.chunk = 64 * 1024;
         let decoded = Codec.read_response(&protocol, &mut input).await.unwrap();
         assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
+    });
+}
+
+// A full page of maximal placements fits INVENTORY_LIMIT; an inventory frame
+// above it is refused by the writer before I/O and by the reader after
+// framing, even though it is far below RESPONSE_LIMIT.
+#[test]
+fn inventory_frames_have_their_own_smaller_bound_on_both_sides() {
+    block_on(async {
+        let protocol = StreamProtocol::new(PROTOCOL);
+        let full = response(Reply::Inventory(page(INVENTORY_ENTRIES)));
+        let expected = serde_json::to_vec(&full).unwrap();
+        assert!(expected.len() <= INVENTORY_LIMIT, "{}", expected.len());
+        let mut wire = Stream::new(vec![]);
+        wire.chunk = 64 * 1024;
+        Codec
+            .write_response(&protocol, &mut wire, full)
+            .await
+            .unwrap();
+        let decoded = Codec
+            .read_response(&protocol, &mut Cursor::new(wire.output))
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
+        let oversized = response(Reply::Inventory(page(4 * INVENTORY_ENTRIES)));
+        let body = serde_json::to_vec(&oversized).unwrap();
+        assert!(body.len() > INVENTORY_LIMIT && body.len() < RESPONSE_LIMIT);
+        let mut wire = Stream::new(vec![]);
+        let error = Codec
+            .write_response(&protocol, &mut wire, oversized)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(wire.write_polls, 0);
+        let error = Codec
+            .read_response(&protocol, &mut Cursor::new(frame(&body)))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        // Whitespace padding past the bound is refused just the same.
+        let mut padded = serde_json::to_vec(&response(Reply::Inventory(page(1)))).unwrap();
+        padded.resize(INVENTORY_LIMIT + 1, b' ');
+        let error = Codec
+            .read_response(&protocol, &mut Cursor::new(frame(&padded)))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     });
 }
