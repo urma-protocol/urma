@@ -50,7 +50,7 @@ struct Range {
 
 struct Peer {
     label: String,
-    id: PeerId,
+    id: String,
     source: PeerSource,
     range: Mutex<Option<Range>>,
     last_request: Mutex<Option<Instant>>,
@@ -75,6 +75,7 @@ struct Round<'a> {
     deadline: Instant,
     fetched: usize,
     requested_page: bool,
+    generation: u64,
 }
 
 impl Round<'_> {
@@ -117,8 +118,8 @@ impl Scheduler {
         }
         let mut peers: Vec<Peer> = Vec::new();
         for (label, source) in sync.peers {
-            let id: PeerId = match label.parse() {
-                Ok(id) => id,
+            let id = match label.parse::<PeerId>() {
+                Ok(id) => id.to_string(),
                 Err(error) => {
                     return Err(Error::Invalid(format!("inventory peer label: {error}")));
                 }
@@ -157,6 +158,7 @@ impl Scheduler {
             deadline: Instant::now() + Self::ROUND_TIME,
             fetched: 0,
             requested_page: false,
+            generation: engine.status()?.generation,
         };
         let outcome = self.advance(peer, engine, &mut round);
         if stop.load(Ordering::Acquire) {
@@ -169,7 +171,7 @@ impl Scheduler {
         Ok(())
     }
 
-    fn next_peer(&self, omitting: &[PeerId]) -> Option<&Peer> {
+    fn next_peer(&self, omitting: &[String]) -> Option<&Peer> {
         let count = self.peers.len();
         (0..count)
             .map(|_| &self.peers[self.turn.fetch_add(1, Ordering::Relaxed) % count])
@@ -183,6 +185,11 @@ impl Scheduler {
         }
         match self.walk(peer, engine, &mut slot, round) {
             Ok(()) | Err(Pause::Done) => Ok(()),
+            Err(Pause::Error(Error::Stale)) => {
+                tracing::debug!(peer = %peer.label, "selected view changed; range restarts next round");
+                *slot = None;
+                Ok(())
+            }
             Err(Pause::Error(Error::Busy(message))) => {
                 tracing::debug!(peer = %peer.label, %message, "inventory peer busy; retry next round");
                 Ok(())
@@ -233,7 +240,7 @@ impl Scheduler {
                 }
             } else {
                 let through = range.to.min(range.scanned_through);
-                engine.record_peer_coverage(&peer.id, range.from, through)?;
+                engine.record_peer_coverage(&peer.id, range.from, through, round.generation)?;
                 *slot = None;
             }
         }
