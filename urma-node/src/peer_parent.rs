@@ -1,6 +1,11 @@
 //! Raw commit parents from configured URMA peers over the overlay.
-use crate::{Error, peer::PeerSource, source::CommitSource};
+use crate::{
+    Error,
+    peer::PeerSource,
+    source::{CommitSource, check_cancelled},
+};
 use bitcoin::{Transaction, Txid, consensus};
+use std::sync::atomic::AtomicBool;
 use urma_chain::observation::Chain;
 
 /// A metadata-bound parent reply. Hex length is checked, bytes are not yet.
@@ -30,7 +35,8 @@ impl CommitSource for OverlayCommitSource {
 
     /// Busy is no answer. Zero answers plus any peer or transport error is an
     /// error; otherwise absence. The first exact parent wins.
-    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+    fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
+        check_cancelled(cancelled)?;
         let mut answered = false;
         let mut failure = None;
         for peer in &self.peers {

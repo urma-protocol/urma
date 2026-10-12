@@ -12,7 +12,10 @@ use std::{
     io::{self, Read, Write},
     net::{SocketAddr, TcpStream},
     path::Path,
-    sync::{Arc, Mutex, atomic::Ordering},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
@@ -59,7 +62,7 @@ impl CommitSource for Recording {
     fn chain(&self) -> Chain {
         self.chain
     }
-    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+    fn fetch(&self, txid: Txid, _cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
         let mut requests = self.requests.lock().unwrap();
         requests.push(txid);
         if requests.len() <= self.failures {

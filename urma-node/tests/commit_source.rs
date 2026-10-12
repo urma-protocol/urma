@@ -40,7 +40,7 @@ impl<F: Fn(Txid) -> Result<Option<Vec<u8>>, Error>> CommitSource for Source<F> {
     fn chain(&self) -> Chain {
         self.chain
     }
-    fn fetch(&self, id: Txid) -> Result<Option<Vec<u8>>, Error> {
+    fn fetch(&self, id: Txid, _cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
         (self.fetch)(id)
     }
 }
@@ -568,7 +568,10 @@ fn shared_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_impli
             chain.genesis().unwrap().0
         );
         assert_eq!(queries.lock().unwrap().len(), 1, "wrapper/chain did I/O");
-        assert_eq!(adapter.fetch(id).unwrap(), Some(raw));
+        assert_eq!(
+            adapter.fetch(id, &AtomicBool::new(false)).unwrap(),
+            Some(raw)
+        );
         assert_eq!(
             queries.lock().unwrap().as_slice(),
             &[
@@ -605,7 +608,12 @@ fn shared_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_impli
     let adapter = RuntimeCommitSource {
         node: Arc::new(node),
     };
-    assert!(adapter.fetch(pair.commit.compute_txid()).unwrap().is_none());
+    assert!(
+        adapter
+            .fetch(pair.commit.compute_txid(), &AtomicBool::new(false))
+            .unwrap()
+            .is_none()
+    );
     assert_eq!(queries.lock().unwrap().len(), 2);
     // Router may reject malformed/oversized values before the adapter sees
     // them. This checks no broad absence conversion, not transport preallocation
@@ -623,7 +631,9 @@ fn shared_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_impli
         let adapter = RuntimeCommitSource {
             node: Arc::new(node),
         };
-        let error = adapter.fetch(pair.commit.compute_txid()).unwrap_err();
+        let error = adapter
+            .fetch(pair.commit.compute_txid(), &AtomicBool::new(false))
+            .unwrap_err();
         assert!(
             matches!(error, Error::CommitSource(_) | Error::Invalid(_)),
             "{error}"

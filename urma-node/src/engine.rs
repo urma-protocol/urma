@@ -473,7 +473,7 @@ impl Engine {
             return Ok(0);
         };
         *cursor = Some(requested);
-        let fetched = source.fetch(requested);
+        let fetched = source.fetch(requested, cancelled);
         check_dependency_cancelled(cancelled)?;
         {
             let archive = self.archive()?;

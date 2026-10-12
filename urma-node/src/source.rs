@@ -3,9 +3,13 @@ use bitcoin::{BlockHash, Txid, block::Header};
 use std::{
     net::SocketAddr,
     path::{Path, PathBuf},
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
 };
-use urma_chain::observation::Chain;
+use urma_chain::{decode, observation::Chain};
 use urma_runtime::{
     node::Node,
     p2p::{Anchor, HeaderBootstrap, P2pProvider},
@@ -28,7 +32,27 @@ pub trait ChainSource: Send + Sync {
 /// Engine cancellation is cooperative and cannot interrupt a running fetch.
 pub trait CommitSource {
     fn chain(&self) -> Chain;
-    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error>;
+    fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error>;
+}
+
+pub(crate) fn check_cancelled(cancelled: &AtomicBool) -> Result<(), Error> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(Error::Busy("dependency acquisition cancelled".into()));
+    }
+    Ok(())
+}
+
+/// Decode with the Engine's chain decoder, so Litecoin MWEB/HogEx encodings
+/// are accepted, and require the computed TXID to equal the requested one.
+pub fn verify_parent(chain: Chain, txid: Txid, raw: &[u8]) -> Result<(), Error> {
+    let transaction = decode::transaction(raw, chain)
+        .map_err(|error| Error::Invalid(format!("commit parent bytes do not decode: {error}")))?;
+    if transaction.compute_txid() != txid {
+        return Err(Error::Invalid(
+            "commit parent bytes do not match the requested TXID".into(),
+        ));
+    }
+    Ok(())
 }
 
 /// Share an explicitly configured, owner-provided runtime Node. Constructing
@@ -51,7 +75,8 @@ impl CommitSource for RuntimeCommitSource {
     /// error with code -5 (no such mempool/blockchain transaction, including
     /// lookups a node without -txindex cannot answer), per is_missing_transaction.
     /// Other runtime errors become CommitSource without text matching.
-    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+    fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
+        check_cancelled(cancelled)?;
         fetch_from_node(&self.node, txid)
     }
 }
@@ -79,37 +104,59 @@ fn fetch_from_node(node: &Node, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
 }
 
 /// Default public providers for one chain, without a light client. Creating
-/// it does no I/O; the first fetch builds the Node and a failed build is
-/// retried on the next fetch. Returned bytes are checked by the Engine.
+/// it does no I/O; the first fetch builds the Node. A failed build is not
+/// rebuilt for RETRY and its error is returned meanwhile. Untrusted bytes.
 pub struct PublicCommitSource {
     chain: Chain,
     cache_dir: PathBuf,
-    node: Mutex<Option<Arc<Node>>>,
+    state: Mutex<PublicState>,
+}
+
+struct PublicState {
+    node: Option<Arc<Node>>,
+    failure: Option<(Instant, String)>,
 }
 
 impl PublicCommitSource {
+    const RETRY: Duration = Duration::from_secs(60);
+
     pub fn new(chain: Chain, cache_dir: PathBuf) -> Self {
         Self {
             chain,
             cache_dir,
-            node: Mutex::new(None),
+            state: Mutex::new(PublicState {
+                node: None,
+                failure: None,
+            }),
         }
     }
 
     fn node(&self) -> Result<Arc<Node>, Error> {
-        let mut slot = self
-            .node
+        let mut state = self
+            .state
             .lock()
             .map_err(|_| Error::Invalid("public commit source poisoned".into()))?;
-        for node in slot.iter() {
+        if let Some(node) = state.node.as_ref() {
             return Ok(Arc::clone(node));
         }
-        let node = Arc::new(
-            Node::public_pinned(self.chain, &self.cache_dir)
-                .map_err(|error| Error::CommitSource(error.to_string()))?,
-        );
-        *slot = Some(Arc::clone(&node));
-        Ok(node)
+        if let Some((failed, message)) = state.failure.as_ref() {
+            if failed.elapsed() < Self::RETRY {
+                return Err(Error::CommitSource(message.clone()));
+            }
+        }
+        match Node::public_pinned(self.chain, &self.cache_dir) {
+            Ok(node) => {
+                let node = Arc::new(node);
+                state.node = Some(Arc::clone(&node));
+                state.failure = None;
+                Ok(node)
+            }
+            Err(error) => {
+                let message = error.to_string();
+                state.failure = Some((Instant::now(), message.clone()));
+                Err(Error::CommitSource(message))
+            }
+        }
     }
 }
 
@@ -118,7 +165,8 @@ impl CommitSource for PublicCommitSource {
         self.chain
     }
 
-    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+    fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
+        check_cancelled(cancelled)?;
         let node = self.node()?;
         fetch_from_node(&node, txid)
     }
@@ -173,6 +221,14 @@ impl CommitSources {
         Ok(errors)
     }
 
+    fn verified(&self, txid: Txid, raw: Option<Vec<u8>>) -> Result<Option<Vec<u8>>, Error> {
+        let Some(raw) = raw else {
+            return Ok(None);
+        };
+        verify_parent(self.chain, txid, &raw)?;
+        Ok(Some(raw))
+    }
+
     fn record(&self, index: usize, error: Option<String>) -> Result<(), Error> {
         let mut errors = self.errors()?;
         let slot = errors
@@ -188,16 +244,22 @@ impl CommitSource for CommitSources {
         self.chain
     }
 
-    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+    fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
         let mut last = None;
         let mut failures = 0;
         for (index, entry) in self.entries.iter().enumerate() {
-            match entry.1.fetch(txid) {
+            check_cancelled(cancelled)?;
+            let fetched = entry
+                .1
+                .fetch(txid, cancelled)
+                .and_then(|raw| self.verified(txid, raw));
+            match fetched {
                 Ok(Some(raw)) => {
                     self.record(index, None)?;
                     return Ok(Some(raw));
                 }
                 Ok(None) => self.record(index, None)?,
+                Err(error) if cancelled.load(Ordering::Acquire) => return Err(error),
                 Err(error) => {
                     self.record(index, Some(error.to_string()))?;
                     failures += 1;

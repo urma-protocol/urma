@@ -373,7 +373,10 @@ unresolved.
 
 `CommitSources` tries labelled sources in order until one returns bytes; a
 miss or error moves to the next source, and the set reports an error only when
-every source failed. Each source keeps its own last error. Embedded `Service`
+every source failed. Returned bytes must decode for the chain and hash to the
+requested TXID before the set accepts them; a mismatch counts as that source's
+error. Each source keeps its own last error. A cancellation request is checked
+before each source and returned without being recorded. Embedded `Service`
 owners call `with_commit_sources(sources)`; an empty set or a source for
 another chain is refused at configuration.
 
@@ -393,8 +396,8 @@ the daemon assembles, in this order:
    behalf of others.
 3. `public`, unless `--no-commit-public`: the chain's default public providers
    (a chain without defaults, such as regtest, gets no entry), with TLS pins under `DATA/providers` (mode 0700) and no light client. The
-   providers are first contacted lazily on the first missing parent and a
-   failed connection is retried on the next one, so an offline start succeeds.
+   providers are first contacted lazily on the first missing parent, so an
+   offline start succeeds; a failed connection is not retried for 60 seconds.
 
 Under `--p2p` the daemon therefore sends missing-parent TXIDs to URMA peers
 and, unless `--no-commit-public`, to the chain's default public providers;

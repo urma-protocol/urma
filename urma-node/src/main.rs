@@ -2,7 +2,6 @@ use clap::{Parser, Subcommand};
 use libp2p::{Multiaddr, multiaddr::Protocol};
 use std::{
     net::{IpAddr, SocketAddr},
-    os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     sync::Arc,
 };
@@ -316,7 +315,11 @@ fn attach_commit_sources(
 
 fn private_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
     let mut builder = std::fs::DirBuilder::new();
-    builder.mode(0o700);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        builder.mode(0o700);
+    }
     match builder.create(path) {
         Ok(()) => Ok(()),
         Err(error)
