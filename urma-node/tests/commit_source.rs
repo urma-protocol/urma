@@ -536,7 +536,7 @@ fn owner_node(chain: Chain, reply: Result<serde_json::Value, RuntimeError>) -> (
 }
 
 #[test]
-fn borrowed_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_implicit_work() {
+fn shared_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_implicit_work() {
     let pair = profile();
     let raw_block = common::vector("litecoin-mweb/block-4892705.bin");
     let hash = "2b70f30e5c2a5e9e8510cc6a9c86339b2f7ffe618a32bc40902fd4cb842fd459"

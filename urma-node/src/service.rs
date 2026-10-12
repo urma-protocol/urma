@@ -252,6 +252,46 @@ impl Service {
         }
     }
 
+    fn status_json(&self) -> Result<serde_json::Value, Error> {
+        let status = self.engine.status()?;
+        let error = self
+            .sync_error
+            .lock()
+            .map_err(|_| Error::Invalid("sync status poisoned".into()))?
+            .clone();
+        let retention_error = self
+            .retention_error
+            .lock()
+            .map_err(|_| Error::Invalid("retention status poisoned".into()))?
+            .clone();
+        let names_error = self
+            .names_error
+            .lock()
+            .map_err(|_| Error::Invalid("Names status poisoned".into()))?
+            .clone();
+        let cache_status = self
+            .cache_status
+            .lock()
+            .map_err(|_| Error::Invalid("cache status poisoned".into()))?
+            .clone();
+        let dependency_error = self
+            .dependency_error
+            .lock()
+            .map_err(|_| Error::Invalid("dependency status poisoned".into()))?
+            .clone();
+        let commit_source = self.commit_source.as_ref().map(|configured| &configured.0);
+        Ok(
+            json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
+                "last_names_error":names_error,
+                "commit_source":commit_source,"last_dependency_error":dependency_error,
+                "cache_limit_bytes":self.cache_bytes,"last_cache_error":cache_status.error,
+                "last_cache_maintenance":cache_status.receipt,
+                "retention_configured":self.retention.is_some(),
+                "record_sources_configured":self.sources.len(),
+                "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune","wire-index","names-index"]}),
+        )
+    }
+
     fn accept_loop(&self) -> Result<(), Error> {
         while !self.stop.load(Ordering::Acquire) {
             match self.listener.accept() {
@@ -458,49 +498,7 @@ impl Service {
                     ),
                 }
             }
-            "GET /v1/status HTTP/1.1" => {
-                let status = self.engine.status()?;
-                let error = self
-                    .sync_error
-                    .lock()
-                    .map_err(|_| Error::Invalid("sync status poisoned".into()))?
-                    .clone();
-                let retention_error = self
-                    .retention_error
-                    .lock()
-                    .map_err(|_| Error::Invalid("retention status poisoned".into()))?
-                    .clone();
-                let names_error = self
-                    .names_error
-                    .lock()
-                    .map_err(|_| Error::Invalid("Names status poisoned".into()))?
-                    .clone();
-                let cache_status = self
-                    .cache_status
-                    .lock()
-                    .map_err(|_| Error::Invalid("cache status poisoned".into()))?
-                    .clone();
-                let dependency_error = self
-                    .dependency_error
-                    .lock()
-                    .map_err(|poisoned| {
-                        Error::Invalid(format!("dependency status poisoned: {poisoned}"))
-                    })?
-                    .clone();
-                let commit_source = self.commit_source.as_ref().map(|configured| &configured.0);
-                respond(
-                    stream,
-                    200,
-                    json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
-                        "last_names_error":names_error,
-                        "commit_source":commit_source,"last_dependency_error":dependency_error,
-                        "cache_limit_bytes":self.cache_bytes,"last_cache_error":cache_status.error,
-                        "last_cache_maintenance":cache_status.receipt,
-                        "retention_configured":self.retention.is_some(),
-                        "record_sources_configured":self.sources.len(),
-                        "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune","wire-index","names-index"]}),
-                )
-            }
+            "GET /v1/status HTTP/1.1" => respond(stream, 200, self.status_json()?),
             "POST /v1/shutdown HTTP/1.1" => {
                 respond(stream, 200, json!({"stopping":true}))?;
                 self.stop.store(true, Ordering::Release);

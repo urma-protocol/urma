@@ -48,6 +48,7 @@ enum Command {
         /// Loopback cookie RPC for missing commit parents; no default endpoint.
         #[arg(long, requires_all = ["p2p", "commit_rpc_cookie"])]
         commit_rpc_url: Option<String>,
+        /// RPC cookie file authenticating --commit-rpc-url; no other RPC auth.
         #[arg(long, requires_all = ["p2p", "commit_rpc_url"])]
         commit_rpc_cookie: Option<PathBuf>,
         /// Opt into the URMA overlay using an explicitly created transport key.
@@ -112,14 +113,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         };
         engine = engine.with_source(Arc::new(source))?;
     }
-    let commit_source = match &args.command {
-        Command::Serve {
-            commit_rpc_url: Some(rpc_url),
-            commit_rpc_cookie: Some(cookie_file),
-            ..
-        } => Some(connect_commit_source(chain, rpc_url, cookie_file)?),
-        _ => None,
-    };
+    let commit_source = connect_commit_source(&args.command, chain)?;
     let engine = Arc::new(engine);
     match args.command {
         Command::Status => println!("{}", serde_json::to_string_pretty(&engine.status()?)?),
@@ -139,10 +133,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let retain =
                 synchronize && engine.status()?.retention == urma_node::model::Retention::Unpruned;
             let mut service =
-                Service::bind(listen, token, engine.clone())?.with_cache_limit(cache_bytes)?;
-            if let Some(source) = commit_source {
-                service = service.with_commit_source(Box::new(source), "local-rpc".into())?;
-            }
+                bind_service(listen, token, engine.clone(), cache_bytes, commit_source)?;
             // Only the standalone binary owns process signals. The callback
             // requests the same cooperative stop as authenticated HTTP shutdown;
             // worker and overlay joins still happen on this foreground path.
@@ -239,18 +230,39 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn connect_commit_source(
+    command: &Command,
     chain: Chain,
-    rpc_url: &str,
-    cookie_file: &std::path::Path,
-) -> Result<RuntimeCommitSource, Box<dyn std::error::Error>> {
+) -> Result<Option<RuntimeCommitSource>, Box<dyn std::error::Error>> {
+    let Command::Serve {
+        commit_rpc_url: Some(rpc_url),
+        commit_rpc_cookie: Some(cookie_file),
+        ..
+    } = command
+    else {
+        return Ok(None);
+    };
     let node = Node::connect(NodeConfig {
         chain,
-        rpc_url: rpc_url.to_owned(),
-        cookie_file: cookie_file.to_owned(),
+        rpc_url: rpc_url.clone(),
+        cookie_file: cookie_file.clone(),
     })?;
-    Ok(RuntimeCommitSource {
+    Ok(Some(RuntimeCommitSource {
         node: Arc::new(node),
-    })
+    }))
+}
+
+fn bind_service(
+    listen: SocketAddr,
+    token: String,
+    engine: Arc<Engine>,
+    cache_bytes: u64,
+    commit_source: Option<RuntimeCommitSource>,
+) -> Result<Service, Box<dyn std::error::Error>> {
+    let service = Service::bind(listen, token, engine)?.with_cache_limit(cache_bytes)?;
+    let Some(source) = commit_source else {
+        return Ok(service);
+    };
+    Ok(service.with_commit_source(Box::new(source), "local-rpc".into())?)
 }
 
 fn create_peer_key(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {

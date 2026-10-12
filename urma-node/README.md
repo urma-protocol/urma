@@ -94,8 +94,9 @@ source calls and SQL commits are not forcibly interrupted. Failed acquisitions
 remain incomplete and the local status reports the last retention error.
 Pruned mode does not automatically download complete objects.
 
-Distributed peer discovery, remaining application adapters and automated Linux service installation are
-not yet delivered. The soft multipart cache target is described below.
+Distributed peer discovery, remaining application adapters and automated Linux
+service installation are not yet delivered. The soft multipart cache target is
+described below.
 This development stage targets Linux for implementation and testing. Windows
 I/O/ACL porting, an installer and Windows Service integration are deferred and
 are not acceptance requirements for this stage. This is not a release candidate.
@@ -372,8 +373,10 @@ a selected commit placement.
 Embedded `Service` owners can call `with_commit_source(source, label)`; a source
 for another chain is refused at configuration. The standalone daemon enables one
 only with `serve --p2p --commit-rpc-url URL --commit-rpc-cookie PATH` (both
-required together). The URL must be a loopback HTTP origin using cookie
-authentication; there is no default endpoint, public provider or fallback. The
+required together). `Node::connect` requires an `http` URL whose host is a
+loopback IP literal (`localhost` is refused), path exactly `/`, no userinfo,
+query or fragment, and authenticates with the cookie file only. There is no
+default endpoint, public provider or fallback. The
 Node connects at startup, after archive ownership and before the control API
 listens; a connection failure exits nonzero. Each `run(true)` round, after
 scan/cached-dependency work and before Names, calls `resolve_next_dependency`
