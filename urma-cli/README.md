@@ -61,8 +61,8 @@ The token must be a regular private file, at most 256 bytes, containing a
 64-hex bearer after trimming whitespace. No daemon, token or registry is created.
 An explicit `--network` and `--registry GENESIS_TXID` bind the read; `--index`
 alone continues to read the local index. Chain RPC and wallet settings remain
-independent. Scan, gateway, review, approval and publication retain their existing
-paths.
+independent. Scan, review, approval and publication retain their existing paths.
+Gateway source selection and freshness are described below.
 
 The reader gathers one consistent projection before producing the existing JSON
 shape. It retains all pending entries, including completed ones, and their
@@ -72,8 +72,8 @@ history. A genesis-only service view reports its actual genesis block hash (the
 legacy empty-checkpoint index reports an empty string). Results are trusted local
 operator data, not independently verified state proofs.
 
-Any unavailable, stale, malformed or wrong-chain service view is discarded and
-falls back only to loading the existing local index, with network and requested
+For these two CLI read commands, any unavailable, stale, malformed or wrong-chain
+service view is discarded and falls back only to loading the existing local index, with network and requested
 registry checks. It never triggers a fallback scan or retries a traversal. Local
 index files are not rewritten. Traversal limits are 100,000 rows, 1,024 pages,
 64 MiB of canonical reserialized typed pages, and a cooperative 30-second budget;
