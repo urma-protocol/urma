@@ -4,6 +4,8 @@
 use crate::config::ArchiveSettings;
 use bitcoin::{Transaction, Txid, consensus::serialize};
 use std::{
+    fs::Permissions,
+    os::unix::fs::PermissionsExt,
     path::Path,
     time::{Duration, Instant},
 };
@@ -59,6 +61,7 @@ impl Reader {
         let client = Client::new(settings.endpoint, token.to_owned()).map_err(|_| refused())?;
         let directory = tempfile::Builder::new()
             .prefix(".urma-archive-")
+            .permissions(Permissions::from_mode(0o700))
             .tempdir_in(parent)?;
         urma_io::create_private_directory(&directory.path().join("tx"))?;
         Ok(Self {
