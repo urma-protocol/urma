@@ -8,7 +8,10 @@
 use crate::{
     Error,
     model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt},
-    names::{NamesResolution, NamesStatus, NamesStep},
+    names::{
+        MAX_NAMES_PAGE, MAX_NAMES_PAGE_BYTES, MAX_NAMES_STATE_BYTES, NamesCursor, NamesEntry,
+        NamesPage, NamesResolution, NamesStatus, NamesStep,
+    },
     projection::{MAX_WIRE_PAGE, WireCursor, WirePage},
 };
 use bitcoin::Txid;
@@ -290,6 +293,49 @@ impl Client {
         Ok(resolution)
     }
 
+    /// Read one Names view page supplied by the configured local operator.
+    /// State decoding and page consistency checks are not independent chain or
+    /// registry evidence. The consumer must check its expected chain genesis and
+    /// identical metadata across pages. No paging, stepping or retry is automatic.
+    /// HTTP 409 is Busy: discard the partial traversal and explicitly restart.
+    /// `next == None` ends this local snapshot only, not a chain completeness claim.
+    pub fn names_view(
+        &self,
+        genesis: Txid,
+        cursor: Option<&NamesCursor>,
+        limit: u32,
+    ) -> Result<NamesPage, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        if !(1..=MAX_NAMES_PAGE).contains(&limit) {
+            return Err(invalid("local Names view limit must be 1..128"));
+        }
+        let mut path = format!("/v1/names/{genesis}/view?limit={limit}");
+        if let Some(cursor) = cursor {
+            if cursor.genesis != genesis {
+                return Err(invalid("local Names cursor genesis differs from request"));
+            }
+            validate_names_instance(&cursor.snapshot.instance)?;
+            let encoded = serde_json::to_vec(cursor)?;
+            if encoded.len() > 512 {
+                return Err(invalid("local Names cursor exceeds 1024 hex characters"));
+            }
+            path.push_str("&cursor=");
+            path.push_str(&hex::encode(encoded));
+        }
+        let (code, body) = self.names_request("GET", &path, deadline)?;
+        if code != 200 {
+            return Err(invalid(format!("local Names view HTTP {code}")));
+        }
+        if body.len() > MAX_NAMES_PAGE_BYTES {
+            return Err(invalid("local Names page exceeds 16 MiB"));
+        }
+        let page: NamesPage = serde_json::from_slice(&body)?;
+        remaining(deadline)?;
+        validate_names_page(&page, genesis, cursor, limit, deadline)?;
+        remaining(deadline)?;
+        Ok(page)
+    }
+
     fn names_request(
         &self,
         method: &str,
@@ -384,6 +430,120 @@ fn validate_names_status(status: &NamesStatus, genesis: Txid) -> Result<(), Erro
             "local Names completion differs from projection and tip",
         ));
     }
+    Ok(())
+}
+
+fn validate_names_instance(instance: &str) -> Result<(), Error> {
+    if instance.len() != 32 || !instance.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid(
+            "local Names snapshot instance must be 32 hex characters",
+        ));
+    }
+    Ok(())
+}
+
+// Count serialized bytes with a bounded writer, without creating another large
+// JSON buffer. An over-limit value fails as a whole and is never truncated.
+fn names_json_bound(value: &impl serde::Serialize, max: usize, message: &str) -> Result<(), Error> {
+    struct Counter {
+        count: usize,
+        max: usize,
+        exceeded: bool,
+    }
+    impl Write for Counter {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if bytes.len() > self.max - self.count {
+                self.exceeded = true;
+                return Err(io::Error::other("serialized Names byte bound"));
+            }
+            self.count += bytes.len();
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut counter = Counter {
+        count: 0,
+        max,
+        exceeded: false,
+    };
+    serde_json::to_writer(&mut counter, value).map_err(|error| {
+        if counter.exceeded {
+            invalid(message)
+        } else {
+            Error::Json(error)
+        }
+    })
+}
+
+fn validate_names_page(
+    page: &NamesPage,
+    genesis: Txid,
+    cursor: Option<&NamesCursor>,
+    limit: u32,
+    deadline: Instant,
+) -> Result<(), Error> {
+    validate_names_instance(&page.snapshot.instance)?;
+    validate_names_status(&page.status, genesis)?;
+    if page.entries.len() > limit as usize {
+        return Err(invalid(
+            "local Names page entry count exceeds requested limit",
+        ));
+    }
+    if cursor.is_some_and(|cursor| cursor.snapshot != page.snapshot) {
+        return Err(invalid("local Names page snapshot differs from cursor"));
+    }
+    names_json_bound(
+        &page.rules,
+        MAX_NAMES_STATE_BYTES,
+        "local Names rules exceed 64 KiB",
+    )?;
+    remaining(deadline)?;
+    page.rules
+        .validate()
+        .map_err(|_| invalid("local Names rules are invalid"))?;
+    let mut previous = cursor.map(|cursor| cursor.after.order_key());
+    for entry in &page.entries {
+        remaining(deadline)?;
+        let key = entry.key().order_key();
+        if previous.as_ref().is_some_and(|previous| &key <= previous) {
+            return Err(invalid(
+                "local Names keys are not strictly after cursor/in order",
+            ));
+        }
+        match entry {
+            NamesEntry::Name { state, .. } => names_json_bound(
+                state,
+                MAX_NAMES_STATE_BYTES,
+                "local Names state exceeds 64 KiB",
+            )?,
+            NamesEntry::Pending { record, .. } => names_json_bound(
+                record,
+                MAX_NAMES_STATE_BYTES,
+                "local Names pending state exceeds 64 KiB",
+            )?,
+        }
+        previous = Some(key);
+    }
+    if let Some(next) = &page.next {
+        let last = page
+            .entries
+            .last()
+            .ok_or_else(|| invalid("empty local Names page has a continuation"))?;
+        if next.genesis != genesis || next.snapshot != page.snapshot || next.after != last.key() {
+            return Err(invalid(
+                "local Names continuation differs from last key/genesis/snapshot",
+            ));
+        }
+    }
+    remaining(deadline)?;
+    names_json_bound(
+        page,
+        MAX_NAMES_PAGE_BYTES,
+        "local Names page exceeds 16 MiB",
+    )?;
+    remaining(deadline)?;
     Ok(())
 }
 

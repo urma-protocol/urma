@@ -12,7 +12,7 @@
 use crate::{
     Error,
     model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt},
-    names::{NamesResolution, NamesStatus, NamesStep},
+    names::{NamesCursor, NamesPage, NamesResolution, NamesStatus, NamesStep},
     projection::{WireCursor, WirePage},
 };
 use bitcoin::Txid;
@@ -110,6 +110,21 @@ impl Client {
     /// ownership evidence or permanent state. No stepping/retry; 409 remains Busy.
     pub fn names_resolve(&self, genesis: Txid, name: &Name) -> Result<NamesResolution, Error> {
         self.inner.names_resolve(genesis, name).map_err(Error::from)
+    }
+
+    /// Read one local operator Names page, not independent chain/registry evidence.
+    /// The consumer checks its expected chain and metadata consistency across pages.
+    /// No automatic paging, stepping or retry; 409 remains Busy and ends traversal.
+    /// Absent continuation ends only the local snapshot, not chain completeness.
+    pub fn names_view(
+        &self,
+        genesis: Txid,
+        cursor: Option<&NamesCursor>,
+        limit: u32,
+    ) -> Result<NamesPage, Error> {
+        self.inner
+            .names_view(genesis, cursor, limit)
+            .map_err(Error::from)
     }
 }
 
