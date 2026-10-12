@@ -102,8 +102,10 @@ I/O/ACL porting, an installer and Windows Service integration are deferred and
 are not acceptance requirements for this stage. This is not a release candidate.
 
 The standalone foreground process handles Linux SIGINT, SIGTERM and SIGHUP as
-cooperative stop requests, like authenticated HTTP shutdown. It waits for the
-Service worker and URMA overlay threads before returning. A signal or HTTP 200
+cooperative stop requests, like authenticated HTTP shutdown. Inherited ignored
+dispositions (for example SIGHUP under `nohup`) are replaced, so these three
+signals always request cooperative shutdown. It waits for the Service worker
+and URMA overlay threads before returning. A signal or HTTP 200
 acknowledges a request, not completion: wait for process exit before reopening
 the archive. Entered source I/O, HTTP handling and SQL are not forcibly interrupted.
 Supervisor stop timeouts may still terminate the process; that is not a graceful

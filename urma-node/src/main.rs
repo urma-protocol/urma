@@ -137,8 +137,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             // Only the standalone binary owns process signals. The callback
             // requests the same cooperative stop as authenticated HTTP shutdown;
             // worker and overlay joins still happen on this foreground path.
+            // Inherited dispositions (e.g. SIGHUP ignored under nohup) are
+            // replaced, so all three signals always request this stop.
             let shutdown = service.shutdown_handle();
-            ctrlc::try_set_handler(move || shutdown.request())?;
+            ctrlc::set_handler(move || shutdown.request())?;
             if retain {
                 let scratch = args.data.join("scratch");
                 let mut builder = std::fs::DirBuilder::new();
