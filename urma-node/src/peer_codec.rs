@@ -126,6 +126,8 @@ impl libp2p::request_response::Codec for Codec {
         protocol(negotiated)?;
         Ok(read(io, REQUEST_LIMIT).await?.0)
     }
+    /// The reader does not know the request kind, so a frame of up to
+    /// RESPONSE_LIMIT is read first; the 256 KiB inventory bound then applies.
     async fn read_response<T>(
         &mut self,
         negotiated: &StreamProtocol,

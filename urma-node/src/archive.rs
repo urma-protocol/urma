@@ -121,21 +121,7 @@ impl Archive {
                 point,
             )
             .optional()?;
-        let start = self.config.application_start.height;
-        let mut next = start;
-        let mut indexed_through = None;
-        let mut rows = self.db.prepare(
-            "SELECT s.height,s.hash FROM selected s JOIN scans c ON c.block_hash=s.hash
-             WHERE s.height>=?1 AND c.rules=?2 AND c.unresolved=0 ORDER BY s.height",
-        )?;
-        for row in rows.query_map(params![sql_integer(start)?, SCAN_RULES_VERSION], point)? {
-            let current = row?;
-            if current.height != next {
-                break;
-            }
-            next += 1;
-            indexed_through = Some(current);
-        }
+        let indexed_through = self.indexed_through()?;
         let scanned_blocks = self.db.query_row(
             "SELECT count(*) FROM scans c JOIN selected s ON s.hash=c.block_hash WHERE c.rules=?1",
             [SCAN_RULES_VERSION],
@@ -170,6 +156,26 @@ impl Archive {
             peer_omissions: peers::omission_count(&self.db)?,
             unaudited_records: peers::unaudited_count(&self.db)?,
         })
+    }
+
+    /// Contiguous fully scanned, dependency-complete coverage from application start.
+    fn indexed_through(&self) -> Result<Option<ChainPoint>, Error> {
+        let start = self.config.application_start.height;
+        let mut next = start;
+        let mut indexed_through = None;
+        let mut rows = self.db.prepare(
+            "SELECT s.height,s.hash FROM selected s JOIN scans c ON c.block_hash=s.hash
+             WHERE s.height>=?1 AND c.rules=?2 AND c.unresolved=0 ORDER BY s.height",
+        )?;
+        for row in rows.query_map(params![sql_integer(start)?, SCAN_RULES_VERSION], point)? {
+            let current = row?;
+            if current.height != next {
+                break;
+            }
+            next += 1;
+            indexed_through = Some(current);
+        }
+        Ok(indexed_through)
     }
 
     pub fn ticket(&self, height: u64) -> Result<ScanTicket, Error> {
@@ -312,8 +318,10 @@ impl Archive {
         ).optional()?)
     }
 
-    /// Placements in fully scanned selected blocks within [from, to], strictly
-    /// after `after` as (height, position), ascending; `limit` rows at most.
+    /// Placements of records and pending reveals this node located in fully
+    /// scanned selected blocks within [from, to], strictly after `after` as
+    /// (height, position), ascending; `limit` rows at most. Children pruned
+    /// before storage are absent; locators of evicted records survive.
     pub(crate) fn inventory_page(
         &self,
         from: u64,
@@ -326,9 +334,12 @@ impl Archive {
             None => (-1, -1),
         };
         let mut statement = self.db.prepare(
-            "SELECT s.height,s.hash,l.position,l.txid,l.wtxid FROM locators l
-             JOIN selected s ON s.hash=l.block_hash
-             JOIN scans c ON c.block_hash=l.block_hash AND c.rules=?5
+            "SELECT s.height,s.hash,l.position,l.txid,l.wtxid FROM
+               (SELECT block_hash,position FROM records
+                UNION SELECT block_hash,position FROM dependencies) p
+             JOIN locators l ON l.block_hash=p.block_hash AND l.position=p.position
+             JOIN selected s ON s.hash=p.block_hash
+             JOIN scans c ON c.block_hash=p.block_hash AND c.rules=?5
              WHERE s.height>=?1 AND s.height<=?2
                AND (s.height>?3 OR (s.height=?3 AND l.position>?4))
              ORDER BY s.height,l.position LIMIT ?6",
@@ -366,7 +377,7 @@ impl Archive {
         let more = entries.len() > wanted;
         entries.truncate(wanted);
         Ok(InventoryRows {
-            scanned_through: self.status()?.indexed_through.map(|point| point.height),
+            scanned_through: self.indexed_through()?.map(|point| point.height),
             entries,
             more,
         })
