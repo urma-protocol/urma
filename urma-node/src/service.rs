@@ -214,6 +214,19 @@ impl Service {
             return respond(stream, 401, json!({"error":"authentication required"}));
         }
         match first {
+            line if line.starts_with("GET /v1/wire?") && line.ends_with(" HTTP/1.1") => {
+                let query = &line["GET /v1/wire?".len()..line.len() - " HTTP/1.1".len()];
+                let (limit, cursor) = match wire_query(query) {
+                    Ok(value) => value,
+                    Err(_) => {
+                        return respond(stream, 400, json!({"error":"invalid Wire page query"}));
+                    }
+                };
+                match self.engine.wire_page(cursor.as_ref(), limit) {
+                    Ok(page) => respond(stream, 200, serde_json::to_value(page)?),
+                    Err(error) => control_error(stream, error),
+                }
+            }
             "POST /v1/cache/prune HTTP/1.1" => match self.engine.prune_cache() {
                 Ok(records_removed) => respond(
                     stream,
@@ -299,7 +312,7 @@ impl Service {
                     json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
                         "retention_configured":self.retention.is_some(),
                         "record_sources_configured":self.sources.len(),
-                        "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune"]}),
+                        "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune","wire-index"]}),
                 )
             }
             "POST /v1/shutdown HTTP/1.1" => {
@@ -310,6 +323,46 @@ impl Service {
             _ => respond(stream, 404, json!({"error":"unknown endpoint"})),
         }
     }
+}
+
+fn wire_query(query: &str) -> Result<(u32, Option<crate::projection::WireCursor>), Error> {
+    let invalid = || Error::Invalid("invalid Wire page query".into());
+    let mut limit = None;
+    let mut cursor = None;
+    for field in query.split('&') {
+        match field.split_once('=') {
+            Some(("limit", value)) if limit.is_none() => {
+                if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(invalid());
+                }
+                let value: u32 = value.parse().map_err(|_| invalid())?;
+                if !(1..=crate::projection::MAX_WIRE_PAGE).contains(&value) {
+                    return Err(invalid());
+                }
+                limit = Some(value);
+            }
+            Some(("cursor", value)) if cursor.is_none() => {
+                if value.len() > 1024 {
+                    return Err(invalid());
+                }
+                let bytes = hex::decode(value).map_err(|_| invalid())?;
+                let decoded: crate::projection::WireCursor = serde_json::from_slice(&bytes)?;
+                if decoded.snapshot.instance.len() != 32
+                    || !decoded
+                        .snapshot
+                        .instance
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit())
+                    || decoded.height > i64::MAX as u64
+                {
+                    return Err(invalid());
+                }
+                cursor = Some(decoded);
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    Ok((limit.ok_or_else(invalid)?, cursor))
 }
 
 fn control_error(stream: &mut TcpStream, error: Error) -> Result<(), Error> {

@@ -12,6 +12,7 @@ use std::{
 /// user decryption key is present. One synchronization coordinator admits work;
 /// the archive lock is never held while waiting for a peer.
 pub struct Engine {
+    index_instance: String,
     archive: Mutex<Archive>,
     source: Option<Arc<dyn ChainSource>>,
     synchronizing: Mutex<()>,
@@ -45,6 +46,7 @@ impl Engine {
             }
         }
         Ok(Self {
+            index_instance: hex::encode(rand::random::<[u8; 16]>()),
             archive: Mutex::new(Archive::open(path, config)?),
             source,
             synchronizing: Mutex::new(()),
@@ -64,6 +66,19 @@ impl Engine {
 
     pub fn record(&self, txid: bitcoin::Txid) -> Result<Option<ArchivedRecord>, Error> {
         self.archive()?.record(txid)
+    }
+
+    /// Read a bounded Wire view without network or a second scan. All fields
+    /// and coverage come from one archive critical section. Concurrent writes
+    /// invalidate continuation tokens instead of silently mixing snapshots.
+    /// Restart invalidates tokens even if the archive has not changed.
+    pub fn wire_page(
+        &self,
+        cursor: Option<&crate::projection::WireCursor>,
+        limit: u32,
+    ) -> Result<crate::projection::WirePage, Error> {
+        self.archive()?
+            .wire_page(&self.index_instance, cursor, limit)
     }
 
     pub fn object_status(&self, root: bitcoin::Txid) -> Result<Option<ObjectStatus>, Error> {

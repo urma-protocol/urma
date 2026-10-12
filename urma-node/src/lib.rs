@@ -12,6 +12,7 @@ pub mod peer_codec;
 mod peer_limits;
 pub mod peer_protocol;
 pub mod peerbook;
+pub mod projection;
 pub mod retrieval;
 mod scan;
 pub mod service;

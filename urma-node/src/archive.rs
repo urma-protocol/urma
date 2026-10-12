@@ -11,6 +11,7 @@ use std::{
 };
 
 mod objects;
+mod projections;
 pub(crate) use objects::ObjectMember;
 
 pub struct Archive {

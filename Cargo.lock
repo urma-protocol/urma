@@ -3703,6 +3703,7 @@ dependencies = [
  "urma-core",
  "urma-io",
  "urma-runtime",
+ "urma-wire",
 ]
 
 [[package]]

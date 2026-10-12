@@ -71,11 +71,33 @@ is no fabricated project-start default.
 connecting to any peer. `create-token PATH` creates a new private bearer token.
 `serve --token-file PATH` starts on loopback only, offline by default; `--p2p`
 opts into the Litecoin source. `GET /v1/status`, `GET /v1/records/TXID`,
-`GET /v1/objects/TXID` and
+`GET /v1/objects/TXID`, `POST /v1/objects/TXID/pin`,
+`POST /v1/objects/TXID/unpin`, `POST /v1/cache/prune` and
 `POST /v1/shutdown` require
 `Authorization: Bearer TOKEN`. Clients do not open the service database for
 writing. The archive uses a process ownership lock and SQLite WAL/FULL on a
 local filesystem.
+
+The separate `urma-node-control` client accepts an explicit `--endpoint`
+loopback address and `--token-file`, followed by `status`, `object TXID`,
+`pin TXID`, `unpin TXID` or `prune`. It does not open an archive or start a
+daemon. Commands print JSON; failures use stderr and a nonzero exit status.
+Pinning requires an already verified, fully local object; it does not download
+missing content. Pruning reports child records removed, not bytes. Control
+POST requests have an empty body and are never automatically retried: a lost
+response can follow a successful database commit. Query object status before
+deciding whether to repeat an operation after a transport failure.
+
+`Engine::wire_page` and authenticated `GET /v1/wire?limit=N` read the shared
+Wire index without another block scan. Pages contain at most 128 selected local
+records in height/position order. For continuation, append `&cursor=HEX`, where
+HEX encodes the JSON `next` cursor from the previous page. A changed archive or
+engine restart refuses the old cursor with HTTP 409; discard the partial result
+and restart traversal. Each page carries separate archive coverage. An empty
+page or absent continuation means only that the local result set ended; imported
+selective records can appear before their blocks have been fully scanned.
+These are explicitly trusted local index results. Portable inclusion evidence
+is available through record packages and requires independent verification.
 
 `serve --p2p --header-bootstrap FILE` supplies an explicit checkpoint with
 preceding context instead of the embedded legacy checkpoint. The bounded JSON
