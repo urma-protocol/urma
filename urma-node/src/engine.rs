@@ -85,6 +85,40 @@ impl Engine {
         self.archive()?.object_status(root)
     }
 
+    /// Register an explicitly selected, authenticated Names genesis in a fully
+    /// scanned block. No registry is chosen implicitly and no source is called.
+    pub fn register_names(
+        &self,
+        genesis: bitcoin::Txid,
+        block: ChainPoint,
+    ) -> Result<crate::names::NamesStatus, Error> {
+        self.archive()?.register_names(genesis, block)
+    }
+
+    /// Reconcile retained undo, then project at most one fully scanned block.
+    /// Missing scan coverage leaves progress unchanged. Missing selected commit
+    /// placement refuses the step. SQL and state changes share the archive lock.
+    pub fn names_step(&self, genesis: bitcoin::Txid) -> Result<crate::names::NamesStep, Error> {
+        self.archive()?.names_step(genesis)
+    }
+
+    /// Orphaned projection checkpoints are refused until a maintenance step
+    /// reconciles them; an orphaned genesis always requires explicit action.
+    pub fn names_status(
+        &self,
+        genesis: bitcoin::Txid,
+    ) -> Result<Option<crate::names::NamesStatus>, Error> {
+        self.archive()?.names_status(genesis)
+    }
+
+    pub fn names_resolve(
+        &self,
+        genesis: bitcoin::Txid,
+        name: &urma_names::name::Name,
+    ) -> Result<crate::names::NamesResolution, Error> {
+        self.archive()?.names_resolve(genesis, name)
+    }
+
     /// Pin a previously reconstructed object only if all its evidence remains
     /// local. This does not claim current chain selection or fetch missing data.
     /// Use retrieval::recover_and_pin to acquire and pin an incomplete object.

@@ -46,10 +46,28 @@ does not evict. Pins retain orphan bytes after reorg without claiming confirmati
 Concurrent eviction can refuse recovery completion; it cannot publish a false
 complete/pinned state. A pin cannot silently move to new member placements:
 unpin explicitly before replacing its evidence after a reorg. Member hashes
-survive eviction. Schema 1 archives migrate additively to schema 3 only after
+survive eviction. Archives migrate to schema 4 only after
 configuration identity is checked. The interim schema 2 can migrate when all
 member identities remain recoverable locally; otherwise it is refused without
 discarding old evidence.
+
+The embedded Engine also exposes explicit Names V0 registration and incremental
+projection: `register_names`, `names_step`, `names_status`, and `names_resolve`.
+A registry starts at its authenticated genesis in a fully scanned selected block;
+there is no default registry or implicit pre-application history. Each step applies
+at most one consecutive fully scanned, dependency-resolved block, including empty
+blocks. A Names record's commit needs a selected scanned TXID placement separately
+from its authenticated raw bytes. Missing placement refuses the step.
+
+Names state is stored per name and pending record, with per-block forward/undo
+deltas and outcomes. The registry is restored once when needed, not serialized in
+full on every block. Rollback, replacement state, checkpoint and event share one
+SQL transaction under the archive coordinator. Reads refuse orphaned checkpoints
+until a step reconciles them; an orphaned genesis is refused without rebinding.
+The archive retains 1,000 undo frames plus their floor checkpoint; deeper reorgs
+require an explicit rebuild. Resolution carries its projected block and separate
+completion status. These Engine APIs do not yet provide a Names HTTP endpoint,
+background registration scheduler or consumer adapter.
 
 Unpruned background rounds attempt a block scan, then at most one
 incomplete object. Previously verified cached objects can complete even when

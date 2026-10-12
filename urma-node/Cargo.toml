@@ -18,6 +18,7 @@ urma-core = { path = "../urma-core", version = "0.2.2" }
 urma-runtime = { path = "../urma-runtime", version = "0.2.2" }
 urma-io = { path = "../urma-io", version = "0.2.2" }
 urma-wire = { path = "../urma-wire", version = "0.2.2" }
+urma-names = { path = "../urma-names", version = "0.2.2" }
 urma-node-client = { path = "../urma-node-client", version = "0.2.2" }
 hex = "0.4"
 clap = { version = "4", features = ["derive"] }

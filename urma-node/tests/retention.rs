@@ -288,7 +288,7 @@ fn pruned_recovery_eviction_pin_and_unpin_preserve_evidence_and_coverage() {
     assert_eq!(
         db.pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
             .unwrap(),
-        3
+        4
     );
     assert_raw(&db, &graph.pairs[..1]);
     assert_eq!(stored_bytes(&db).len(), 2);

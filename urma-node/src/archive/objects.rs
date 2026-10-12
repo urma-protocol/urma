@@ -34,8 +34,7 @@ PRAGMA user_version=3;";
 /// Upgrade the short-lived schema-2 draft only when its missing identity hashes
 /// can be recovered from retained exact records. Never fabricate hashes for
 /// already evicted members or silently discard their historical evidence.
-pub(super) fn migrate_v2(db: &mut rusqlite::Connection) -> Result<(), Error> {
-    let tx = db.transaction()?;
+pub(super) fn migrate_v2(tx: &rusqlite::Transaction<'_>) -> Result<(), Error> {
     let mut members = Vec::new();
     {
         let mut stmt = tx.prepare(
@@ -88,7 +87,6 @@ pub(super) fn migrate_v2(db: &mut rusqlite::Connection) -> Result<(), Error> {
         CREATE INDEX object_member_record ON object_members(block_hash,position,wtxid);
         PRAGMA user_version=3;",
     )?;
-    tx.commit()?;
     Ok(())
 }
 

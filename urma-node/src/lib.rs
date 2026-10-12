@@ -7,6 +7,7 @@ pub mod client;
 pub mod engine;
 mod error;
 pub mod model;
+pub mod names;
 pub mod peer;
 pub mod peer_codec;
 mod peer_limits;

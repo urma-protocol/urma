@@ -10,6 +10,7 @@ use std::{
     time::Duration,
 };
 
+mod names;
 mod objects;
 mod projections;
 pub(crate) use objects::ObjectMember;
@@ -19,6 +20,9 @@ pub struct Archive {
     db: Connection,
     _lock: File,
     config: ArchiveConfig,
+    // One restored registry at a time. SQL remains authoritative; errors drop
+    // the working copy so staged in-memory changes cannot outlive rollback.
+    names_cache: Option<urma_names::engine::Registry>,
 }
 
 impl Archive {
@@ -76,7 +80,7 @@ impl Archive {
             tx.execute_batch(include_str!("schema.sql"))?;
             tx.execute("INSERT INTO config VALUES(1,?1)", [&encoded])?;
             tx.commit()?;
-        } else if version != 1 && version != 2 && version != 3 {
+        } else if !(1..=4).contains(&version) {
             return Err(Error::Invalid(format!(
                 "unsupported archive schema {version}"
             )));
@@ -92,17 +96,21 @@ impl Archive {
         }
         // Configuration identity is checked before any existing archive migration.
         // Schema 1 remains intact if the additive migration fails.
-        if version < 2 {
+        if version < 4 {
             let tx = db.transaction()?;
-            tx.execute_batch(objects::SCHEMA)?;
+            if version < 2 {
+                tx.execute_batch(objects::SCHEMA)?;
+            } else if version == 2 {
+                objects::migrate_v2(&tx)?;
+            }
+            tx.execute_batch(names::SCHEMA)?;
             tx.commit()?;
-        } else if version == 2 {
-            objects::migrate_v2(&mut db)?;
         }
         Ok(Self {
             db,
             _lock: lock,
             config,
+            names_cache: None,
         })
     }
 
