@@ -7,6 +7,7 @@ pub mod client;
 pub mod engine;
 mod error;
 pub mod model;
+pub mod peer_protocol;
 pub mod retrieval;
 mod scan;
 pub mod service;

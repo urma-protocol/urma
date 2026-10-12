@@ -16,9 +16,13 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 urma-chain = { path = "../urma-chain", version = "0.2.2" }
 urma-core = { path = "../urma-core", version = "0.2.2" }
 urma-runtime = { path = "../urma-runtime", version = "0.2.2" }
+urma-io = { path = "../urma-io", version = "0.2.2" }
 hex = "0.4"
 clap = { version = "4", features = ["derive"] }
 rand = "0.8"
+libp2p = { version = "=0.56.0", default-features = false, features = ["tokio", "tcp", "noise", "yamux", "request-response", "macros", "ed25519"] }
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+async-trait = "0.1"
 
 [dev-dependencies]
 tempfile = "3"
