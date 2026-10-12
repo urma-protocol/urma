@@ -315,11 +315,13 @@ fn listings(gateway: &Gateway) -> Result<Vec<Listing>, Refusal> {
 fn listing_state(gateway: &Gateway, network: &Network, snapshot: &Snapshot) -> ListingState {
     match gateway.currency(snapshot) {
         Currency::Current => ListingState::Ready {
+            source: snapshot.source_kind(),
             index: snapshot.point(),
             tip: snapshot.tip,
             names: bound_names(&gateway.portal, network, snapshot),
         },
         Currency::Behind(reason) => ListingState::Behind {
+            source: snapshot.source_kind(),
             index: snapshot.point(),
             tip: snapshot.tip,
             reason,

@@ -107,11 +107,13 @@ pub(crate) struct ListedName {
 pub(crate) enum ListingState {
     Pending(String),
     Ready {
+        source: &'static str,
         index: IndexPoint,
         tip: u64,
         names: Vec<ListedName>,
     },
     Behind {
+        source: &'static str,
         index: IndexPoint,
         tip: u64,
         reason: String,
@@ -206,11 +208,17 @@ fn names_list(names: &[ListedName]) -> String {
     items
 }
 
-fn indexed(index: &IndexPoint, tip: u64) -> String {
+fn indexed(index: &IndexPoint, tip: u64, source: &str) -> String {
+    let tip_label = if source == "local-node-operator" {
+        "operator-reported selected tip"
+    } else {
+        "chain tip"
+    };
     format!(
-        "<span>Indexed height</span><span>{} (chain tip {tip})</span><span>Block</span><code>{}</code>",
+        "<span>Indexed height</span><span>{} ({tip_label} {tip})</span><span>Block</span><code>{}</code><span>Names source</span><code>{}</code>",
         index.height,
-        escape(&index.block_hash)
+        escape(&index.block_hash),
+        escape(source)
     )
 }
 
@@ -226,16 +234,26 @@ fn listing_section(listing: &Listing) -> String {
             "{heading}<span>Index</span><span>not ready: {}</span></div>",
             escape(reason)
         ),
-        ListingState::Ready { index, tip, names } => {
+        ListingState::Ready {
+            source,
+            index,
+            tip,
+            names,
+        } => {
             format!(
                 "{heading}{}</div>\n{}",
-                indexed(index, *tip),
+                indexed(index, *tip, source),
                 names_list(names)
             )
         }
-        ListingState::Behind { index, tip, reason } => format!(
+        ListingState::Behind {
+            source,
+            index,
+            tip,
+            reason,
+        } => format!(
             "{heading}{}<span>Index</span><span>behind: {}</span></div>\n<p class=\"note\">Names of this network answer 503 until its index is current again.</p>",
-            indexed(index, *tip),
+            indexed(index, *tip, source),
             escape(reason)
         ),
     }

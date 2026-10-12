@@ -643,6 +643,7 @@ fn pages_and_refusals_escape_untrusted_text() -> Result<()> {
                 network: "litecoin-testnet".into(),
                 registry: ROSINT.into(),
                 state: ListingState::Ready {
+                    source: "autonomous-local",
                     index: IndexPoint {
                         height: 10,
                         block_hash: "ab".into(),
@@ -667,6 +668,7 @@ fn pages_and_refusals_escape_untrusted_text() -> Result<()> {
                 network: "bitcoin-testnet4".into(),
                 registry: OTHER.into(),
                 state: ListingState::Behind {
+                    source: "local-node-operator",
                     index: IndexPoint {
                         height: 7,
                         block_hash: "cd".into(),
@@ -680,7 +682,9 @@ fn pages_and_refusals_escape_untrusted_text() -> Result<()> {
     assert!(index.contains("<a href=\"http://urma.tltc.localhost:8080/\">urma</a>"));
     assert!(index.contains("<span>10 (chain tip 11)</span><span>Block</span><code>ab</code>"));
     assert!(index.contains("not ready: no index &lt;yet&gt;"));
-    assert!(index.contains("<span>7 (chain tip 12)</span>"));
+    assert!(index.contains("<span>7 (operator-reported selected tip 12)</span>"));
+    assert!(index.contains("<span>Names source</span><code>local-node-operator</code>"));
+    assert!(index.contains("<span>Names source</span><code>autonomous-local</code>"));
     assert!(index.contains("behind: 5 blocks &lt;behind&gt;"));
     assert!(index.contains("answer 503"));
     let reply = Refusal::new(State::Undeclared, "<b>x</b>".into())

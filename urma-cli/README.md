@@ -188,7 +188,8 @@ Readiness includes `names_source`, `scan_age_seconds` (null for operator views) 
 `view_age_seconds`. Proof resolver metadata includes the same source distinction,
 projected/selected points, completion, and, for operator views, the archive
 generation and opaque snapshot identifier. These appear even when no root can be
-served. Site responses with a resolved snapshot also include `URMA-Names-Source`
+served. The apex listing labels operator-reported tips and the Names source. Site
+responses with a resolved snapshot also include `URMA-Names-Source`
 and `URMA-Names-Complete-To-Tip`; these are provenance labels, not ownership or
 chain proofs. Existing root evidence verification is unchanged. Gateway startup
 still requires explicit network registries and does not start a Node daemon.
