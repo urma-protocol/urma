@@ -3569,6 +3569,7 @@ dependencies = [
  "urma-identity",
  "urma-io",
  "urma-names",
+ "urma-node-client",
  "urma-profiles",
  "urma-runtime",
  "urma-wallet",

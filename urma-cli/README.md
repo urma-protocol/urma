@@ -47,6 +47,43 @@ urma names resolve --help
 
 These help commands do not publish records or spend funds. Defaults and limits are documented by the installed command's help, so this README does not duplicate values that can change.
 
+### Optional local Names projection (development checkout)
+
+This checkout can accelerate `names resolve` and `names pending` with the
+separately operated URMA Node. Add an explicit connection to the normal config
+file (`URMA_CONFIG`, or `~/.config/urma/config.json`):
+
+```json
+{"archive":{"endpoint":"127.0.0.1:8118","token_file":"/absolute/path/to/node-token"}}
+```
+
+The token must be a regular private file, at most 256 bytes, containing a
+64-hex bearer after trimming whitespace. No daemon, token or registry is created.
+An explicit `--network` and `--registry GENESIS_TXID` bind the read; `--index`
+alone continues to read the local index. Chain RPC and wallet settings remain
+independent. Scan, gateway, review, approval and publication retain their existing
+paths.
+
+The reader gathers one consistent projection before producing the existing JSON
+shape. It retains all pending entries, including completed ones, and their
+legacy TXID ordering. The reported height/hash is the projected block, which can
+lag the selected tip; an absent name at that height is not a claim about later
+history. A genesis-only service view reports its actual genesis block hash (the
+legacy empty-checkpoint index reports an empty string). Results are trusted local
+operator data, not independently verified state proofs.
+
+Any unavailable, stale, malformed or wrong-chain service view is discarded and
+falls back only to loading the existing local index, with network and requested
+registry checks. It never triggers a fallback scan or retries a traversal. Local
+index files are not rewritten. Traversal limits are 100,000 rows, 1,024 pages,
+64 MiB of canonical reserialized typed pages, and a cooperative 30-second budget;
+individual HTTP calls keep the client's five-second budget. These are not raw
+wire-byte, resident-memory or hard interruption guarantees.
+
+The new client crate is currently workspace-only (`publish = false`). This
+development integration does not constitute a crates.io release of the CLI or
+its new dependency.
+
 ## Capture: preserve the originals
 
 The Capture workflow starts with `ingest`, which seals originals with explicit session context. `inspect` authenticates the catalog; `recover` restores a local capture. For chain publication, `plan` prepares the work without broadcasting, `publish` approves and submits it, and `resume` continues that publication. `recover-chain` discovers and restores previously published material.

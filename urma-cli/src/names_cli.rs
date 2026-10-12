@@ -322,7 +322,14 @@ fn open_index(args: IndexArgs) -> Result<NamesIndex, Error> {
         },
         &args.network,
     )?;
-    load_index(&args.network, &path)
+    let index = load_index(&args.network, &path)?;
+    if let Some(registry) = args.registry {
+        ensure!(
+            index.registry.genesis() == registry,
+            "names index belongs to another registry"
+        );
+    }
+    Ok(index)
 }
 
 pub(crate) fn pending_records(index: &NamesIndex, name: &str) -> Result<Vec<Value>, Error> {
@@ -337,7 +344,27 @@ pub(crate) fn pending_records(index: &NamesIndex, name: &str) -> Result<Vec<Valu
 }
 
 fn resolve(args: IndexArgs, name: &str) -> Result<Value, Error> {
-    resolution(&open_index(args)?, &Name::normalize(name)?)
+    let name = Name::normalize(name)?;
+    if let Some(view) = archive_view(&args)? {
+        return Ok(view.resolve(&args.network, &name));
+    }
+    resolution(&open_index(args)?, &name)
+}
+
+fn archive_view(args: &IndexArgs) -> Result<Option<crate::names_archive::View>, Error> {
+    let Some(genesis) = args.registry else {
+        return Ok(None);
+    };
+    let Some(settings) = config::load()?.archive else {
+        return Ok(None);
+    };
+    match crate::names_archive::read(&settings, &args.network, genesis) {
+        Ok(view) => Ok(Some(view)),
+        Err(_) => {
+            tracing::warn!(target: "urma_cli", "optional Names archive unavailable; reading the local index");
+            Ok(None)
+        }
+    }
 }
 
 pub(crate) fn resolution(index: &NamesIndex, name: &Name) -> Result<Value, Error> {
@@ -355,6 +382,9 @@ pub(crate) fn resolution(index: &NamesIndex, name: &Name) -> Result<Value, Error
 }
 
 fn pending(args: IndexArgs) -> Result<Value, Error> {
+    if let Some(view) = archive_view(&args)? {
+        return Ok(view.pending(&args.network));
+    }
     let index = open_index(args)?;
     Ok(json!({
         "network": index.network,

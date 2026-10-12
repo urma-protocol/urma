@@ -31,6 +31,7 @@ mod key_cli;
 mod litecoin_cli;
 mod logging;
 mod names_approval;
+mod names_archive;
 mod names_cli;
 mod names_flow;
 mod node_cli;

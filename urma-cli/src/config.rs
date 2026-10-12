@@ -18,6 +18,15 @@ pub(crate) struct Settings {
     pub(crate) node_auth_file: Option<PathBuf>,
     pub(crate) vault: Option<PathBuf>,
     pub(crate) unlock_file: Option<PathBuf>,
+    pub(crate) archive: Option<ArchiveSettings>,
+}
+
+/// Optional local projection reader, separate from chain RPC and signing.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ArchiveSettings {
+    pub(crate) endpoint: SocketAddr,
+    pub(crate) token_file: PathBuf,
 }
 
 #[derive(Clone, Copy, Default, Deserialize)]
