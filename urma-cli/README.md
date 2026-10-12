@@ -96,6 +96,38 @@ Keep the private recovery secret separately from the device or storage you may l
 
 On the reading side, `recover` retrieves content and proofs, `clone` creates an editable repository, and `verify` checks retained proofs and Git content offline. This preserves a committed snapshot, not every branch and the repository's entire history.
 
+With the explicit `archive` configuration above, `git recover` and `git clone`
+first try the local archive before connecting to a chain source. The CLI checks
+the requested transaction IDs, URMA signatures, signed multipart references,
+author consistency, geometry and complete payload digest, then applies the
+existing Git profile, PACK and content checks. A healthy archive therefore needs
+no RPC connection or historical scan for this operation.
+
+This path verifies content, **not chain inclusion**. Package inclusion paths
+have no independently selected header at this consumer boundary. Recovery
+reports say `chain_inclusion: "not_checked"`; no operator tip or confirmation
+count is exported. Offline `git verify` rechecks the retained transaction graph
+and content with the same inclusion limitation. The legacy proof export stores
+canonical transparent Bitcoin transaction projections; it does not promise
+original Litecoin transaction encodings. Publication and the autonomous
+recovery path retain their existing checks and observation reporting.
+
+An unavailable, invalid or incomplete archive attempt is discarded privately
+before autonomous recovery starts. A rejected attempt creates no final export
+or checkout. Once final installation begins, an I/O error is returned rather
+than falling back into a partially written output. As before, `recover` requires
+a new directory and a final disk error can leave that new export incomplete;
+clone uses the existing staging and no-replace installation.
+
+Archive acquisition is limited to 32,768 record requests, 256 MiB of payload,
+512 MiB of received reveal/commit bytes and 4 MiB per raw or exported transaction,
+with one attempt per record. Its cooperative 30-second budget spans root,
+children, reconstruction and temporary proof retention; each HTTP call keeps
+its five-second limit. Subsequent offline Git validation and installation keep
+their existing resource limits. These are not hard process deadlines or a
+resident-memory/disk-total guarantee. This slice does not change Web fetch,
+gateway publication acquisition or wallet/publication behavior.
+
 Start with the exact operation's help:
 
 ```sh

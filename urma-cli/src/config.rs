@@ -21,7 +21,7 @@ pub(crate) struct Settings {
     pub(crate) archive: Option<ArchiveSettings>,
 }
 
-/// Optional local projection reader, separate from chain RPC and signing.
+/// Optional local archive reader, separate from chain RPC and signing.
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct ArchiveSettings {

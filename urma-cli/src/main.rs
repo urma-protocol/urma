@@ -35,6 +35,7 @@ mod names_archive;
 mod names_cli;
 mod names_flow;
 mod node_cli;
+mod object_archive;
 mod provider_warnings;
 mod public_cli;
 mod wallet_cli;

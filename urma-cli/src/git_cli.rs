@@ -1,6 +1,6 @@
 use crate::{
     approve_publication, config, detail, funding_cli, git_follow_cli, git_publish_cli, is_terminal,
-    key_cli::VaultAccess, node_cli::NodeArgs, progress, stage,
+    key_cli::VaultAccess, node_cli::NodeArgs, object_archive, progress, stage,
 };
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -228,16 +228,95 @@ fn resume(args: ResumeArgs) -> Result<Value, Error> {
 }
 
 fn recover(args: RecoverArgs) -> Result<Value, Error> {
+    let chain = args.node.chain()?;
+    let root = archive_root(chain, &args.root)?;
+    let limits = args.resources.load()?;
+    if let Some((directory, report)) =
+        archived(root, chain, &limits, urma_io::output_parent(&args.output))?
+    {
+        // Acquisition and all Git checks finished privately. Once publication
+        // begins, an I/O error is returned; it cannot trigger another source.
+        publish_recovery(directory.path(), &args.output)?;
+        return Ok(serde_json::to_value(report)?);
+    }
     let node = stage("Connecting to the selected network...", || {
         args.node.connect()
     })?;
     let root = workflows::parse_root(&node, &args.root).map_err(boundary)?;
-    let limits = args.resources.load()?;
     let report = stage("Recovering content and transaction proofs...", || {
         workflows::recover(&node, root, &args.output, &limits)
     })
     .map_err(boundary)?;
     Ok(serde_json::to_value(report)?)
+}
+
+fn archive_root(chain: urma_chain::observation::Chain, text: &str) -> Result<bitcoin::Txid, Error> {
+    let txid = match text.split_once(':') {
+        Some((network, txid)) if network == crate::node_cli::chain_name(chain)? => txid,
+        Some(_) => return Err(Error::Invalid("locator and selected chain disagree".into())),
+        None => text,
+    };
+    Ok(txid.parse()?)
+}
+
+fn archived(
+    root: bitcoin::Txid,
+    chain: urma_chain::observation::Chain,
+    limits: &Limits,
+    parent: &Path,
+) -> Result<Option<(tempfile::TempDir, workflows::RecoveredReport)>, Error> {
+    let Some(settings) = config::load()?.archive else {
+        return Ok(None);
+    };
+    let attempt = || -> Result<_, Error> {
+        let directory = object_archive::retain(
+            &settings,
+            chain,
+            root,
+            workflows::recovery_limits(limits).map_err(boundary)?,
+            parent,
+        )?;
+        let report = workflows::recover_retained(directory.path(), limits).map_err(boundary)?;
+        Ok((directory, report))
+    };
+    match attempt() {
+        Ok(result) => {
+            progress("Content and signatures verified from the local operator archive; chain inclusion not checked.".into());
+            Ok(Some(result))
+        }
+        Err(_) => {
+            tracing::warn!("optional Git archive unavailable; using autonomous recovery");
+            Ok(None)
+        }
+    }
+}
+
+fn publish_recovery(source: &Path, destination: &Path) -> Result<(), Error> {
+    // Same new-directory contract as the autonomous recover command. No
+    // existing output is replaced; a final disk error can leave a partial new
+    // export, but never resumes fallback into that directory.
+    urma_io::create_private_directory(destination)?;
+    urma_io::create_private_directory(&destination.join("tx"))?;
+    for name in [
+        "locator.json",
+        "object.bin",
+        "snapshot.pack",
+        "recovery.json",
+    ] {
+        let path = destination.join(name);
+        std::fs::copy(source.join(name), &path)?;
+        std::fs::File::open(path)?.sync_all()?;
+    }
+    for entry in std::fs::read_dir(source.join("tx"))? {
+        let entry = entry?;
+        let path = destination.join("tx").join(entry.file_name());
+        std::fs::copy(entry.path(), &path)?;
+        std::fs::File::open(path)?.sync_all()?;
+    }
+    std::fs::File::open(destination.join("tx"))?.sync_all()?;
+    std::fs::File::open(destination)?.sync_all()?;
+    std::fs::File::open(urma_io::output_parent(destination))?.sync_all()?;
+    Ok(())
 }
 
 fn review(plan: &Path, classifications: &[String]) -> Result<Value, Error> {
@@ -267,7 +346,18 @@ pub(crate) fn run(command: GitCommand) -> Result<Value, Error> {
             resources,
         } => {
             let requested = urma_git::config::CloneDestination(directory);
-            urma_git::config::staging_parent(&requested).map_err(boundary)?;
+            let parent = urma_git::config::staging_parent(&requested).map_err(boundary)?;
+            let chain = node.chain()?;
+            let limits = resources.load()?;
+            if let Some((staged, _)) = archived(root, chain, &limits, &parent)? {
+                // Installation repeats retained-proof/Git validation and uses
+                // the existing no-replace checkout. Never fallback after it.
+                let (_, directory) =
+                    workflows::clone_retained_named(staged.path(), requested, &limits)
+                        .map_err(boundary)?;
+                progress(format!("Ready in '{}'.", directory.display()));
+                return Ok(Value::Null);
+            }
             progress(format!("Connecting to {}...", node.chain()?.label()));
             let node = stage("Connecting to node...", || node.connect())?;
             detail(1, format!("Requested root: {root}"));
