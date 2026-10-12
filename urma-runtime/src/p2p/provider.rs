@@ -1,6 +1,7 @@
 use crate::config::{P2P_BLOCK_TIMEOUT_SECS, P2P_TIP_REFRESH_SECS};
 use crate::error::{Context, Error, ensure};
 use crate::light::{LightSync, Progress};
+use crate::p2p::HeaderBootstrap;
 use crate::p2p::blocks::BlockCache;
 use crate::p2p::headers::{Anchor, HeaderChain};
 use crate::p2p::source::{VerifiedBlock, decode_verified};
@@ -52,6 +53,25 @@ impl P2pProvider {
             "light client stage completed"
         );
         let headers = loaded?;
+        Ok(Self::from_headers(chain, headers, pinned))
+    }
+
+    /// Open a checkpoint-relative view with authenticated preceding context.
+    /// The operator still trusts the bootstrap anchor's chain membership and
+    /// height; its context does not establish full consensus or earlier scan
+    /// coverage. Construction opens the local cache without starting a worker
+    /// or network connections. `warm` or the first verified read starts it.
+    pub fn with_bootstrap(
+        cache_dir: &Path,
+        bootstrap: HeaderBootstrap,
+        pinned: Vec<SocketAddr>,
+    ) -> Result<Self, Error> {
+        let chain = bootstrap.chain();
+        let headers = HeaderChain::open_bootstrap(cache_dir, bootstrap)?;
+        Ok(Self::from_headers(chain, headers, pinned))
+    }
+
+    fn from_headers(chain: Chain, headers: HeaderChain, pinned: Vec<SocketAddr>) -> Self {
         let shared = Arc::new(Shared {
             chain,
             pinned,
@@ -65,11 +85,11 @@ impl P2pProvider {
             }),
             stop: AtomicBool::new(false),
         });
-        Ok(Self {
+        Self {
             chain,
             shared,
             engine: Mutex::new(Engine::Cold),
-        })
+        }
     }
 
     pub fn warm(&self) -> Result<(), Error> {

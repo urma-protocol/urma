@@ -2,7 +2,7 @@ use crate::{Error, model::ChainPoint};
 use bitcoin::{BlockHash, block::Header};
 use std::{net::SocketAddr, path::Path};
 use urma_chain::observation::Chain;
-use urma_runtime::p2p::{Anchor, P2pProvider};
+use urma_runtime::p2p::{Anchor, HeaderBootstrap, P2pProvider};
 
 /// Port implemented by a chain verifier, not by an untrusted remote JSON API.
 /// The implementation owns header difficulty, PoW and branch selection. Bodies
@@ -40,6 +40,28 @@ impl LitecoinSource {
         Ok(Self {
             chain,
             provider: P2pProvider::with_peers(chain, cache, anchor, peers).map_err(source_error)?,
+        })
+    }
+
+    /// Open a Litecoin source with authenticated preceding header context.
+    /// The operator trusts the bootstrap anchor's chain membership and height;
+    /// the context does not prove pre-anchor consensus or earlier scan coverage.
+    /// This source does not validate scripts, UTXOs or MWEB consensus. Opening
+    /// only loads the local cache; the first sync attempt starts connections.
+    pub fn open_bootstrap(
+        cache: &Path,
+        bootstrap: HeaderBootstrap,
+        peers: Vec<SocketAddr>,
+    ) -> Result<Self, Error> {
+        let chain = bootstrap.chain();
+        if !matches!(chain, Chain::LitecoinTestnet | Chain::LitecoinMainnet) {
+            return Err(Error::Invalid(
+                "Litecoin source requires a Litecoin network".into(),
+            ));
+        }
+        Ok(Self {
+            chain,
+            provider: P2pProvider::with_bootstrap(cache, bootstrap, peers).map_err(source_error)?,
         })
     }
 }
