@@ -105,11 +105,29 @@ impl Archive {
     }
 
     pub(crate) fn peer_omissions(&self) -> Result<Vec<Omission>, Error> {
-        let mut stmt = self.db.prepare(
+        self.omissions(
             "SELECT s.height,s.hash,o.peer,o.position,o.txid,o.generation FROM peer_omissions o
-             JOIN selected s ON s.hash=o.block_hash ORDER BY s.height,o.position,o.peer",
+             JOIN selected s ON s.hash=o.block_hash ORDER BY s.height,o.position,o.peer
+             LIMIT ?1",
+            -1,
+        )
+    }
+
+    /// The `limit` highest selected omissions, returned in ascending order.
+    pub(crate) fn peer_omissions_latest(&self, limit: u32) -> Result<Vec<Omission>, Error> {
+        let mut latest = self.omissions(
+            "SELECT s.height,s.hash,o.peer,o.position,o.txid,o.generation FROM peer_omissions o
+             JOIN selected s ON s.hash=o.block_hash
+             ORDER BY s.height DESC,o.position DESC,o.peer DESC LIMIT ?1",
+            i64::from(limit),
         )?;
-        let rows = stmt.query_map([], |r| {
+        latest.reverse();
+        Ok(latest)
+    }
+
+    fn omissions(&self, sql: &str, limit: i64) -> Result<Vec<Omission>, Error> {
+        let mut stmt = self.db.prepare(sql)?;
+        let rows = stmt.query_map([limit], |r| {
             Ok((
                 point(r)?,
                 r.get::<_, String>(2)?,

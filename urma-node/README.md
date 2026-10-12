@@ -309,8 +309,10 @@ the lower of the range end and the peer's own scanned height, and only for the
 archive generation observed when the range was opened; a reorg in between makes
 that claim stale and the range restarts. When the full-block scan later finds a
 record inside a peer-covered range that the peer never listed, the omission is
-recorded and that peer is no longer asked. `GET /v1/overlay/omissions` returns
-the newest (highest) 1024 omissions.
+recorded and that peer is no longer asked. A listed-only entry that our own
+scan later finds is still recorded as that peer's omission (a rare
+eviction/reorg race). `GET /v1/overlay/omissions` returns the newest (highest)
+1024 omissions.
 
 Per round and peer: one inventory page, at most 16 package fetches, at least
 250 ms between requests to the peer (its serving bucket is four per second),

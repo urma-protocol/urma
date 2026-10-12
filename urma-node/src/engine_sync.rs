@@ -8,7 +8,8 @@ use crate::{
 
 impl Engine {
     /// Record that `peer` (its PeerId string) listed every placement in
-    /// selected [from, to] and each one was admitted or already held.
+    /// selected [from, to] and each listed placement was admitted, already
+    /// held, or answered Missing (listed-only).
     /// `generation` is the one observed before fetching; a reorg since is Stale.
     /// admit_record keeps multipart children even in Pruned mode, so synced
     /// components stay until cache maintenance evicts them.
@@ -38,5 +39,10 @@ impl Engine {
 
     pub fn peer_omissions(&self) -> Result<Vec<Omission>, Error> {
         self.archive()?.peer_omissions()
+    }
+
+    /// The `limit` highest selected omissions, ascending; bounded in SQL.
+    pub fn peer_omissions_latest(&self, limit: u32) -> Result<Vec<Omission>, Error> {
+        self.archive()?.peer_omissions_latest(limit)
     }
 }
