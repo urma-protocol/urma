@@ -1,3 +1,4 @@
+use super::bootstrap::{HeaderBootstrap, context_headers};
 use crate::config::{
     Checkpoint, LITECOIN_MAINNET_CHECKPOINT, LITECOIN_TESTNET_CHECKPOINT, P2P_HEADER_CACHE_MAX,
     P2P_HEADER_CACHE_REVALIDATE, P2P_LOCATOR_LINEAR, P2P_MAX_FUTURE_SECS, P2P_MEDIAN_TIME_SPAN,
@@ -7,6 +8,7 @@ use crate::error::{Context, Error, ensure};
 use bitcoin::BlockHash;
 use bitcoin::block::Header;
 use bitcoin::consensus::encode::{deserialize, serialize};
+use std::borrow::Cow;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -16,7 +18,8 @@ use urma_chain::pow::{PowError, chain_work, check_header_pow, expected_bits};
 pub struct HeaderChain {
     chain: Chain,
     start_height: u64,
-    trusted_next: BlockHash,
+    trusted_next: Option<BlockHash>,
+    ancestors: Option<Vec<Header>>,
     headers: Vec<Header>,
     index: HashMap<BlockHash, usize>,
     path: PathBuf,
@@ -39,6 +42,10 @@ pub fn checkpoint(chain: Chain) -> Result<&'static Checkpoint, Error> {
     }
 }
 
+/// Legacy checkpoint bootstrap. Its first successor is pinned rather than
+/// contextually retargeted, and initial median-time checks use only the locally
+/// available suffix. Use `HeaderBootstrap` for full preceding context from the
+/// first successor; this compatibility API does not synthesize that history.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Anchor {
     pub height: u64,
@@ -58,6 +65,29 @@ impl Anchor {
 }
 
 impl HeaderChain {
+    /// Open a strict checkpoint-relative view. Context was authenticated by
+    /// `HeaderBootstrap::new` before any cache access. Its cache namespace is
+    /// separate from legacy pinned-successor caches and binds height as well
+    /// as chain and anchor hash. Ancestors never enter the selected index.
+    pub fn open_bootstrap(cache_dir: &Path, bootstrap: HeaderBootstrap) -> Result<Self, Error> {
+        let (chain, height, header, ancestors) = bootstrap.into_parts();
+        let path = cache_dir.join(format!(
+            "strict-v1-{}-{height}-{}-headers.bin",
+            chain.label().replace(' ', "-"),
+            header.block_hash()
+        ));
+        Self {
+            chain,
+            start_height: height,
+            trusted_next: None,
+            ancestors: Some(ancestors),
+            headers: vec![header],
+            index: HashMap::from([(header.block_hash(), 0)]),
+            path,
+        }
+        .restore()
+    }
+
     pub fn open(chain: Chain, cache_dir: &Path) -> Result<Self, Error> {
         Self::open_at(chain, cache_dir, Anchor::embedded(chain)?)
     }
@@ -75,25 +105,30 @@ impl HeaderChain {
         trusted_next: BlockHash,
     ) -> Result<Self, Error> {
         check_header_pow(&anchor, chain).map_err(|cause| Error::Invalid(cause.to_string()))?;
-        let mut fresh = Self {
+        Self {
             chain,
             start_height,
-            trusted_next,
+            trusted_next: Some(trusted_next),
+            ancestors: None,
             headers: vec![anchor],
             index: HashMap::from([(anchor.block_hash(), 0)]),
             path,
-        };
-        if fresh.path.try_exists()? {
-            match fresh.load() {
+        }
+        .restore()
+    }
+
+    fn restore(mut self) -> Result<Self, Error> {
+        if self.path.try_exists()? {
+            match self.load() {
                 Ok(()) => (),
                 Err(error) if error.is_header_context() => return Err(error),
                 Err(error) => {
-                    tracing::warn!(%error, path = %fresh.path.display(), "header cache rejected; restarting from the checkpoint");
-                    fresh.reset()?;
+                    tracing::warn!(%error, path = %self.path.display(), "header cache rejected; restarting from the checkpoint");
+                    self.reset()?;
                 }
             }
         }
-        Ok(fresh)
+        Ok(self)
     }
 
     fn reset(&mut self) -> Result<(), Error> {
@@ -324,18 +359,20 @@ impl HeaderChain {
             header.prev_blockhash == last.block_hash(),
             "peer header does not extend its predecessor"
         );
-        if window.len() == 1 {
+        let (first_height, context) = self.preceding_context(window)?;
+        if window.len() == 1 && self.trusted_next.is_some() {
             ensure!(
-                header.block_hash() == self.trusted_next,
+                Some(header.block_hash()) == self.trusted_next,
                 "peer header after the checkpoint is not the checkpointed block"
             );
         } else {
-            let required = expected_bits(self.chain, window, self.start_height, header.time)
-                .map_err(|cause| match cause {
+            let required = expected_bits(self.chain, &context, first_height, header.time).map_err(
+                |cause| match cause {
                     cause @ (PowError::ShortWindow { .. }
                     | PowError::MissingDifficultyContext { .. }) => Error::HeaderContext(cause),
                     cause => Error::Invalid(cause.to_string()),
-                })?;
+                },
+            )?;
             ensure!(
                 header.bits == required,
                 "peer header bits {:08x} differ from the required {:08x}",
@@ -344,10 +381,37 @@ impl HeaderChain {
             );
         }
         ensure!(
-            header.time > median_time(window),
+            header.time > median_time(&context),
             "peer header time is not after the median of the previous blocks"
         );
         Ok(())
+    }
+
+    fn preceding_context<'a>(
+        &self,
+        window: &'a [Header],
+    ) -> Result<(u64, Cow<'a, [Header]>), Error> {
+        let Some(ancestors) = &self.ancestors else {
+            return Ok((self.start_height, Cow::Borrowed(window)));
+        };
+        let bound = context_headers(self.chain) + 1;
+        let next_height = self
+            .start_height
+            .checked_add(u64::try_from(window.len())?)
+            .context("header context height overflow")?;
+        let tail = if window.len() >= bound {
+            Cow::Borrowed(&window[window.len() - bound..])
+        } else {
+            let count = (bound - window.len()).min(ancestors.len());
+            let mut tail = Vec::with_capacity(count + window.len());
+            tail.extend_from_slice(&ancestors[ancestors.len() - count..]);
+            tail.extend_from_slice(window);
+            Cow::Owned(tail)
+        };
+        let first_height = next_height
+            .checked_sub(u64::try_from(tail.len())?)
+            .context("header context precedes genesis")?;
+        Ok((first_height, tail))
     }
 }
 
