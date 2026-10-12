@@ -16,7 +16,9 @@ use urma_chain::inclusion::{MerklePath, TransactionProof};
 use urma_node::{
     model::{ChainPoint, RecordPackage},
     peer_codec::Codec,
-    peer_protocol::{Kind, PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response},
+    peer_protocol::{
+        Kind, PARENT_LIMIT, PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
+    },
 };
 
 fn request() -> Request {
@@ -27,6 +29,12 @@ fn request() -> Request {
         chain_genesis: BlockHash::from_byte_array([1; 32]),
         kind: Kind::Record,
         txid: Txid::from_byte_array([2; 32]),
+    }
+}
+fn parent_request() -> Request {
+    Request {
+        kind: Kind::Parent,
+        ..request()
     }
 }
 fn package() -> RecordPackage {
@@ -149,21 +157,30 @@ fn request_and_all_response_variants_round_trip_and_close_with_exact_prefix() {
     block_on(async {
         let protocol = StreamProtocol::new(PROTOCOL);
         let mut codec = Codec::default().clone();
-        let expected = serde_json::to_vec(&request()).unwrap();
-        let mut wire = Stream::new(vec![]);
-        codec
-            .write_request(&protocol, &mut wire, request())
-            .await
-            .unwrap();
-        assert!(wire.closed);
-        assert_eq!(wire.output, frame(&expected));
-        let decoded = codec
-            .read_request(&protocol, &mut Stream::new(wire.output))
-            .await
-            .unwrap();
-        assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
+        for (value, kind) in [(request(), "record"), (parent_request(), "parent")] {
+            assert_eq!(serde_json::to_value(&value).unwrap()["kind"], kind);
+            let expected = serde_json::to_vec(&value).unwrap();
+            let mut wire = Stream::new(vec![]);
+            codec
+                .write_request(&protocol, &mut wire, value)
+                .await
+                .unwrap();
+            assert!(wire.closed);
+            assert_eq!(wire.output, frame(&expected));
+            let decoded = codec
+                .read_request(&protocol, &mut Stream::new(wire.output))
+                .await
+                .unwrap();
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
+        }
+        let parent = serde_json::to_value(response(Reply::Parent("0001ff".into()))).unwrap();
+        assert_eq!(
+            parent["result"],
+            serde_json::json!({"status":"parent","package":"0001ff"})
+        );
         for result in [
             Reply::Record(Box::new(package())),
+            Reply::Parent("0001ff".into()),
             Reply::Missing,
             Reply::WrongNetwork,
             Reply::UnsupportedVersion,
@@ -327,7 +344,7 @@ fn malformed_json_unknown_fields_and_wrong_protocol_are_rejected() {
                 io::ErrorKind::InvalidData
             );
         }
-        let wrong = StreamProtocol::new("/urma/node/record/2");
+        let wrong = StreamProtocol::new("/urma/node/record/1");
         let mut wire = Stream::new(vec![]);
         assert!(Codec.read_request(&wrong, &mut wire).await.is_err());
         assert!(Codec.read_response(&wrong, &mut wire).await.is_err());
@@ -400,5 +417,33 @@ fn oversized_outbound_response_hits_bounded_serializer_before_any_async_io() {
         assert_eq!(wire.write_polls, 0);
         assert!(wire.output.is_empty());
         assert!(!wire.closed);
+    });
+}
+
+// The server's TooLarge branch for a retained parent over PARENT_LIMIT is not
+// reachable end to end: genuine transactions decode under an 8,000,000-byte
+// cap, below PARENT_LIMIT. This checks the limit relation instead: a maximal
+// parent's hex frame fits RESPONSE_LIMIT and survives the codec unchanged.
+// The client's pre-decode hex length check is exercised over the network in
+// peer_parent.rs.
+#[test]
+fn maximal_parent_hex_fits_the_response_frame_and_round_trips() {
+    block_on(async {
+        let maximal = "ff".repeat(PARENT_LIMIT);
+        let value = response(Reply::Parent(maximal));
+        let expected = serde_json::to_vec(&value).unwrap();
+        assert!(expected.len() <= RESPONSE_LIMIT);
+        let protocol = StreamProtocol::new(PROTOCOL);
+        let mut wire = Stream::new(vec![]);
+        wire.chunk = 64 * 1024;
+        Codec
+            .write_response(&protocol, &mut wire, value)
+            .await
+            .unwrap();
+        assert!(wire.closed);
+        let mut input = Stream::new(wire.output);
+        input.chunk = 64 * 1024;
+        let decoded = Codec.read_response(&protocol, &mut input).await.unwrap();
+        assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
     });
 }
