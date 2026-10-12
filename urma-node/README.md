@@ -55,7 +55,7 @@ source calls and SQL commits are not forcibly interrupted. Failed acquisitions
 remain incomplete and the local status reports the last retention error.
 Pruned mode does not automatically download complete objects.
 
-Background cache size limits, URMA peer transport, application adapters and
+Background cache size limits, distributed peer discovery, application adapters and
 service packaging are not yet delivered.
 Windows private-file ACL and existing runtime I/O
 porting are also outstanding. This is not a release candidate.
@@ -98,3 +98,49 @@ it also does not establish a successful header refresh.
 Neither the light client nor inclusion proofs establish full scripts/UTXO/MWEB
 consensus, independence of peer operators, or completeness of selective data.
 The URMA V0 wire protocol and Names V0 semantics remain unchanged.
+
+## Direct URMA peer exchange
+
+The experimental overlay uses libp2p 0.56 with TCP, Noise and Yamux. It is
+separate from the bearer-protected loopback API. An explicitly started peer can
+serve selected locally retained record packages; it does not fetch on behalf of
+inbound requests, serve wallet secrets, offer control commands or certify scan
+coverage. A receiving engine verifies packages against its own selected headers.
+`Missing` means only that this peer has no selected local package.
+
+Use `create-peer-key PATH` to create a new private Ed25519 transport identity,
+then opt in with `serve --peer-key PATH`. This identity is not a wallet or a
+decryption key. There is no automatic key creation or peer startup. Add
+`--urma-listen 0.0.0.0:28332` to accept inbound peer connections, or omit it for
+outbound-only operation. Add explicit peers using
+`--urma-peer /ip4/ADDRESS/tcp/PORT/p2p/PEER_ID` (IPv6 also supported). Addresses
+and their origins are saved in the archive's bounded `peers.json`; identities
+are authenticated during connection setup but are not authorities for URMA data.
+The peer book has no implicit seed, DNS lookup or automatic replacement of
+manual entries. Without `--peer-key`, normal offline/control-only operation does
+not read the peer book or start this transport.
+
+The service can use configured peers for unpruned background object recovery,
+then fall back to full blocks at known locations. Full-block scanning remains
+the independent completeness check. The standalone peer exchange is currently
+by requested TXID; range discovery, address gossip, relay/DCUtR, distributed
+discovery and two real consumer applications are still pending.
+
+Wire messages use `/urma/node/record/1`, a 4-byte big-endian JSON length followed
+by exactly one payload and stream EOF. Requests are capped at 256 bytes and
+responses at 32 MiB. Connections are capped at eight (four each direction),
+one per peer, with at most four pending handshakes per direction. Request-response
+streams are limited to two per connection; Yamux uses its bounded 0.12 backend
+with four streams and 256 KiB buffering per stream. Application queues, active
+requests and archive-reader work are separately bounded. Serving permits 16
+requests per second globally and four per peer with matching burst sizes;
+response bytes have a 64 MiB burst and 4 MiB/s refill. Overload can refuse data.
+These are operational limits, not changes to URMA V0.
+
+Connect/handshake timeout is five seconds; the request-response stream timeout
+is eight seconds after negotiation, and a caller has a ten-second total budget.
+The latter also covers queueing. Cancellation does not release issued request
+accounting until a terminal transport event; late replies cannot become success.
+Shutdown joins owned workers. Already-running SQLite work and bounded codec CPU
+work are cooperative rather than forcibly interrupted. These limits are not a
+claim of a tested global memory ceiling or resistance to every denial of service.

@@ -23,6 +23,7 @@ pub struct Service {
     sync_error: Arc<Mutex<Option<String>>>,
     retention_error: Arc<Mutex<Option<String>>>,
     retention: Option<(PathBuf, urma_runtime::multipart::RecoveryLimits)>,
+    sources: Vec<Arc<dyn crate::retrieval::RecordSource + Send + Sync>>,
 }
 
 impl Service {
@@ -45,11 +46,25 @@ impl Service {
             sync_error: Arc::new(Mutex::new(None)),
             retention_error: Arc::new(Mutex::new(None)),
             retention: None,
+            sources: Vec::new(),
         })
     }
 
     pub fn address(&self) -> Result<SocketAddr, Error> {
         Ok(self.listener.local_addr()?)
+    }
+
+    /// Explicit optional candidates for background object recovery. Merely
+    /// configuring handles does not dial, fetch, change headers or scan coverage.
+    pub fn with_record_sources(
+        mut self,
+        sources: Vec<Arc<dyn crate::retrieval::RecordSource + Send + Sync>>,
+    ) -> Result<Self, Error> {
+        if sources.len() > 1024 {
+            return Err(Error::Invalid("too many configured record sources".into()));
+        }
+        self.sources = sources;
+        Ok(self)
     }
 
     /// Configure bounded background object acquisition. The caller supplies an
@@ -94,12 +109,16 @@ impl Service {
                         // its error remains separately visible in status.
                         if !self.stop.load(Ordering::Acquire) {
                             if let Some((scratch, limits)) = &self.retention {
-                                let result = self.engine.retain_next_object(
-                                    &[],
-                                    *limits,
-                                    scratch,
-                                    &self.stop,
-                                );
+                                let sources: Vec<&dyn crate::retrieval::RecordSource> = self
+                                    .sources
+                                    .iter()
+                                    .map(|source| {
+                                        source.as_ref() as &dyn crate::retrieval::RecordSource
+                                    })
+                                    .collect();
+                                let result = self
+                                    .engine
+                                    .retain_next_object(&sources, *limits, scratch, &self.stop);
                                 if let Ok(mut error) = self.retention_error.lock() {
                                     *error = result.err().map(|e| e.to_string());
                                 }
@@ -246,6 +265,7 @@ impl Service {
                     200,
                     json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
                         "retention_configured":self.retention.is_some(),
+                        "record_sources_configured":self.sources.len(),
                         "capabilities":["status","header-sync","full-block-scan","record-read","object-status"]}),
                 )
             }

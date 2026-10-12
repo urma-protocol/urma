@@ -3,6 +3,8 @@ use std::{net::SocketAddr, path::PathBuf, sync::Arc};
 use urma_node::{
     engine::Engine,
     model::ArchiveConfig,
+    peer::PeerNetwork,
+    peerbook::{Origin, PeerAddress, PeerBook},
     service::{Service, create_token},
     source::LitecoinSource,
 };
@@ -25,6 +27,8 @@ enum Command {
     Status,
     /// Create a new private service token (no wallet keys involved).
     CreateToken { path: PathBuf },
+    /// Create a separate transport identity; never a wallet or decryption key.
+    CreatePeerKey { path: PathBuf },
     /// Run the authenticated loopback service in the foreground.
     Serve {
         #[arg(long, default_value = "127.0.0.1:28331")]
@@ -37,6 +41,15 @@ enum Command {
         /// Explicit trusted anchor and authenticated preceding header context.
         #[arg(long, requires = "p2p")]
         header_bootstrap: Option<PathBuf>,
+        /// Opt into the URMA overlay using an explicitly created transport key.
+        #[arg(long)]
+        peer_key: Option<PathBuf>,
+        /// Optional URMA peer listener, separate from the local control API.
+        #[arg(long, requires = "peer_key")]
+        urma_listen: Option<SocketAddr>,
+        /// Explicit IP/TCP/p2p routing hint; saved in this archive's peer book.
+        #[arg(long, requires = "peer_key")]
+        urma_peer: Vec<libp2p::Multiaddr>,
         /// Maximum payload per background object attempt (not a protocol limit).
         #[arg(long, default_value_t = 64 * 1024 * 1024)]
         max_object_bytes: u64,
@@ -59,6 +72,10 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Arguments::parse();
     if let Command::CreateToken { path } = &args.command {
         create_token(path)?;
+        return Ok(());
+    }
+    if let Command::CreatePeerKey { path } = &args.command {
+        create_peer_key(path)?;
         return Ok(());
     }
     let config: ArchiveConfig = serde_json::from_slice(&urma_io_read_config(&args.config)?)?;
@@ -92,12 +109,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             max_object_bytes,
             max_object_nodes,
             object_timeout_seconds,
+            peer_key,
+            urma_listen,
+            urma_peer,
             ..
         } => {
             let token = read_token(&token_file)?;
             let retain =
                 synchronize && engine.status()?.retention == urma_node::model::Retention::Unpruned;
-            let mut service = Service::bind(listen, token, engine)?;
+            let mut service = Service::bind(listen, token, engine.clone())?;
             if retain {
                 let scratch = args.data.join("scratch");
                 let mut builder = std::fs::DirBuilder::new();
@@ -126,15 +146,86 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                     },
                 )?;
             }
+            // Control auth/configuration and archive ownership precede any
+            // overlay startup. Without --peer-key this path does no key/book I/O.
+            let network = if let Some(path) = peer_key {
+                let identity = read_peer_key(&path)?;
+                let book_path = args.data.join("peers.json");
+                let mut book = PeerBook::load(&book_path, engine.status()?.chain_genesis)?;
+                let mut changed = false;
+                for address in urma_peer {
+                    let Some(libp2p::multiaddr::Protocol::P2p(peer)) = address.iter().last() else {
+                        return Err("URMA peer address requires a terminal peer identity".into());
+                    };
+                    changed |= book.insert(PeerAddress::new(peer, address)?, Origin::Manual)?;
+                }
+                if changed {
+                    book.save(&book_path)?;
+                }
+                let listener = urma_listen.map(|socket| {
+                    use libp2p::multiaddr::Protocol;
+                    let mut address = libp2p::Multiaddr::empty();
+                    address.push(match socket.ip() {
+                        std::net::IpAddr::V4(ip) => Protocol::Ip4(ip),
+                        std::net::IpAddr::V6(ip) => Protocol::Ip6(ip),
+                    });
+                    address.push(Protocol::Tcp(socket.port()));
+                    address
+                });
+                let network = PeerNetwork::start(engine.clone(), identity, listener)?;
+                let sources = book
+                    .entries()
+                    .into_iter()
+                    .map(|(address, _)| {
+                        Arc::new(network.source(address))
+                            as Arc<dyn urma_node::retrieval::RecordSource + Send + Sync>
+                    })
+                    .collect();
+                service = service.with_record_sources(sources)?;
+                eprintln!(
+                    "URMA peer identity {} listener {:?}",
+                    network.peer_id(),
+                    network.listen_address()
+                );
+                Some(network)
+            } else {
+                None
+            };
             eprintln!(
                 "URMA Node listening at {} (authenticated loopback)",
                 service.address()?
             );
             service.run(synchronize)?;
+            if let Some(network) = network {
+                network.shutdown()?;
+            }
         }
-        Command::CreateToken { .. } => unreachable!(),
+        Command::CreateToken { .. } | Command::CreatePeerKey { .. } => unreachable!(),
     }
     Ok(())
+}
+
+fn create_peer_key(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {
+    let key = libp2p::identity::Keypair::generate_ed25519();
+    let mut bytes = key.to_protobuf_encoding()?;
+    let result = urma_io::write_new(path, &bytes);
+    bytes.fill(0);
+    result?;
+    Ok(())
+}
+
+fn read_peer_key(
+    path: &std::path::Path,
+) -> Result<libp2p::identity::Keypair, Box<dyn std::error::Error>> {
+    if !std::fs::symlink_metadata(path)?.is_file() {
+        return Err("peer key must be a regular private file".into());
+    }
+    let bytes = urma_io::read_private(path, 4096)?;
+    let key = libp2p::identity::Keypair::from_protobuf_encoding(&bytes)?;
+    if key.key_type() != libp2p::identity::KeyType::Ed25519 {
+        return Err("peer identity must be Ed25519".into());
+    }
+    Ok(key)
 }
 
 #[derive(serde::Deserialize)]
@@ -355,5 +446,91 @@ mod bootstrap_config_tests {
                 ..
             }
         ));
+    }
+}
+
+#[cfg(test)]
+mod peer_config_tests {
+    use super::*;
+
+    #[test]
+    fn peer_identity_is_explicit_private_stable_and_never_overwritten() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("peer.key");
+        assert!(read_peer_key(&path).is_err());
+        assert!(!path.exists());
+        create_peer_key(&path).unwrap();
+        let before = std::fs::read(&path).unwrap();
+        let id = read_peer_key(&path).unwrap().public().to_peer_id();
+        assert_eq!(read_peer_key(&path).unwrap().public().to_peer_id(), id);
+        assert!(create_peer_key(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(
+                std::fs::metadata(&path).unwrap().permissions().mode() & 0o077,
+                0
+            );
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+            assert!(read_peer_key(&path).is_err());
+        }
+    }
+
+    #[test]
+    fn invalid_transport_keys_are_refused_without_replacement() {
+        let dir = tempfile::tempdir().unwrap();
+        for bytes in [vec![], vec![1, 2, 3], vec![0; 4097]] {
+            let path = dir.path().join("invalid.key");
+            urma_io::write_replace(&path, &bytes).unwrap();
+            assert!(read_peer_key(&path).is_err());
+            assert_eq!(std::fs::read(&path).unwrap(), bytes);
+        }
+        assert!(read_peer_key(dir.path()).is_err());
+    }
+
+    #[test]
+    fn overlay_flags_require_explicit_identity_and_do_not_imply_chain_sync() {
+        let base = [
+            "urma-node",
+            "--data",
+            "data",
+            "--config",
+            "config",
+            "serve",
+            "--token-file",
+            "token",
+        ];
+        assert!(matches!(
+            Arguments::try_parse_from(base).unwrap().command,
+            Command::Serve {
+                peer_key: None,
+                urma_listen: None,
+                p2p: false,
+                ..
+            }
+        ));
+        let mut listener = base.to_vec();
+        listener.extend(["--urma-listen", "127.0.0.1:0"]);
+        assert!(Arguments::try_parse_from(&listener).is_err());
+        listener.extend(["--peer-key", "transport.key"]);
+        assert!(matches!(
+            Arguments::try_parse_from(&listener).unwrap().command,
+            Command::Serve {
+                peer_key: Some(_),
+                urma_listen: Some(_),
+                p2p: false,
+                ..
+            }
+        ));
+        let peer = libp2p::identity::Keypair::generate_ed25519()
+            .public()
+            .to_peer_id();
+        let address = format!("/ip4/127.0.0.1/tcp/3210/p2p/{peer}");
+        let mut remote = base.to_vec();
+        remote.extend(["--urma-peer", &address]);
+        assert!(Arguments::try_parse_from(&remote).is_err());
+        remote.extend(["--peer-key", "transport.key"]);
+        assert!(Arguments::try_parse_from(remote).is_ok());
     }
 }
