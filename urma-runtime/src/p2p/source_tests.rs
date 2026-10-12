@@ -86,6 +86,40 @@ fn typed_source_returns_tip_header_and_original_block() {
 }
 
 #[test]
+fn typed_refresh_preserves_local_context_error_without_freshening_status() {
+    let (provider, commands, _dir, _blocks) = regtest_source();
+    locked(&provider.shared.status, "status").refreshed = Freshness::Never;
+    let worker =
+        std::thread::spawn(
+            move || match commands.recv_timeout(Duration::from_secs(2)).unwrap() {
+                Command::Refresh { reply } => reply
+                    .send(Err(Error::HeaderContext(
+                        urma_chain::pow::PowError::ShortWindow {
+                            needed: 2017,
+                            got: 2,
+                        },
+                    )))
+                    .unwrap(),
+                Command::Block { .. } => {
+                    panic!("missing context must stop before body acquisition")
+                }
+            },
+        );
+    let error = provider.verified_tip().unwrap_err();
+    worker.join().unwrap();
+    assert!(matches!(
+        error,
+        Error::HeaderContext(urma_chain::pow::PowError::ShortWindow {
+            needed: 2017,
+            got: 2
+        })
+    ));
+    let status = locked(&provider.shared.status, "status");
+    assert!(matches!(status.refreshed, Freshness::Never));
+    assert_eq!(status.peers, 1);
+}
+
+#[test]
 fn typed_source_rejects_block_header_and_merkle_mismatches() {
     for header_mismatch in [true, false] {
         let (provider, commands, _dir, blocks) = regtest_source();

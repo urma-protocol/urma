@@ -69,7 +69,7 @@ pub(super) fn run(shared: Arc<Shared>, commands: Receiver<Command>) {
         maintain_peers(&shared, &mut peers);
         let synced = locked(&shared.status, "status").synced;
         if !synced {
-            if !sync_round(&shared, &mut peers) {
+            if sync_round(&shared, &mut peers).is_err() {
                 std::thread::sleep(Duration::from_millis(P2P_IDLE_POLL_MILLIS));
             }
             continue;
@@ -127,12 +127,7 @@ fn now_unix() -> Result<u32, Error> {
 fn serve(shared: &Shared, peers: &mut Peers, command: Command) {
     match command {
         Command::Refresh { reply } => {
-            let outcome = match sync_round(shared, peers) {
-                true => Ok(()),
-                false => Err(Error::Unsupported(
-                    "no peer answered the header refresh".into(),
-                )),
-            };
+            let outcome = sync_round(shared, peers);
             match reply.send(outcome) {
                 Ok(()) => (),
                 Err(error) => tracing::warn!(%error, "refresh requester went away"),
@@ -145,26 +140,124 @@ fn serve(shared: &Shared, peers: &mut Peers, command: Command) {
     }
 }
 
-fn sync_round(shared: &Shared, peers: &mut Peers) -> bool {
+#[derive(Debug, PartialEq, Eq)]
+enum HeaderPeerAction {
+    Advance,
+    KeepForContext,
+    Ban,
+    Drop,
+}
+
+#[derive(Default)]
+struct HeaderRound {
+    answered: usize,
+    context: Option<Error>,
+}
+
+#[cfg(test)]
+mod header_round_tests {
+    use super::*;
+    use urma_chain::pow::PowError;
+
+    fn missing() -> Error {
+        Error::Context {
+            message: "retarget".into(),
+            cause: Box::new(Error::HeaderContext(PowError::ShortWindow {
+                needed: 2017,
+                got: 2,
+            })),
+        }
+    }
+
+    #[test]
+    fn local_context_preserves_peer_without_counting_a_successful_answer() {
+        let mut round = HeaderRound::default();
+        assert_eq!(
+            round.observe(Err(missing())),
+            HeaderPeerAction::KeepForContext
+        );
+        assert_eq!(round.answered, 0);
+        assert_eq!(
+            round.observe(Err(Error::Invalid("bits".into()))),
+            HeaderPeerAction::Ban
+        );
+        assert_eq!(
+            round.observe(Err(Error::Io(std::io::ErrorKind::TimedOut.into()))),
+            HeaderPeerAction::Drop
+        );
+        assert_eq!(round.answered, 0);
+        assert!(round.finish().unwrap_err().is_header_context());
+    }
+
+    #[test]
+    fn only_successful_sync_counts_and_empty_round_is_not_success() {
+        assert!(matches!(
+            HeaderRound::default().finish(),
+            Err(Error::Unsupported(_))
+        ));
+        let mut round = HeaderRound::default();
+        assert_eq!(
+            round.observe(Err(missing())),
+            HeaderPeerAction::KeepForContext
+        );
+        assert_eq!(round.observe(Ok(())), HeaderPeerAction::Advance);
+        assert_eq!(round.answered, 1);
+        assert_eq!(
+            round.observe(Err(missing())),
+            HeaderPeerAction::KeepForContext
+        );
+        assert_eq!(round.answered, 1);
+        round.finish().unwrap();
+    }
+}
+
+impl HeaderRound {
+    fn observe(&mut self, outcome: Result<(), Error>) -> HeaderPeerAction {
+        match outcome {
+            Ok(()) => {
+                self.answered += 1;
+                HeaderPeerAction::Advance
+            }
+            Err(error) if error.is_header_context() => {
+                self.context = Some(error);
+                HeaderPeerAction::KeepForContext
+            }
+            Err(Error::Invalid(_)) => HeaderPeerAction::Ban,
+            Err(_) => HeaderPeerAction::Drop,
+        }
+    }
+
+    fn finish(self) -> Result<(), Error> {
+        if self.answered > 0 {
+            Ok(())
+        } else {
+            Err(self.context.unwrap_or_else(|| {
+                Error::Unsupported("no peer answered the header refresh".into())
+            }))
+        }
+    }
+}
+
+fn sync_round(shared: &Shared, peers: &mut Peers) -> Result<(), Error> {
     let started = Instant::now();
-    let mut answered = 0;
+    let mut round = HeaderRound::default();
     let mut index = 0;
     while index < peers.count() {
-        match sync_from(shared, peers, index) {
-            Ok(()) => {
-                answered += 1;
-                index += 1;
-            }
-            Err(error @ Error::Invalid(_)) => {
-                tracing::warn!(peer = %peers.connected[index].address, %error, "peer banned for invalid headers");
+        let outcome = sync_from(shared, peers, index);
+        if let Err(error) = &outcome {
+            tracing::warn!(peer = %peers.connected[index].address, %error, "header synchronization failed");
+        }
+        match round.observe(outcome) {
+            HeaderPeerAction::Advance | HeaderPeerAction::KeepForContext => index += 1,
+            HeaderPeerAction::Ban => {
                 peers.ban_peer(index);
             }
-            Err(error) => {
-                tracing::warn!(peer = %peers.connected[index].address, %error, "peer dropped during header sync");
+            HeaderPeerAction::Drop => {
                 peers.drop_peer(index);
             }
         }
     }
+    let answered = round.answered;
     let mut status = locked(&shared.status, "status");
     status.peers = peers.count();
     if answered > 0 {
@@ -183,7 +276,7 @@ fn sync_round(shared: &Shared, peers: &mut Peers) -> bool {
         success = answered > 0,
         "light client stage completed"
     );
-    answered > 0
+    round.finish()
 }
 
 fn sync_from(shared: &Shared, peers: &mut Peers, index: usize) -> Result<(), Error> {

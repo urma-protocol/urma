@@ -42,8 +42,10 @@ configuration identity is checked. The interim schema 2 can migrate when all
 member identities remain recoverable locally; otherwise it is refused without
 discarding old evidence.
 
-Unpruned background rounds scan a block first, then attempt at most one
-incomplete object. A rotating root cursor lets later objects proceed when one
+Unpruned background rounds attempt a block scan, then at most one
+incomplete object. Previously verified cached objects can complete even when
+the current synchronization or scan attempt fails; synchronization and retention
+errors are reported separately. A rotating root cursor lets later objects proceed when one
 is unavailable or exceeds configured limits. CLI defaults are 64 MiB payload,
 4,096 records and a cooperative 15-second acquisition budget per object; these
 are resource settings, not protocol limits. Use `--max-object-bytes`,
@@ -75,6 +77,9 @@ writing. The archive uses a process ownership lock and SQLite WAL/FULL on a
 local filesystem.
 
 Header validation is relative to the configured checkpoint and local cache.
+Insufficient local difficulty history is reported separately from an invalid
+peer header. It does not justify deleting the header cache or banning the peer;
+it also does not establish a successful header refresh.
 Neither the light client nor inclusion proofs establish full scripts/UTXO/MWEB
 consensus, independence of peer operators, or completeness of selective data.
 The URMA V0 wire protocol and Names V0 semantics remain unchanged.

@@ -11,9 +11,15 @@ pub enum Error {
     Invalid(String),
     Unsupported(String),
     Capacity(String),
+    /// Local history is insufficient to check contextual header difficulty.
+    /// This does not establish that the peer supplied an invalid header.
+    HeaderContext(urma_chain::pow::PowError),
     Missing(String),
     RateLimited(std::time::Duration),
-    Context { message: String, cause: Box<Error> },
+    Context {
+        message: String,
+        cause: Box<Error>,
+    },
     Io(std::io::Error),
     Json(serde_json::Error),
     Hex(hex::FromHexError),
@@ -65,6 +71,9 @@ impl Display for Error {
                 wait.as_secs()
             ),
             Self::Context { message, cause } => write!(formatter, "{message}: {cause}"),
+            Self::HeaderContext(cause) => {
+                write!(formatter, "local header context is insufficient: {cause}")
+            }
             Self::Io(cause) => Display::fmt(cause, formatter),
             Self::Json(cause) => Display::fmt(cause, formatter),
             Self::Hex(cause) => Display::fmt(cause, formatter),
@@ -141,7 +150,18 @@ impl std::error::Error for Error {
             Self::Persist(cause) => Some(cause),
             Self::Ip(cause) => Some(cause),
             Self::Context { cause, .. } => Some(cause.as_ref()),
+            Self::HeaderContext(cause) => Some(cause),
             _ => None,
+        }
+    }
+}
+impl Error {
+    /// Includes contextual wrappers used when reading a persistent header cache.
+    pub fn is_header_context(&self) -> bool {
+        match self {
+            Self::HeaderContext(_) => true,
+            Self::Context { cause, .. } => cause.is_header_context(),
+            _ => false,
         }
     }
 }

@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use urma_chain::observation::Chain;
-use urma_chain::pow::{chain_work, check_header_pow, expected_bits};
+use urma_chain::pow::{PowError, chain_work, check_header_pow, expected_bits};
 
 pub struct HeaderChain {
     chain: Chain,
@@ -86,6 +86,7 @@ impl HeaderChain {
         if fresh.path.try_exists()? {
             match fresh.load() {
                 Ok(()) => (),
+                Err(error) if error.is_header_context() => return Err(error),
                 Err(error) => {
                     tracing::warn!(%error, path = %fresh.path.display(), "header cache rejected; restarting from the checkpoint");
                     fresh.reset()?;
@@ -330,7 +331,11 @@ impl HeaderChain {
             );
         } else {
             let required = expected_bits(self.chain, window, self.start_height, header.time)
-                .map_err(|cause| Error::Invalid(cause.to_string()))?;
+                .map_err(|cause| match cause {
+                    cause @ (PowError::ShortWindow { .. }
+                    | PowError::MissingDifficultyContext { .. }) => Error::HeaderContext(cause),
+                    cause => Error::Invalid(cause.to_string()),
+                })?;
             ensure!(
                 header.bits == required,
                 "peer header bits {:08x} differ from the required {:08x}",
