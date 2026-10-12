@@ -358,7 +358,15 @@ fn recover_staged(
 
 pub fn verify(directory: &Path, limits: &Limits) -> Result<RecoveredReport, Error> {
     let scratch = tempfile::tempdir_in(directory)?;
-    let mut object = proofs::reconstruct(directory, recovery_limits(limits)?, scratch.path())?;
+    Ok(verify_retained_staged(directory, limits, scratch.path())?.0)
+}
+
+fn verify_retained_staged(
+    directory: &Path,
+    limits: &Limits,
+    scratch: &Path,
+) -> Result<(RecoveredReport, snapshot::ValidatedSnapshot), Error> {
+    let mut object = proofs::reconstruct(directory, recovery_limits(limits)?, scratch)?;
     let actual = descriptor::digest(&mut object)?;
     let cached = directory.join("object.bin");
     if cached.try_exists()? {
@@ -370,11 +378,11 @@ pub fn verify(directory: &Path, limits: &Limits) -> Result<RecoveredReport, Erro
         }
     }
     object.rewind()?;
-    let payload = scratch.path().join("reconstructed.bin");
+    let payload = scratch.join("reconstructed.bin");
     let mut file = File::create(&payload)?;
     std::io::copy(&mut object, &mut file)?;
     file.sync_all()?;
-    let validated = snapshot::validate(&payload, scratch.path(), limits)?;
+    let validated = snapshot::validate(&payload, scratch, limits)?;
     validated
         .descriptor
         .require_profile(object.manifest().profile)?;
@@ -382,20 +390,20 @@ pub fn verify(directory: &Path, limits: &Limits) -> Result<RecoveredReport, Erro
         &validated.repository,
         &validated.inventory,
         &validated.descriptor,
-        scratch.path(),
+        scratch,
     )?;
     let locator: proofs::Locator =
         serde_json::from_reader(File::open(directory.join("locator.json"))?)?;
     let snapshot = SnapshotReport {
         schema: 1,
-        descriptor: validated.descriptor,
-        inventory: validated.inventory,
+        descriptor: validated.descriptor.clone(),
+        inventory: validated.inventory.clone(),
         payload_sha256: hex::encode(actual),
         scope: "current committed snapshot; earlier history is not included".into(),
         limits: limits.clone(),
         scan,
     };
-    Ok(RecoveredReport {
+    let report = RecoveredReport {
         locator,
         content: "complete".into(),
         author_proof: "verified".into(),
@@ -403,7 +411,91 @@ pub fn verify(directory: &Path, limits: &Limits) -> Result<RecoveredReport, Erro
         author: object.author().to_string(),
         chain_inclusion: "not_checked".into(),
         snapshot,
-    })
+    };
+    Ok((report, validated))
+}
+
+/// Reconstruct a Git snapshot from a caller-owned staging directory containing
+/// the existing `locator.json` and `tx` graph in the canonical transparent
+/// Bitcoin projection used by Git export, rather than necessarily the original
+/// Litecoin transaction bytes. Every call independently
+/// rechecks the signed graph, profile, PACK, descriptor and review; a matching
+/// cached `object.bin` never substitutes for reconstruction.
+///
+/// Writes `object.bin`, `snapshot.pack` and `recovery.json` in that directory.
+/// Staging may be modified on failure; the caller selects acquisition/fallback
+/// before publishing output. This performs no Node/network access and establishes
+/// no chain membership: `chain_inclusion` is always `not_checked`.
+pub fn recover_retained(directory: &Path, limits: &Limits) -> Result<RecoveredReport, Error> {
+    let scratch = tempfile::tempdir_in(directory)?;
+    Ok(recover_retained_staged(directory, limits, scratch.path())?.0)
+}
+
+fn recover_retained_staged(
+    directory: &Path,
+    limits: &Limits,
+    scratch: &Path,
+) -> Result<(RecoveredReport, snapshot::ValidatedSnapshot), Error> {
+    let (report, validated) = verify_retained_staged(directory, limits, scratch)?;
+    for artifact in ["object.bin", "snapshot.pack", "recovery.json"] {
+        match std::fs::symlink_metadata(directory.join(artifact)) {
+            Ok(metadata) if metadata.is_file() => (),
+            Ok(_) => {
+                return Err(Error::Invalid(
+                    "retained recovery artifact must be regular".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => (),
+            Err(error) => return Err(error.into()),
+        }
+    }
+    for (source, target) in [
+        ("reconstructed.bin", "object.bin"),
+        ("verified.pack", "snapshot.pack"),
+    ] {
+        let target = directory.join(target);
+        std::fs::copy(scratch.join(source), &target)?;
+        File::open(target)?.sync_all()?;
+    }
+    urma_io::write_replace(
+        &directory.join("recovery.json"),
+        &serde_json::to_vec_pretty(&report)?,
+    )
+    .map_err(urma_runtime::error::Error::from)?;
+    File::open(directory)?.sync_all()?;
+    Ok((report, validated))
+}
+
+/// Independently reconstruct retained signed proofs and install the validated
+/// checkout using the existing destination and installation rules. Acquisition
+/// and fallback belong to the caller and must precede checkout publication.
+/// The caller-owned staging directory may be modified even if installation
+/// fails; it remains owned by the caller. No Node, network or membership check
+/// occurs, and the returned report always says `chain_inclusion: not_checked`.
+pub fn clone_retained_named(
+    directory: &Path,
+    requested: config::CloneDestination,
+    limits: &Limits,
+) -> Result<(RecoveredReport, PathBuf), Error> {
+    let parent = config::staging_parent(&requested)?;
+    // Keep validation on the destination filesystem for install_verified's
+    // atomic rename, independently of where the caller retained its proofs.
+    let scratch = tempfile::Builder::new()
+        .prefix(".urma-retained-")
+        .tempdir_in(parent)?;
+    let (report, validated) = recover_retained_staged(directory, limits, scratch.path())?;
+    let destination =
+        config::destination(requested, &report.snapshot.descriptor, report.locator.root)?;
+    git::timed("Installing and checking out verified snapshot", || {
+        checkout::install_verified(
+            &directory.join("object.bin"),
+            &destination,
+            &validated,
+            &report.snapshot,
+            directory,
+        )
+    })?;
+    Ok((report, destination))
 }
 
 pub fn clone_root(
