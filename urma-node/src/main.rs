@@ -15,6 +15,7 @@ use urma_node::{
     source::{CommitSources, LitecoinSource, PublicCommitSource, RuntimeCommitSource},
 };
 use urma_runtime::{
+    endpoints,
     node::{Node, NodeConfig},
     p2p::{Anchor, HeaderBootstrap, context_headers},
 };
@@ -268,7 +269,8 @@ fn attach_commit_sources(
     if let Some(local) = local {
         sources.push("local-rpc".into(), Box::new(local));
     }
-    if let Some(cache) = public {
+    let has_public = !endpoints::defaults(chain).is_empty();
+    if let Some(cache) = public.filter(|_cache| has_public) {
         private_directory(&cache)?;
         sources.push(
             "public".into(),

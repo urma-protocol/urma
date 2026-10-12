@@ -668,6 +668,7 @@ fn shutdown_restart_preserves_scans_and_owner_lock_precedes_p2p_cache_creation()
             "--token-file",
             fixture.token_path.to_str().unwrap(),
             "--p2p",
+            "--no-commit-public",
         ])
         .finish();
     assert!(!busy.status.success());

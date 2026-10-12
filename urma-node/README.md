@@ -391,8 +391,8 @@ the daemon assembles, in this order:
 2. `overlay`, with `--peer-key`: the same peer-book entries used for record
    recovery. Peers serve only raw bytes they already retain and never fetch on
    behalf of others.
-3. `public`, unless `--no-commit-public`: the chain's default public providers,
-   with TLS pins under `DATA/providers` (mode 0700) and no light client. The
+3. `public`, unless `--no-commit-public`: the chain's default public providers
+   (a chain without defaults, such as regtest, gets no entry), with TLS pins under `DATA/providers` (mode 0700) and no light client. The
    providers are first contacted lazily on the first missing parent and a
    failed connection is retried on the next one, so an offline start succeeds.
 
