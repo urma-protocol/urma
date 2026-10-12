@@ -23,7 +23,7 @@ use std::{
     fs::{self, File},
     io::{self, Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    os::unix::fs::PermissionsExt,
+    os::unix::{fs::PermissionsExt, process::CommandExt},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
     sync::{
@@ -44,7 +44,7 @@ use urma_names::{
     index::{Checkpoint, NamesIndex},
     name::Name,
     payload::{Approval, Payload},
-    state::{PendingRecord, Resolution, Verdict},
+    state::{PendingRecord, Resolution, Target, Verdict},
 };
 use urma_node::{
     Error,
@@ -278,6 +278,9 @@ fn http(address: SocketAddr, request: &str) -> io::Result<(u16, Value)> {
 struct Host {
     child: Option<Child>,
     directory: PathBuf,
+    // Only the explicit Surf host creates a new group. Bridge and its CLI
+    // inherit it; retain the group ID even after the host child is reaped.
+    owned_group: Option<u32>,
 }
 
 impl Host {
@@ -301,7 +304,11 @@ impl Host {
                 let report: Value =
                     serde_json::from_slice(&fs::read(self.directory.join("result.json")).unwrap())
                         .unwrap();
-                assert_eq!(report["cli_reads_and_orphan_fallback"], true);
+                if self.owned_group.is_some() {
+                    assert_eq!(report["surf_bridge_reads_and_orphan_fallback"], true);
+                } else {
+                    assert_eq!(report["cli_reads_and_orphan_fallback"], true);
+                }
                 assert_eq!(report["normal_service_joins_returned"], true);
                 return;
             }
@@ -317,6 +324,9 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
+        if let Some(group) = self.owned_group.take() {
+            kill_owned_group(group);
+        }
         let Some(mut child) = self.child.take() else {
             return;
         };
@@ -879,12 +889,20 @@ fn scenario(control: &Path) {
 fn names_archive_service_host() {
     let control =
         PathBuf::from(std::env::var_os("U3_NAMES_ARCHIVE_SERVICE_TEMP").expect("owned TEMP"));
-    scenario(&control);
+    let receipt = match std::env::var_os("U3_NAMES_ARCHIVE_SERVICE_CASE") {
+        None => {
+            scenario(&control);
+            json!({"cli_reads_and_orphan_fallback":true,"normal_service_joins_returned":true})
+        }
+        Some(case) if case == "surf" => {
+            surf_scenario(&control);
+            json!({"surf_bridge_reads_and_orphan_fallback":true,"normal_service_joins_returned":true})
+        }
+        Some(case) => panic!("unknown owned Names host case: {case:?}"),
+    };
     fs::write(
         control.join("result.json"),
-        serde_json::to_vec(&json!({
-        "cli_reads_and_orphan_fallback":true,"normal_service_joins_returned":true}))
-        .unwrap(),
+        serde_json::to_vec(&receipt).unwrap(),
     )
     .unwrap();
 }
@@ -911,6 +929,317 @@ fn real_names_service_cli_reads_exact_projection_then_falls_back_without_acquisi
     Host {
         child: Some(child),
         directory: directory.path().to_owned(),
+        owned_group: None,
+    }
+    .finish();
+}
+
+// Only signal the process group created by this test's process_group(0).
+// The outer parent is outside that group, so cleanup also reaches a CLI child
+// still inside the bridge's g_spawn_sync. Reap the owned host in Host::drop;
+// this does not claim that Rust can waitpid arbitrary non-child descendants.
+fn kill_owned_group(group: u32) {
+    assert!(group > 1 && group <= i32::MAX as u32, "invalid owned PGID");
+    let mut command = Command::new("/bin/kill");
+    command
+        .env_clear()
+        .args(["-KILL", "--", &format!("-{group}")])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null());
+    let mut killer = match command.spawn() {
+        Ok(child) => OwnedChild(Some(child)),
+        Err(error) => {
+            eprintln!("cannot signal owned Surf host group {group}: {error}");
+            return;
+        }
+    };
+    let deadline = Instant::now() + CLEANUP_TIMEOUT;
+    loop {
+        match killer.0.as_mut().unwrap().try_wait() {
+            Ok(Some(exit)) => {
+                killer.0.take();
+                // A group already gone after normal exit is also expected.
+                if !matches!(exit.code(), Some(0 | 1)) {
+                    eprintln!("owned Surf group kill helper failed: {exit}");
+                }
+                return;
+            }
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(5)),
+            other => {
+                eprintln!("owned Surf group kill/reap exceeded bound or failed: {other:?}");
+                return; // OwnedChild bounds cleanup of the kill helper itself.
+            }
+        }
+    }
+}
+
+fn required_surf_bridge() -> PathBuf {
+    let path = std::env::var_os("URMA_SURF_BRIDGE")
+        .expect("explicit Surf integration requires URMA_SURF_BRIDGE; no automatic skip");
+    let path =
+        fs::canonicalize(path).expect("URMA_SURF_BRIDGE must name an existing external bridge");
+    let metadata = fs::metadata(&path).unwrap();
+    assert!(metadata.is_file(), "URMA_SURF_BRIDGE must be a file");
+    assert_ne!(
+        metadata.permissions().mode() & 0o111,
+        0,
+        "URMA_SURF_BRIDGE must be executable"
+    );
+    path
+}
+
+fn invoke_surf_bridge(
+    control: &Path,
+    registry: Txid,
+    rpc: SocketAddr,
+    expected_code: i32,
+) -> String {
+    let bridge = required_surf_bridge();
+    let out = control.join("bridge-stdout");
+    let err = control.join("bridge-stderr");
+    let mut command = Command::new(bridge);
+    command
+        .env_clear()
+        .current_dir(control)
+        .env("HOME", control.join("home"))
+        .env("TMPDIR", control)
+        .env("XDG_DATA_HOME", control.join("data"))
+        .env("XDG_STATE_HOME", control.join("state"))
+        .env("XDG_CONFIG_HOME", control.join("xdg-config"))
+        .env("XDG_CACHE_HOME", control.join("cache"))
+        .env("LANG", "C")
+        .env("GIO_USE_VFS", "local")
+        .env("GSETTINGS_BACKEND", "memory")
+        .env("URMA_SURF_REGTEST", "1")
+        .env("URMA_BIN", env!("CARGO_BIN_EXE_urma"))
+        .env("URMA_CONFIG", control.join("config.json"))
+        .env("URMA_LOG_OUTPUT", "stderr")
+        .env("URMA_NAMES_DIR", control.join("surf-names"))
+        .env("URMA_WEB_STORE", control.join("web-store"))
+        .env("URMA_RPC_URL", format!("http://{rpc}/"))
+        .env("URMA_NODE_AUTH_FILE", control.join("rpc-cookie"))
+        .env("ASAN_OPTIONS", "detect_leaks=0:abort_on_error=1")
+        .env("UBSAN_OPTIONS", "halt_on_error=1:print_stacktrace=1")
+        .args(["resolve", "rbtc", "alpha"])
+        .arg(registry.to_string());
+    // No separate group here: bridge -> CLI remains in the outer owned host
+    // group. An abnormal host result/timeout triggers group cleanup in parent.
+    let mut child = OwnedChild(Some(
+        command
+            .stdin(Stdio::null())
+            .stdout(File::create(&out).unwrap())
+            .stderr(File::create(&err).unwrap())
+            .spawn()
+            .expect("external Surf bridge spawn"),
+    ));
+    let deadline = Instant::now() + Duration::from_secs(12);
+    let exit = loop {
+        if let Some(exit) = child.0.as_mut().unwrap().try_wait().unwrap() {
+            child.0.take();
+            break exit;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "Surf bridge exceeded owned deadline"
+        );
+        thread::sleep(Duration::from_millis(5));
+    };
+    for path in [&out, &err] {
+        assert!(
+            fs::metadata(path).unwrap().len() < 1024 * 1024,
+            "bridge log bound"
+        );
+    }
+    let stdout = fs::read_to_string(out).unwrap();
+    let stderr = fs::read_to_string(err).unwrap();
+    for marker in [
+        "AddressSanitizer",
+        "LeakSanitizer",
+        "UndefinedBehaviorSanitizer",
+        "runtime error:",
+    ] {
+        assert!(
+            !stdout.contains(marker) && !stderr.contains(marker),
+            "Surf bridge sanitizer diagnostic: {stdout}; {stderr}"
+        );
+    }
+    assert_eq!(
+        exit.code(),
+        Some(expected_code),
+        "Surf bridge must exit normally with the exact expected code: {exit}; {stdout}; {stderr}"
+    );
+    stdout
+}
+
+fn surf_scenario(control: &Path) {
+    required_surf_bridge(); // Missing dependency is an explicit failure in host too.
+    stage(
+        control,
+        "seed genuine Names fixture for external Surf bridge",
+    );
+    let fixture = Fixture::new();
+    let archive = control.join("archive");
+    let engine = fixture.seed(&archive);
+    let session = Session::start(engine.clone());
+    fs::create_dir(control.join("home")).unwrap();
+    for (name, contents) in [("token", TOKEN), ("rpc-cookie", "fixture:fixture")] {
+        let path = control.join(name);
+        fs::write(&path, contents).unwrap();
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600)).unwrap();
+    }
+    fs::write(
+        control.join("config.json"),
+        serde_json::to_vec(&json!({"archive":{
+        "endpoint":session.address,"token_file":control.join("token")}}))
+        .unwrap(),
+    )
+    .unwrap();
+    let rpc = TcpListener::bind("127.0.0.1:0").unwrap();
+    rpc.set_nonblocking(true).unwrap();
+    let rpc_addr = rpc.local_addr().unwrap();
+    let names = control.join("surf-names");
+    let local_index = names
+        .join(NETWORK)
+        .join(format!("{}.json", fixture.genesis));
+    assert!(!names.exists());
+    let page = engine.names_view(fixture.genesis, None, 128).unwrap();
+    assert!(!page.status.complete_to_tip);
+    let Resolution::Bound(bound) = engine
+        .names_resolve(fixture.genesis, &Name::parse("alpha").unwrap())
+        .unwrap()
+        .resolution
+    else {
+        panic!("fixture alpha must be bound");
+    };
+    let Target::Publication(target) = bound.target else {
+        panic!("fixture must name a publication");
+    };
+    let before = read_state(&engine);
+    let source_calls = fixture.source.count();
+    stage(
+        control,
+        "external Surf bridge resolves without a local index",
+    );
+    assert_eq!(
+        invoke_surf_bridge(control, fixture.genesis, rpc_addr, 0).trim_end(),
+        format!("resolved=1 txid={target} err=")
+    );
+    assert!(
+        !names.exists(),
+        "healthy archive resolve created a local Names index"
+    );
+    assert!(!control.join("cache").exists());
+    assert!(!control.join("web-store").exists());
+    assert_eq!(fixture.source.count(), source_calls);
+    assert_eq!(read_state(&engine), before);
+    assert_eq!(
+        json!(engine.names_view(fixture.genesis, None, 128).unwrap()),
+        json!(page)
+    );
+    assert_no_rpc(&rpc);
+
+    stage(control, "orphan projection through public selected reorg");
+    fs::create_dir_all(local_index.parent().unwrap()).unwrap();
+    fixture.index.persist(&local_index).unwrap();
+    assert_eq!(NamesIndex::load(&local_index).unwrap(), fixture.index);
+    assert_eq!(
+        fixture
+            .index
+            .registry
+            .resolve(&Name::parse("alpha").unwrap()),
+        Resolution::Unbound
+    );
+    let index_bytes = fs::read(&local_index).unwrap();
+    let mut replacement = vec![fixture.blocks[0].clone()];
+    for offset in 1..fixture.blocks.len() {
+        replacement.push(witness_block(
+            &[],
+            replacement.last(),
+            40100 + offset as u32,
+        ));
+    }
+    fixture.source.selected(replacement);
+    engine.synchronize_headers().unwrap();
+    assert!(matches!(
+        engine.names_status(fixture.genesis),
+        Err(Error::Stale)
+    ));
+    let before = read_state(&engine);
+    let source_calls = fixture.source.count();
+    let (code, _) = http(
+        session.address,
+        &request(
+            "GET",
+            &format!("/v1/names/{}/view?limit=128", fixture.genesis),
+            &auth(),
+        ),
+    )
+    .unwrap();
+    assert_eq!(
+        code, 409,
+        "real orphan checkpoint must refuse before fallback"
+    );
+    stage(
+        control,
+        "external Surf bridge refuses Unbound from genuine local fallback",
+    );
+    assert_eq!(
+        invoke_surf_bridge(control, fixture.genesis, rpc_addr, 1).trim_end(),
+        format!(
+            "resolved=0 txid= err=alpha.rbtc is Unbound in registry {:.12}",
+            fixture.genesis.to_string()
+        )
+    );
+    assert_eq!(fs::read(&local_index).unwrap(), index_bytes);
+    assert!(!control.join("cache").exists());
+    assert!(!control.join("web-store").exists());
+    assert_eq!(fixture.source.count(), source_calls);
+    assert_eq!(read_state(&engine), before);
+    assert!(matches!(
+        engine.names_status(fixture.genesis),
+        Err(Error::Stale)
+    ));
+    assert_no_rpc(&rpc);
+    stage(
+        control,
+        "Surf host authenticated shutdown/join and ownership reopen",
+    );
+    session.finish();
+    drop(engine);
+    let reopened = Engine::open(&archive, fixture.config, None).unwrap();
+    assert_eq!(read_state(&reopened)["archive"], before["archive"]);
+}
+
+#[test]
+#[ignore = "requires operator-built external Surf bridge in URMA_SURF_BRIDGE; no GUI"]
+fn real_surf_bridge_names_archive_then_local_fallback_without_acquisition() {
+    let bridge = required_surf_bridge();
+    let directory = tempfile::tempdir().unwrap();
+    let mut command = Command::new(std::env::current_exe().unwrap());
+    command
+        .args([
+            "--ignored",
+            "--exact",
+            "names_archive_service_host",
+            "--nocapture",
+            "--test-threads=1",
+        ])
+        .env_clear()
+        .env("U3_NAMES_ARCHIVE_SERVICE_TEMP", directory.path())
+        .env("U3_NAMES_ARCHIVE_SERVICE_CASE", "surf")
+        .env("URMA_SURF_BRIDGE", bridge)
+        .env("TMPDIR", directory.path())
+        .stdin(Stdio::null())
+        .stdout(File::create(directory.path().join("stdout")).unwrap())
+        .stderr(File::create(directory.path().join("stderr")).unwrap())
+        .process_group(0);
+    let child = command.spawn().unwrap();
+    let group = child.id(); // process_group(0) makes this new child its group leader.
+    Host {
+        child: Some(child),
+        directory: directory.path().to_owned(),
+        owned_group: Some(group),
     }
     .finish();
 }
