@@ -801,7 +801,10 @@ fn coverage_and_selected_commit_placement_are_separate_requirements() {
         scan_to(&engine, reveal);
         assert_eq!(engine.status().unwrap().unresolved_dependencies, 0);
         let placements: Vec<u64> = readonly(&directory).prepare("SELECT s.height FROM locators l JOIN selected s ON s.hash=l.block_hash WHERE l.txid=?1 ORDER BY s.height,l.position").unwrap()
-            .query_map([fixture.claim.commit.compute_txid().to_string()], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+            .query_map([fixture.claim.commit.compute_txid().to_string()], |r| {
+            let height: u64 = r.get::<_, i64>(0)?.try_into().expect("selected locator height is nonnegative");
+            Ok(height)
+        }).unwrap().collect::<rusqlite::Result<_>>().unwrap();
         assert_eq!(placements, vec![old, live]);
         engine
             .register_names(fixture.genesis.id(), point(101, &blocks[1]))
@@ -847,7 +850,10 @@ fn coverage_and_selected_commit_placement_are_separate_requirements() {
     assert_eq!(engine.status().unwrap().unresolved_dependencies, 0);
     assert_raw(&engine, &fixture.claim);
     let placements: Vec<u64> = readonly(&directory).prepare("SELECT s.height FROM locators l JOIN selected s ON s.hash=l.block_hash JOIN scans c ON c.block_hash=s.hash WHERE l.txid=?1 AND c.unresolved=0 ORDER BY s.height,l.position").unwrap()
-        .query_map([fixture.claim.commit.compute_txid().to_string()], |r| r.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        .query_map([fixture.claim.commit.compute_txid().to_string()], |r| {
+            let height: u64 = r.get::<_, i64>(0)?.try_into().expect("selected locator height is nonnegative");
+            Ok(height)
+        }).unwrap().collect::<rusqlite::Result<_>>().unwrap();
     assert_eq!(placements, vec![102]);
     engine
         .register_names(fixture.genesis.id(), point(101, &blocks[1]))
