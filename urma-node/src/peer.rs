@@ -7,10 +7,11 @@ use crate::{
     engine::Engine,
     model::RecordPackage,
     peer_codec::Codec,
+    peer_inventory::{lookup, validate_inventory},
     peer_limits::LimitDenied,
     peer_parent::{Parent, validate_parent},
     peer_protocol::{
-        Kind, PARENT_LIMIT, PROTOCOL, RESPONSE_LIMIT, Reply, Request, Response, VERSION,
+        InventoryPage, Kind, PROTOCOL, RESPONSE_LIMIT, Reply, Request, Response, VERSION,
     },
     peerbook::PeerAddress,
     retrieval::RecordSource,
@@ -31,7 +32,7 @@ use std::{
     num::{NonZeroU8, NonZeroUsize},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
     thread::JoinHandle,
@@ -41,7 +42,7 @@ use tokio::sync::mpsc as async_mpsc;
 use urma_chain::observation::Chain;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-const CALL_TIMEOUT: Duration = Duration::from_secs(10);
+pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PENDING: usize = 8;
 
 #[derive(NetworkBehaviour)]
@@ -59,6 +60,7 @@ pub struct PeerNetwork {
     listen: Option<Multiaddr>,
     commands: async_mpsc::Sender<Command>,
     stop: Arc<AtomicBool>,
+    connected: Arc<AtomicU64>,
     worker: Option<JoinHandle<Result<(), Error>>>,
 }
 
@@ -80,38 +82,35 @@ enum Command {
 
 struct Fetch {
     address: PeerAddress,
-    txid: Txid,
+    kind: Kind,
     deadline: Instant,
     answer: Answer,
 }
 
 pub(crate) struct Pending {
     peer: PeerId,
-    txid: Txid,
+    kind: Kind,
     deadline: Instant,
     answer: Answer,
 }
 
 /// Reply channel typed by request kind; a cross-kind reply is a peer error.
-enum Answer {
+pub(crate) enum Answer {
     Record(mpsc::SyncSender<Result<Option<RecordPackage>, Error>>),
     Parent(mpsc::SyncSender<Result<Parent, Error>>),
+    Inventory(mpsc::SyncSender<Result<Option<InventoryPage>, Error>>),
 }
 
 impl Answer {
-    fn kind(&self) -> Kind {
-        match self {
-            Answer::Record(_) => Kind::Record,
-            Answer::Parent(_) => Kind::Parent,
-        }
-    }
-
     fn fail(&self, error: Error) {
         match self {
             Answer::Record(sender) => {
                 let _ = sender.try_send(Err(error));
             }
             Answer::Parent(sender) => {
+                let _ = sender.try_send(Err(error));
+            }
+            Answer::Inventory(sender) => {
                 let _ = sender.try_send(Err(error));
             }
         }
@@ -124,6 +123,9 @@ impl Answer {
             }
             Answer::Parent(sender) => {
                 let _ = sender.try_send(validate_parent(genesis, peer, pending, response));
+            }
+            Answer::Inventory(sender) => {
+                let _ = sender.try_send(validate_inventory(genesis, peer, pending, response));
             }
         }
     }
@@ -158,14 +160,16 @@ impl PeerNetwork {
         let (commands, receiver) = async_mpsc::channel(MAX_PENDING);
         let (startup, ready) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
-        let flag = stop.clone();
+        let connected = Arc::new(AtomicU64::new(0));
+        let (flag, count) = (stop.clone(), connected.clone());
         let worker = std::thread::Builder::new()
             .name("urma-peer".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                runtime.block_on(run(engine, identity, listen, receiver, flag, startup))
+                let control = (receiver, flag, count, startup);
+                runtime.block_on(run(engine, identity, listen, control))
             })?;
         let actual = match ready.recv_timeout(Duration::from_secs(5)) {
             Ok(Ok(address)) => address,
@@ -186,12 +190,17 @@ impl PeerNetwork {
             listen: actual,
             commands,
             stop,
+            connected,
             worker: Some(worker),
         })
     }
 
     pub fn peer_id(&self) -> PeerId {
         self.peer
+    }
+    /// Distinct peers with at least one established connection right now.
+    pub fn connected_peers(&self) -> u64 {
+        self.connected.load(Ordering::Relaxed)
     }
     pub fn listen_address(&self) -> Option<Multiaddr> {
         self.listen.clone()
@@ -235,9 +244,9 @@ impl Drop for PeerNetwork {
 
 impl PeerSource {
     /// Bounded by CALL_TIMEOUT and by the caller's own deadline, if earlier.
-    fn request<T>(
+    pub(crate) fn request<T>(
         &self,
-        txid: Txid,
+        kind: Kind,
         limit: Instant,
         answer: fn(mpsc::SyncSender<Result<T, Error>>) -> Answer,
     ) -> Result<T, Error> {
@@ -249,7 +258,7 @@ impl PeerSource {
         self.commands
             .try_send(Command::Fetch(Fetch {
                 address: self.address.clone(),
-                txid,
+                kind,
                 deadline,
                 answer: answer(sender),
             }))
@@ -262,7 +271,7 @@ impl PeerSource {
 
 impl PeerSource {
     pub(crate) fn parent(&self, txid: Txid, deadline: Instant) -> Result<Parent, Error> {
-        self.request(txid, deadline, Answer::Parent)
+        self.request(Kind::Parent { txid }, deadline, Answer::Parent)
     }
 
     /// Fire and forget; a full queue only delays the idle-connection timeout.
@@ -275,24 +284,8 @@ impl PeerSource {
 
 impl RecordSource for PeerSource {
     fn fetch(&self, txid: Txid) -> Result<Option<RecordPackage>, Error> {
-        self.request(txid, Instant::now() + CALL_TIMEOUT, Answer::Record)
-    }
-}
-
-/// Local retained bytes only: never scans, fetches or asks another peer.
-fn lookup(engine: &Engine, request: &Request) -> Reply {
-    match request.kind {
-        Kind::Record => match engine.record(request.txid) {
-            Ok(Some(record)) => Reply::Record(Box::new(record.package)),
-            Ok(None) => Reply::Missing,
-            Err(_) => Reply::Busy,
-        },
-        Kind::Parent => match engine.raw_transaction(request.txid) {
-            Ok(Some(raw)) if raw.len() > PARENT_LIMIT => Reply::TooLarge,
-            Ok(Some(raw)) => Reply::Parent(hex::encode(raw)),
-            Ok(None) => Reply::Missing,
-            Err(_) => Reply::Busy,
-        },
+        let kind = Kind::Record { txid };
+        self.request(kind, Instant::now() + CALL_TIMEOUT, Answer::Record)
     }
 }
 
@@ -351,14 +344,20 @@ fn swarm(identity: Keypair) -> Result<Swarm<Behaviour>, Error> {
         .build())
 }
 
+type Control = (
+    async_mpsc::Receiver<Command>,
+    Arc<AtomicBool>,
+    Arc<AtomicU64>,
+    Startup,
+);
+
 async fn run(
     engine: Arc<Engine>,
     identity: Keypair,
     listen: Option<Multiaddr>,
-    mut commands: async_mpsc::Receiver<Command>,
-    stop: Arc<AtomicBool>,
-    startup: Startup,
+    control: Control,
 ) -> Result<(), Error> {
+    let (mut commands, stop, connected, startup) = control;
     let genesis = engine.status()?.chain_genesis;
     let mut swarm = swarm(identity)?;
     let mut ready = Some(startup);
@@ -391,7 +390,7 @@ async fn run(
                 let mut response = Response {
                     version: VERSION,
                     chain_genesis: genesis,
-                    txid: job.request.txid,
+                    kind: job.request.kind,
                     result,
                 };
                 let mut count = Count(0);
@@ -455,10 +454,10 @@ async fn run(
                     continue;
                 }
                 let peer = command.address.peer_id();
-                let request = Request { version: VERSION, chain_genesis: genesis, kind: command.answer.kind(), txid: command.txid };
+                let request = Request { version: VERSION, chain_genesis: genesis, kind: command.kind };
                 let id = swarm.behaviour_mut().records.send_request_with_addresses(
                     &peer, request, vec![command.address.address().clone()]);
-                pending.insert(id, Pending { peer, txid: command.txid, deadline: command.deadline, answer: command.answer });
+                pending.insert(id, Pending { peer, kind: command.kind, deadline: command.deadline, answer: command.answer });
             }
             response = responses.recv() => {
                 let Some(mut response) = response else { break Err(Error::Invalid("peer archive reader stopped".into())); };
@@ -473,24 +472,28 @@ async fn run(
                     if let Some(ready) = ready.take() { let _ = ready.send(Ok(Some(address))); }
                 }
                 SwarmEvent::ListenerError { error, .. } if ready.is_some() => break Err(Error::Io(error)),
+                SwarmEvent::ConnectionEstablished { num_established, .. } if num_established.get() == 1 => { connected.fetch_add(1, Ordering::Relaxed); }
+                SwarmEvent::ConnectionClosed { num_established: 0, .. } => { connected.fetch_sub(1, Ordering::Relaxed); }
                 // Queued before request-response reports the same DialFailure.
                 SwarmEvent::OutgoingConnectionError { peer_id: Some(peer), error: DialError::Denied { cause }, .. }
                     if cause.downcast_ref::<LimitDenied>().is_some() => release_denied(&mut pending, peer),
                 SwarmEvent::Behaviour(BehaviourEvent::Records(event)) => match event {
                     request_response::Event::Message { peer, message: Message::Request { request_id, request, channel }, .. } => {
                         // Every request, including refusals, consumes rate and
-                        // response allowance. Exhaustion drops the channel;
-                        // it cannot amplify traffic with unlimited Busy replies.
-                        if !requests.take(1) || !peer_rate(&mut rates, peer) || !bytes.take(256) {
+                        // response allowance. Over-rate requests get an explicit
+                        // Busy; only an exhausted byte allowance drops the channel.
+                        let over_rate = !requests.take(1) || !peer_rate(&mut rates, peer);
+                        if !bytes.take(256) {
                             continue;
                         }
-                        let refusal = if request.version != VERSION { Some(Reply::UnsupportedVersion) }
+                        let refusal = if over_rate { Some(Reply::Busy) }
+                            else if request.version != VERSION { Some(Reply::UnsupportedVersion) }
                             else if request.chain_genesis != genesis { Some(Reply::WrongNetwork) }
                             else if inbound.len() >= 2 || inbound.iter().any(|(p, _)| *p == peer)
                                 { Some(Reply::Busy) }
                             else { None };
                         if let Some(result) = refusal {
-                            let _ = swarm.behaviour_mut().records.send_response(channel, Response { version: VERSION, chain_genesis: genesis, txid: request.txid, result });
+                            let _ = swarm.behaviour_mut().records.send_response(channel, Response { version: VERSION, chain_genesis: genesis, kind: request.kind, result });
                         } else {
                             match jobs.try_send(ServeJob { deadline: Instant::now() + REQUEST_TIMEOUT, request, channel }) {
                                 Ok(()) => { inbound.insert((peer, request_id)); }
@@ -557,7 +560,7 @@ pub(crate) fn bind_response(
     if peer != pending.peer
         || response.version != VERSION
         || response.chain_genesis != genesis
-        || response.txid != pending.txid
+        || response.kind != pending.kind
     {
         return Err(Error::Invalid(
             "peer response identity, network or version mismatch".into(),
@@ -677,14 +680,14 @@ mod tests {
         let (answer, _receiver) = mpsc::sync_channel(1);
         let pending = Pending {
             peer,
-            txid,
+            kind: Kind::Record { txid },
             deadline: Instant::now() + CALL_TIMEOUT,
             answer: Answer::Record(answer),
         };
         let response = Response {
             version: VERSION,
             chain_genesis: genesis,
-            txid,
+            kind: Kind::Record { txid },
             result: Reply::Missing,
         };
         assert!(
@@ -700,7 +703,9 @@ mod tests {
         bad.chain_genesis = BlockHash::from_byte_array([1; 32]);
         assert!(validate_response(genesis, peer, &pending, bad).is_err());
         let mut bad = response.clone();
-        bad.txid = Txid::from_byte_array([1; 32]);
+        bad.kind = Kind::Record {
+            txid: Txid::from_byte_array([1; 32]),
+        };
         assert!(validate_response(genesis, peer, &pending, bad).is_err());
         let expired = Pending {
             deadline: Instant::now(),

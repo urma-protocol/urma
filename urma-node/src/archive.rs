@@ -312,6 +312,66 @@ impl Archive {
         ).optional()?)
     }
 
+    /// Placements in fully scanned selected blocks within [from, to], strictly
+    /// after `after` as (height, position), ascending; `limit` rows at most.
+    pub(crate) fn inventory_page(
+        &self,
+        from: u64,
+        to: u64,
+        after: Option<(u64, u32)>,
+        limit: u32,
+    ) -> Result<InventoryRows, Error> {
+        let (after_height, after_position) = match after {
+            Some((height, position)) => (sql_integer(height)?, i64::from(position)),
+            None => (-1, -1),
+        };
+        let mut statement = self.db.prepare(
+            "SELECT s.height,s.hash,l.position,l.txid,l.wtxid FROM locators l
+             JOIN selected s ON s.hash=l.block_hash
+             JOIN scans c ON c.block_hash=l.block_hash AND c.rules=?5
+             WHERE s.height>=?1 AND s.height<=?2
+               AND (s.height>?3 OR (s.height=?3 AND l.position>?4))
+             ORDER BY s.height,l.position LIMIT ?6",
+        )?;
+        let wanted = usize::try_from(limit).map_err(|e| Error::Invalid(e.to_string()))?;
+        let bound = params![
+            sql_integer(from)?,
+            sql_integer(to)?,
+            after_height,
+            after_position,
+            SCAN_RULES_VERSION,
+            i64::from(limit) + 1
+        ];
+        let mut entries = Vec::new();
+        for row in statement.query_map(bound, |row| {
+            Ok((
+                point(row)?,
+                row.get::<_, i64>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+            ))
+        })? {
+            let (block, position, txid, wtxid) = row?;
+            let invalid = |e: String| Error::Invalid(format!("archived locator: {e}"));
+            entries.push((
+                block,
+                u32::try_from(position).map_err(|e| invalid(e.to_string()))?,
+                txid.parse()
+                    .map_err(|e: bitcoin::hex::HexToArrayError| invalid(e.to_string()))?,
+                wtxid
+                    .parse()
+                    .map_err(|e: bitcoin::hex::HexToArrayError| invalid(e.to_string()))?,
+            ));
+        }
+        let more = entries.len() > wanted;
+        entries.truncate(wanted);
+        Ok(InventoryRows {
+            scanned_through: self.status()?.indexed_through.map(|point| point.height),
+            entries,
+            more,
+        })
+    }
+
     /// Orphan bytes remain archived but are never returned as selected evidence.
     pub(crate) fn record(&self, txid: bitcoin::Txid) -> Result<Option<ArchivedRecord>, Error> {
         let row: Option<(ChainPoint, u32, String, Vec<u8>, Vec<u8>)> = self
@@ -541,6 +601,13 @@ fn migrate(db: &mut Connection, version: u32) -> Result<(), Error> {
     tx.execute_batch(peers::SCHEMA)?;
     tx.commit()?;
     Ok(())
+}
+
+/// One inventory page as stored: (block, position, txid, wtxid) rows.
+pub(crate) struct InventoryRows {
+    pub(crate) scanned_through: Option<u64>,
+    pub(crate) entries: Vec<(ChainPoint, u32, bitcoin::Txid, bitcoin::Wtxid)>,
+    pub(crate) more: bool,
 }
 
 fn generation(db: &Connection) -> Result<u64, Error> {

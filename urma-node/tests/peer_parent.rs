@@ -252,7 +252,7 @@ fn raw_event(
                     let response = Response {
                         version: VERSION,
                         chain_genesis: request.chain_genesis,
-                        txid: request.txid,
+                        kind: request.kind,
                         result,
                     };
                     let _ = swarm.behaviour_mut().send_response(channel, response);
@@ -389,8 +389,7 @@ fn assert_asked_once(peer: &RawPeer, txid: Txid) {
     assert_eq!(seen.len(), 1, "{seen:?}");
     assert_eq!(seen[0].version, VERSION);
     assert_eq!(seen[0].chain_genesis, genesis());
-    assert_eq!(seen[0].txid, txid);
-    assert!(matches!(seen[0].kind, Kind::Parent));
+    assert_eq!(seen[0].kind, Kind::Parent { txid });
 }
 
 fn honest(root: &Path) -> Value {
@@ -505,10 +504,7 @@ fn crowd(root: &Path) -> Value {
     for liar in &liars {
         let seen = liar.seen();
         assert!(seen.len() <= rounds.len(), "{seen:?}");
-        assert!(
-            seen.iter()
-                .all(|r| r.txid == parent && r.kind == Kind::Parent)
-        );
+        assert!(seen.iter().all(|r| r.kind == Kind::Parent { txid: parent }));
         liar.await_disconnected();
     }
     let asked: usize = liars.iter().map(|liar| liar.seen().len()).sum();
@@ -578,17 +574,16 @@ fn missing(root: &Path) -> Value {
     json!({"missing":true,"mixed":true,"dead_error":error.to_string(),"busy":true,"empty":true})
 }
 
-fn ask(client: &RawPeer, to: &PeerAddress, version: u32, kind: Kind, txid: Txid) -> Reply {
+fn ask(client: &RawPeer, to: &PeerAddress, version: u32, kind: Kind) -> Reply {
     // The server's per-identity bucket refills four requests per second.
     thread::sleep(Duration::from_millis(300));
     let request = Request {
         version,
         chain_genesis: genesis(),
-        txid,
         kind,
     };
     let response = client.call(to, request).unwrap();
-    assert_eq!(response.txid, txid);
+    assert_eq!(response.kind, kind);
     assert_eq!(response.chain_genesis, genesis());
     response.result
 }
@@ -600,26 +595,34 @@ fn server(root: &Path) -> Value {
     let client = RawPeer::start(None);
     let to = b.address.clone();
     stage(root, "raw requests against node B");
-    let v1 = ask(&client, &to, 1, Kind::Parent, pair.commit.compute_txid());
+    let v1 = ask(
+        &client,
+        &to,
+        1,
+        Kind::Parent {
+            txid: pair.commit.compute_txid(),
+        },
+    );
     assert!(matches!(v1, Reply::UnsupportedVersion), "{v1:?}");
     for (txid, raw) in [
         (pair.commit.compute_txid(), &pair.raw_commit),
         (pair.reveal.compute_txid(), &pair.raw_reveal),
     ] {
-        match ask(&client, &to, VERSION, Kind::Parent, txid) {
+        match ask(&client, &to, VERSION, Kind::Parent { txid }) {
             Reply::Parent(hex) => assert_eq!(hex, hex::encode(raw)),
             other => panic!("retained raw transaction not served: {other:?}"),
         }
     }
     let unknown = Txid::from_byte_array([7; 32]);
-    let absent = ask(&client, &to, VERSION, Kind::Parent, unknown);
+    let absent = ask(&client, &to, VERSION, Kind::Parent { txid: unknown });
     assert!(matches!(absent, Reply::Missing), "{absent:?}");
     let record = ask(
         &client,
         &to,
         VERSION,
-        Kind::Record,
-        pair.reveal.compute_txid(),
+        Kind::Record {
+            txid: pair.reveal.compute_txid(),
+        },
     );
     assert!(matches!(record, Reply::Record(_)), "{record:?}");
     // Answers come from retained bytes only: no fetch, scan or archive write.

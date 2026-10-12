@@ -27,13 +27,16 @@ fn request() -> Request {
     Request {
         version: 99,
         chain_genesis: BlockHash::from_byte_array([1; 32]),
-        kind: Kind::Record,
-        txid: Txid::from_byte_array([2; 32]),
+        kind: Kind::Record {
+            txid: Txid::from_byte_array([2; 32]),
+        },
     }
 }
 fn parent_request() -> Request {
     Request {
-        kind: Kind::Parent,
+        kind: Kind::Parent {
+            txid: Txid::from_byte_array([2; 32]),
+        },
         ..request()
     }
 }
@@ -65,7 +68,7 @@ fn response(result: Reply) -> Response {
     Response {
         version: 99,
         chain_genesis: request().chain_genesis,
-        txid: request().txid,
+        kind: request().kind,
         result,
     }
 }

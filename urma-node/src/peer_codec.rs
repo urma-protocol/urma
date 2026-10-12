@@ -1,6 +1,8 @@
 //! Bounded framing for untrusted peer JSON. No record or chain verification.
 //! The request-response layer owns timeouts, including waiting for stream EOF.
-use crate::peer_protocol::{PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Request, Response};
+use crate::peer_protocol::{
+    INVENTORY_LIMIT, PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
+};
 use async_trait::async_trait;
 use libp2p::{
     StreamProtocol,
@@ -22,10 +24,18 @@ fn protocol(protocol: &StreamProtocol) -> io::Result<()> {
     Ok(())
 }
 
+/// Inventory pages have their own, smaller frame bound on both sides.
+fn response_limit(response: &Response) -> usize {
+    match response.result {
+        Reply::Inventory(_) => INVENTORY_LIMIT,
+        _ => RESPONSE_LIMIT,
+    }
+}
+
 async fn read<T: AsyncRead + Unpin + Send, V: DeserializeOwned>(
     io: &mut T,
     limit: usize,
-) -> io::Result<V> {
+) -> io::Result<(V, usize)> {
     let mut prefix = [0; 4];
     io.read_exact(&mut prefix).await?;
     let length = u32::from_be_bytes(prefix) as usize;
@@ -46,8 +56,9 @@ async fn read<T: AsyncRead + Unpin + Send, V: DeserializeOwned>(
             "trailing peer frame bytes",
         ));
     }
-    serde_json::from_slice(&bytes)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    let value = serde_json::from_slice(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    Ok((value, length))
 }
 
 struct BoundedVec {
@@ -113,7 +124,7 @@ impl libp2p::request_response::Codec for Codec {
         T: AsyncRead + Unpin + Send,
     {
         protocol(negotiated)?;
-        read(io, REQUEST_LIMIT).await
+        Ok(read(io, REQUEST_LIMIT).await?.0)
     }
     async fn read_response<T>(
         &mut self,
@@ -124,7 +135,14 @@ impl libp2p::request_response::Codec for Codec {
         T: AsyncRead + Unpin + Send,
     {
         protocol(negotiated)?;
-        read(io, RESPONSE_LIMIT).await
+        let (response, length) = read(io, RESPONSE_LIMIT).await?;
+        if length > response_limit(&response) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "peer inventory frame exceeds its limit",
+            ));
+        }
+        Ok(response)
     }
     async fn write_request<T>(
         &mut self,
@@ -148,6 +166,7 @@ impl libp2p::request_response::Codec for Codec {
         T: AsyncWrite + Unpin + Send,
     {
         protocol(negotiated)?;
-        write(io, &response, RESPONSE_LIMIT).await
+        let limit = response_limit(&response);
+        write(io, &response, limit).await
     }
 }

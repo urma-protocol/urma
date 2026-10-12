@@ -1,6 +1,6 @@
 use crate::{
     Error,
-    archive::Archive,
+    archive::{Archive, InventoryRows},
     model::*,
     source::{ChainSource, CommitSource},
 };
@@ -82,6 +82,17 @@ impl Engine {
     /// acceptable because requesters bind them to the TXID and re-verify.
     pub(crate) fn raw_transaction(&self, txid: bitcoin::Txid) -> Result<Option<Vec<u8>>, Error> {
         self.archive()?.transaction(txid)
+    }
+
+    /// One overlay inventory page from scanned selected blocks; read only.
+    pub(crate) fn inventory_page(
+        &self,
+        from: u64,
+        to: u64,
+        after: Option<(u64, u32)>,
+        limit: u32,
+    ) -> Result<InventoryRows, Error> {
+        self.archive()?.inventory_page(from, to, after, limit)
     }
 
     /// Read a bounded Wire view without network or a second scan. All fields
