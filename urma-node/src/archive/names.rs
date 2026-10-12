@@ -71,7 +71,7 @@ impl Archive {
         // Bound rules before names_status/metadata decodes them as well. State
         // and key bounds below also apply before allocating SQLite blobs in Rust.
         let bytes = self.db.query_row(
-            "SELECT CASE WHEN length(rules)<=?2 THEN rules ELSE NULL END FROM names_registries WHERE genesis=?1",
+            "SELECT CASE WHEN length(CAST(rules AS BLOB))<=?2 THEN rules ELSE NULL END FROM names_registries WHERE genesis=?1",
             params![genesis.to_string(), MAX_NAMES_STATE_BYTES as i64],
             |r| r.get::<_, Option<Vec<u8>>>(0),
         ).optional()?.ok_or_else(|| invalid("registry is not registered"))?
@@ -94,8 +94,8 @@ impl Archive {
             // Identifiers above are fixed code, never request data. Each query
             // walks its indexed suffix; no full-map restore or UNION sort.
             let query = format!(
-                "SELECT CASE WHEN length({column})<=64 THEN {column} ELSE NULL END,
-                 CASE WHEN length(state)<=?3 THEN state ELSE NULL END
+                "SELECT CASE WHEN length(CAST({column} AS BLOB))<=64 THEN {column} ELSE NULL END,
+                 CASE WHEN length(CAST(state AS BLOB))<=?3 THEN state ELSE NULL END
                  FROM {table} WHERE registry=?1 AND {column}>?2
                  ORDER BY {column} LIMIT ?4"
             );
