@@ -1,6 +1,11 @@
 //! Small authenticated loopback control surface. The archive engine remains
 //! usable directly; HTTP is not a prerequisite for embedded applications.
-use crate::{Error, engine::Engine, retrieval::RecordSource, source::CommitSource};
+use crate::{
+    Error,
+    engine::Engine,
+    retrieval::RecordSource,
+    source::{CommitSource, CommitSources},
+};
 use rand::RngCore;
 use serde_json::json;
 use std::{
@@ -48,7 +53,7 @@ pub struct Service {
     cache_bytes: u64,
     retention: Option<(PathBuf, urma_runtime::multipart::RecoveryLimits)>,
     sources: Vec<Arc<dyn RecordSource + Send + Sync>>,
-    commit_source: Option<(String, Box<dyn CommitSource + Send + Sync>)>,
+    commit_sources: Option<CommitSources>,
     dependency_error: Arc<Mutex<Option<String>>>,
 }
 
@@ -76,7 +81,7 @@ impl Service {
             cache_bytes: crate::cache::DEFAULT_CACHE_BYTES,
             retention: None,
             sources: Vec::new(),
-            commit_source: None,
+            commit_sources: None,
             dependency_error: Arc::new(Mutex::new(None)),
         })
     }
@@ -104,22 +109,25 @@ impl Service {
         Ok(self)
     }
 
-    pub fn with_commit_source(
-        mut self,
-        source: Box<dyn CommitSource + Send + Sync>,
-        label: String,
-    ) -> Result<Self, Error> {
-        let genesis = source
-            .chain()
-            .genesis()
-            .map_err(|error| Error::Invalid(error.to_string()))?
-            .0;
-        if genesis != self.engine.status()?.chain_genesis {
-            return Err(Error::Invalid(
-                "commit source belongs to another chain".into(),
-            ));
+    pub fn with_commit_sources(mut self, sources: CommitSources) -> Result<Self, Error> {
+        if sources.is_empty() {
+            return Err(Error::Invalid("commit source set is empty".into()));
         }
-        self.commit_source = Some((label, source));
+        let expected = self.engine.status()?.chain_genesis;
+        let mut chains = sources.source_chains();
+        chains.push(sources.chain());
+        for chain in chains {
+            let genesis = chain
+                .genesis()
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                .0;
+            if genesis != expected {
+                return Err(Error::Invalid(
+                    "commit source belongs to another chain".into(),
+                ));
+            }
+        }
+        self.commit_sources = Some(sources);
         Ok(self)
     }
 
@@ -235,15 +243,13 @@ impl Service {
     }
 
     fn acquire_next_dependency(&self) {
-        let Some((_, source)) = &self.commit_source else {
+        let Some(sources) = &self.commit_sources else {
             return;
         };
         if self.stop.load(Ordering::Acquire) {
             return;
         }
-        let result = self
-            .engine
-            .resolve_next_dependency(source.as_ref(), &self.stop);
+        let result = self.engine.resolve_next_dependency(sources, &self.stop);
         if self.stop.load(Ordering::Acquire) {
             return;
         }
@@ -279,11 +285,16 @@ impl Service {
             .lock()
             .map_err(|_| Error::Invalid("dependency status poisoned".into()))?
             .clone();
-        let commit_source = self.commit_source.as_ref().map(|configured| &configured.0);
+        let mut commit_sources = Vec::new();
+        for sources in self.commit_sources.iter() {
+            for (label, last_error) in sources.status()? {
+                commit_sources.push(json!({"label":label,"last_error":last_error}));
+            }
+        }
         Ok(
             json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
                 "last_names_error":names_error,
-                "commit_source":commit_source,"last_dependency_error":dependency_error,
+                "commit_sources":commit_sources,"last_dependency_error":dependency_error,
                 "cache_limit_bytes":self.cache_bytes,"last_cache_error":cache_status.error,
                 "last_cache_maintenance":cache_status.receipt,
                 "retention_configured":self.retention.is_some(),

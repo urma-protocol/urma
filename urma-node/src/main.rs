@@ -1,5 +1,10 @@
 use clap::{Parser, Subcommand};
-use std::{net::SocketAddr, path::PathBuf, sync::Arc};
+use std::{
+    net::SocketAddr,
+    os::unix::fs::DirBuilderExt,
+    path::{Path, PathBuf},
+    sync::Arc,
+};
 use urma_chain::observation::Chain;
 use urma_node::{
     engine::Engine,
@@ -7,7 +12,7 @@ use urma_node::{
     peer::PeerNetwork,
     peerbook::{Origin, PeerAddress, PeerBook},
     service::{Service, create_token},
-    source::{LitecoinSource, RuntimeCommitSource},
+    source::{CommitSources, LitecoinSource, PublicCommitSource, RuntimeCommitSource},
 };
 use urma_runtime::{
     node::{Node, NodeConfig},
@@ -51,6 +56,9 @@ enum Command {
         /// RPC cookie file authenticating --commit-rpc-url; no other RPC auth.
         #[arg(long, requires_all = ["p2p", "commit_rpc_url"])]
         commit_rpc_cookie: Option<PathBuf>,
+        /// Never send missing commit TXIDs to the chain's default public providers.
+        #[arg(long, requires = "p2p")]
+        no_commit_public: bool,
         /// Opt into the URMA overlay using an explicitly created transport key.
         #[arg(long)]
         peer_key: Option<PathBuf>,
@@ -127,13 +135,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             peer_key,
             urma_listen,
             urma_peer,
+            no_commit_public,
             ..
         } => {
             let token = read_token(&token_file)?;
             let retain =
                 synchronize && engine.status()?.retention == urma_node::model::Retention::Unpruned;
-            let mut service =
-                bind_service(listen, token, engine.clone(), cache_bytes, commit_source)?;
+            let mut service = bind_service(listen, token, engine.clone(), cache_bytes)?;
             // Only the standalone binary owns process signals. The callback
             // requests the same cooperative stop as authenticated HTTP shutdown;
             // worker and overlay joins still happen on this foreground path.
@@ -143,22 +151,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             ctrlc::set_handler(move || shutdown.request())?;
             if retain {
                 let scratch = args.data.join("scratch");
-                let mut builder = std::fs::DirBuilder::new();
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::DirBuilderExt;
-                    builder.mode(0o700);
-                }
-                match builder.create(&scratch) {
-                    Ok(()) => (),
-                    Err(e)
-                        if e.kind() == std::io::ErrorKind::AlreadyExists
-                            && std::fs::symlink_metadata(&scratch)?.is_dir() =>
-                    {
-                        ()
-                    }
-                    Err(e) => return Err(e.into()),
-                }
+                private_directory(&scratch)?;
                 service = service.with_retention(
                     scratch,
                     urma_runtime::multipart::RecoveryLimits {
@@ -214,6 +207,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             } else {
                 None
             };
+            let public = (synchronize && !no_commit_public).then(|| args.data.join("providers"));
+            service = attach_commit_sources(service, chain, commit_source, public)?;
             eprintln!(
                 "URMA Node listening at {} (authenticated loopback)",
                 service.address()?
@@ -259,13 +254,46 @@ fn bind_service(
     token: String,
     engine: Arc<Engine>,
     cache_bytes: u64,
-    commit_source: Option<RuntimeCommitSource>,
 ) -> Result<Service, Box<dyn std::error::Error>> {
-    let service = Service::bind(listen, token, engine)?.with_cache_limit(cache_bytes)?;
-    let Some(source) = commit_source else {
+    Ok(Service::bind(listen, token, engine)?.with_cache_limit(cache_bytes)?)
+}
+
+fn attach_commit_sources(
+    service: Service,
+    chain: Chain,
+    local: Option<RuntimeCommitSource>,
+    public: Option<PathBuf>,
+) -> Result<Service, Box<dyn std::error::Error>> {
+    let mut sources = CommitSources::new(chain);
+    if let Some(local) = local {
+        sources.push("local-rpc".into(), Box::new(local));
+    }
+    if let Some(cache) = public {
+        private_directory(&cache)?;
+        sources.push(
+            "public".into(),
+            Box::new(PublicCommitSource::new(chain, cache)),
+        );
+    }
+    if sources.is_empty() {
         return Ok(service);
-    };
-    Ok(service.with_commit_source(Box::new(source), "local-rpc".into())?)
+    }
+    Ok(service.with_commit_sources(sources)?)
+}
+
+fn private_directory(path: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    let mut builder = std::fs::DirBuilder::new();
+    builder.mode(0o700);
+    match builder.create(path) {
+        Ok(()) => Ok(()),
+        Err(error)
+            if error.kind() == std::io::ErrorKind::AlreadyExists
+                && std::fs::symlink_metadata(path)?.is_dir() =>
+        {
+            Ok(())
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn create_peer_key(path: &std::path::Path) -> Result<(), Box<dyn std::error::Error>> {

@@ -349,7 +349,7 @@ A failed step preserves the previous successful receipt and reports its error;
 its database mutations roll back. Manual `cache/prune` retains its existing
 all-unprotected-children behavior.
 
-### Explicit missing commit acquisition
+### Missing commit acquisition
 
 Embedded owners can supply a `CommitSource` to
 `Engine::resolve_next_dependency(source, cancelled)`. One call selects one
@@ -364,32 +364,50 @@ retained, `resolve_cached_dependency` can finish remaining references locally.
 Invalid candidates and omitted Pruned children do not retain the fetched parent;
 remaining references can require another explicit source call.
 
-`RuntimeCommitSource { node: Arc<Node> }` shares an explicitly configured
-runtime Node and preserves the original `getrawtransaction` hex bytes. It
-constructs no Node and chooses no endpoint, provider, history start or
-bootstrap. Absence is the runtime's typed Missing result or local JSON-RPC
-error code -5 (no such mempool or blockchain transaction, which includes
-lookups a node without `-txindex` cannot answer); it is a miss, not an error.
-The standalone daemon therefore requires a synchronized `txindex=1`, checked at
-startup like a connection failure. Other failures are reported as errors. A
-miss or failure leaves the dependency unresolved. Parent bytes are auxiliary
-prevout evidence for a reveal; they add no parent placement, inclusion, witness
-or scan-coverage evidence. Names still requires a selected commit placement.
+Parent bytes are self-authenticating: the Engine recomputes the TXID and
+re-verifies the reveal, so which source supplied them does not change this
+evidence. They are auxiliary prevout evidence only; they add no parent
+placement, inclusion, witness or scan-coverage evidence, and Names still
+requires a selected commit placement. A miss or failure leaves the dependency
+unresolved.
 
-Embedded `Service` owners can call `with_commit_source(source, label)`; a source
-for another chain is refused at configuration. The standalone daemon enables one
-only with `serve --p2p --commit-rpc-url URL --commit-rpc-cookie PATH` (both
-required together). `Node::connect` requires an `http` URL whose host is a
-loopback IP literal (`localhost` is refused), path exactly `/`, no userinfo,
-query or fragment, and authenticates with the cookie file only. There is no
-default endpoint, public provider or fallback. The Node connects at startup,
-after archive ownership and before the control API listens; a connection
-failure exits nonzero. Each `run(true)` round, after scan/cached-dependency
-work and before Names, calls `resolve_next_dependency` once, so at most one
-missing parent is fetched per round, independent of that round's sync result.
-`run(false)` never calls the source. Status reports `commit_source` (label or
-null) and `last_dependency_error`; an error observed after a stop request is
-not recorded. A running fetch is not interrupted by stop; shutdown waits for it.
+`CommitSources` tries labelled sources in order until one returns bytes; a
+miss or error moves to the next source, and the set reports an error only when
+every source failed. Each source keeps its own last error. Embedded `Service`
+owners call `with_commit_sources(sources)`; an empty set or a source for
+another chain is refused at configuration.
+
+Litecoin Core is optional acceleration, not a requirement. Under `serve --p2p`
+the daemon assembles, in this order:
+
+1. `local-rpc`, only with `--commit-rpc-url URL --commit-rpc-cookie PATH` (both
+   required together). `Node::connect` requires an `http` URL whose host is a
+   loopback IP literal (`localhost` is refused), path exactly `/`, no userinfo,
+   query or fragment, and cookie-file authentication. Absence is the typed
+   Missing result or JSON-RPC code -5, which also covers lookups a node without
+   `-txindex` cannot answer, so a synchronized `txindex=1` is required. The
+   connection and txindex check run at startup, after archive ownership and
+   before the control API listens; failure exits nonzero.
+2. `overlay`, with `--peer-key`: the same peer-book entries used for record
+   recovery. Peers serve only raw bytes they already retain and never fetch on
+   behalf of others.
+3. `public`, unless `--no-commit-public`: the chain's default public providers,
+   with TLS pins under `DATA/providers` (mode 0700) and no light client. The
+   providers are first contacted lazily on the first missing parent and a
+   failed connection is retried on the next one, so an offline start succeeds.
+
+Under `--p2p` the daemon therefore sends missing-parent TXIDs to URMA peers
+and, unless `--no-commit-public`, to the chain's default public providers;
+those operators can observe which transactions this archive is missing. Without
+`--p2p` no commit source is constructed or called.
+
+Each `run(true)` round, after scan/cached-dependency work and before Names,
+calls `resolve_next_dependency` once, so at most one missing parent is fetched
+per round, independent of that round's sync result. `run(false)` never calls a
+source. Status reports `commit_sources` as an array of `{label, last_error}`
+(empty when none is configured) and the overall `last_dependency_error`; an
+error observed after a stop request is not recorded. A running fetch is not
+interrupted by stop; shutdown waits for it.
 
 The chain decoder limits raw input to 8,000,000 bytes. The runtime adapter checks
 16,000,000 hex characters before its own decode, but `Node::call` may already

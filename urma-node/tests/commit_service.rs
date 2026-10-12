@@ -22,7 +22,7 @@ use urma_node::{
     engine::Engine,
     model::Retention,
     service::{Service, ShutdownHandle},
-    source::CommitSource,
+    source::{CommitSource, CommitSources},
 };
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const LABEL: &str = "owned in-memory recording parent source";
@@ -134,6 +134,12 @@ fn status(address: SocketAddr) -> Value {
 }
 
 // Indexing a missing JSON key also yields null; the contract fields must exist.
+fn single(source: &Recording) -> CommitSources {
+    let mut sources = CommitSources::new(source.chain());
+    sources.push(LABEL.into(), Box::new(source.clone()));
+    sources
+}
+
 fn field<'a>(status: &'a Value, key: &str) -> &'a Value {
     status
         .get(key)
@@ -184,9 +190,7 @@ impl Running {
         )
         .unwrap();
         if let Some(source) = source {
-            service = service
-                .with_commit_source(Box::new(source.clone()), LABEL.into())
-                .unwrap();
+            service = service.with_commit_sources(single(source)).unwrap();
         }
         let address = service.address().unwrap();
         let handle = service.shutdown_handle();
@@ -266,7 +270,7 @@ fn synchronizing_round_fetches_exactly_the_missing_parent_and_reports_label() {
     let done = poll(running.address, "scan plus resolved parent", |s| {
         scanned(s) == 1 && unresolved(s) == 0
     });
-    assert_eq!(field(&done, "commit_source"), &json!(LABEL));
+    assert_eq!(field(&done, "commit_sources")[0]["label"], json!(LABEL));
     assert_eq!(dependency_error(&done), None);
     assert!(field(&done, "last_sync_error").is_null(), "{done}");
     assert!(
@@ -300,7 +304,7 @@ fn failing_source_error_is_reported_while_scanning_progresses_then_cleared() {
         );
         assert_eq!(unresolved(&failed), 1);
         assert!(field(&failed, "last_sync_error").is_null(), "{failed}");
-        assert_eq!(field(&failed, "commit_source"), &json!(LABEL));
+        assert_eq!(field(&failed, "commit_sources")[0]["label"], json!(LABEL));
     }
     let done = poll(running.address, "cleared error and resolved parent", |s| {
         unresolved(s) == 0 && dependency_error(s).is_none()
@@ -330,7 +334,7 @@ fn offline_run_never_calls_configured_source_but_reports_its_label() {
     thread::sleep(ROUND);
     let second = status(running.address);
     for current in [&first, &second] {
-        assert_eq!(field(current, "commit_source"), &json!(LABEL));
+        assert_eq!(field(current, "commit_sources")[0]["label"], json!(LABEL));
         assert_eq!(dependency_error(current), None);
         assert_eq!(unresolved(current), 1);
         assert_eq!(scanned(current), 1);
@@ -364,7 +368,7 @@ fn wrong_chain_commit_source_is_refused_at_configuration_without_fetching() {
     )
     .unwrap();
     assert!(matches!(
-        service.with_commit_source(Box::new(wrong.clone()), LABEL.into()),
+        service.with_commit_sources(single(&wrong)),
         Err(Error::Invalid(_))
     ));
     assert!(wrong.requests().is_empty(), "refused source was fetched");
@@ -375,11 +379,7 @@ fn wrong_chain_commit_source_is_refused_at_configuration_without_fetching() {
         Arc::clone(&engine),
     )
     .unwrap();
-    assert!(
-        service
-            .with_commit_source(Box::new(right.clone()), LABEL.into())
-            .is_ok()
-    );
+    assert!(service.with_commit_sources(single(&right)).is_ok());
     assert!(
         right.requests().is_empty(),
         "configuration fetched a parent"

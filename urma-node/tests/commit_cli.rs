@@ -489,6 +489,7 @@ impl Fixture {
             &url,
             "--commit-rpc-cookie",
             self.cookie(),
+            "--no-commit-public",
         ])
     }
 
@@ -645,7 +646,10 @@ fn resolves(control: &Path) {
     let status = poll(&mut child, address, |status| {
         status["archive"]["unresolved_dependencies"] == 1 && stub.fetches(absent) >= 2
     });
-    assert_eq!(status["commit_source"], "local-rpc", "{status}");
+    assert_eq!(
+        status["commit_sources"][0]["label"], "local-rpc",
+        "{status}"
+    );
     assert!(status["last_dependency_error"].is_null(), "{status}");
     assert!(status["archive"]["indexed_through"].is_null(), "{status}");
     shutdown(child, address);

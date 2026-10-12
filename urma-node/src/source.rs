@@ -1,6 +1,10 @@
 use crate::{Error, model::ChainPoint};
 use bitcoin::{BlockHash, Txid, block::Header};
-use std::{net::SocketAddr, path::Path, sync::Arc};
+use std::{
+    net::SocketAddr,
+    path::{Path, PathBuf},
+    sync::{Arc, Mutex, MutexGuard},
+};
 use urma_chain::observation::Chain;
 use urma_runtime::{
     node::Node,
@@ -48,25 +52,166 @@ impl CommitSource for RuntimeCommitSource {
     /// lookups a node without -txindex cannot answer), per is_missing_transaction.
     /// Other runtime errors become CommitSource without text matching.
     fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
-        let result = match self.node.call(
-            "getrawtransaction",
-            &[serde_json::json!(txid), serde_json::json!(false)],
-        ) {
-            Ok(result) => result,
-            Err(error) if error.is_missing_transaction() => return Ok(None),
-            Err(error) => return Err(Error::CommitSource(error.to_string())),
-        };
-        let encoded = result
-            .as_str()
-            .ok_or_else(|| Error::Invalid("commit source must return transaction hex".into()))?;
-        if encoded.len() > 16_000_000 || encoded.len() % 2 != 0 {
-            return Err(Error::Invalid(
-                "commit source hex exceeds capacity or has odd length".into(),
-            ));
+        fetch_from_node(&self.node, txid)
+    }
+}
+
+fn fetch_from_node(node: &Node, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+    let result = match node.call(
+        "getrawtransaction",
+        &[serde_json::json!(txid), serde_json::json!(false)],
+    ) {
+        Ok(result) => result,
+        Err(error) if error.is_missing_transaction() => return Ok(None),
+        Err(error) => return Err(Error::CommitSource(error.to_string())),
+    };
+    let encoded = result
+        .as_str()
+        .ok_or_else(|| Error::Invalid("commit source must return transaction hex".into()))?;
+    if encoded.len() > 16_000_000 || encoded.len() % 2 != 0 {
+        return Err(Error::Invalid(
+            "commit source hex exceeds capacity or has odd length".into(),
+        ));
+    }
+    let raw = hex::decode(encoded)
+        .map_err(|error| Error::Invalid(format!("commit source hex: {error}")))?;
+    Ok(Some(raw))
+}
+
+/// Default public providers for one chain, without a light client. Creating
+/// it does no I/O; the first fetch builds the Node and a failed build is
+/// retried on the next fetch. Returned bytes are checked by the Engine.
+pub struct PublicCommitSource {
+    chain: Chain,
+    cache_dir: PathBuf,
+    node: Mutex<Option<Arc<Node>>>,
+}
+
+impl PublicCommitSource {
+    pub fn new(chain: Chain, cache_dir: PathBuf) -> Self {
+        Self {
+            chain,
+            cache_dir,
+            node: Mutex::new(None),
         }
-        let raw = hex::decode(encoded)
-            .map_err(|error| Error::Invalid(format!("commit source hex: {error}")))?;
-        Ok(Some(raw))
+    }
+
+    fn node(&self) -> Result<Arc<Node>, Error> {
+        let mut slot = self
+            .node
+            .lock()
+            .map_err(|_| Error::Invalid("public commit source poisoned".into()))?;
+        for node in slot.iter() {
+            return Ok(Arc::clone(node));
+        }
+        let node = Arc::new(
+            Node::public_pinned(self.chain, &self.cache_dir)
+                .map_err(|error| Error::CommitSource(error.to_string()))?,
+        );
+        *slot = Some(Arc::clone(&node));
+        Ok(node)
+    }
+}
+
+impl CommitSource for PublicCommitSource {
+    fn chain(&self) -> Chain {
+        self.chain
+    }
+
+    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+        let node = self.node()?;
+        fetch_from_node(&node, txid)
+    }
+}
+
+/// Ordered labelled sources tried until one returns bytes. A miss or error
+/// moves to the next source; the set errors only when every source errored.
+/// The error table is locked only to read or write, never across a fetch.
+pub struct CommitSources {
+    chain: Chain,
+    entries: Vec<(String, Box<dyn CommitSource + Send + Sync>)>,
+    errors: Mutex<Vec<Option<String>>>,
+}
+
+impl CommitSources {
+    pub fn new(chain: Chain) -> Self {
+        Self {
+            chain,
+            entries: Vec::new(),
+            errors: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn push(&mut self, label: String, source: Box<dyn CommitSource + Send + Sync>) {
+        self.entries.push((label, source));
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn status(&self) -> Result<Vec<(String, Option<String>)>, Error> {
+        let errors = self.errors()?;
+        Ok(self
+            .entries
+            .iter()
+            .zip(errors.iter())
+            .map(|(entry, error)| (entry.0.clone(), error.clone()))
+            .collect())
+    }
+
+    pub(crate) fn source_chains(&self) -> Vec<Chain> {
+        self.entries.iter().map(|entry| entry.1.chain()).collect()
+    }
+
+    fn errors(&self) -> Result<MutexGuard<'_, Vec<Option<String>>>, Error> {
+        let mut errors = self
+            .errors
+            .lock()
+            .map_err(|_| Error::Invalid("commit source status poisoned".into()))?;
+        errors.resize(self.entries.len(), None);
+        Ok(errors)
+    }
+
+    fn record(&self, index: usize, error: Option<String>) -> Result<(), Error> {
+        let mut errors = self.errors()?;
+        let slot = errors
+            .get_mut(index)
+            .ok_or_else(|| Error::Invalid("commit source status out of range".into()))?;
+        *slot = error;
+        Ok(())
+    }
+}
+
+impl CommitSource for CommitSources {
+    fn chain(&self) -> Chain {
+        self.chain
+    }
+
+    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+        let mut last = None;
+        let mut failures = 0;
+        for (index, entry) in self.entries.iter().enumerate() {
+            match entry.1.fetch(txid) {
+                Ok(Some(raw)) => {
+                    self.record(index, None)?;
+                    return Ok(Some(raw));
+                }
+                Ok(None) => self.record(index, None)?,
+                Err(error) => {
+                    self.record(index, Some(error.to_string()))?;
+                    failures += 1;
+                    last = Some(error);
+                }
+            }
+        }
+        let Some(error) = last else {
+            return Ok(None);
+        };
+        if failures == self.entries.len() {
+            return Err(error);
+        }
+        Ok(None)
     }
 }
 

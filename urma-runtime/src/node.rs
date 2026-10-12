@@ -134,6 +134,17 @@ impl Node {
         Ok(node)
     }
 
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn public_pinned(chain: Chain, cache_dir: &std::path::Path) -> Result<Self, Error> {
+        let pins = std::sync::Arc::new(Pins::in_directory(cache_dir)?);
+        let public = providers::assemble(
+            endpoints::defaults(chain),
+            pins,
+            &providers::LightClient::Absent,
+        )?;
+        Self::with_providers(chain, public)
+    }
+
     pub fn light_client_progress(&self) -> LightSync {
         self.light.state()
     }
