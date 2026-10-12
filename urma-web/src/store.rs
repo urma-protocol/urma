@@ -6,13 +6,38 @@ use bitcoin::{
     Transaction, Txid,
     consensus::{deserialize, serialize},
 };
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
     path::{Path, PathBuf},
 };
 use urma_core::multipart::{MultipartRecord, VerifiedRecord};
+
+/// Local acquisition metadata, not a tip, scan time or inclusion proof.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
+#[serde(tag = "kind", deny_unknown_fields)]
+pub enum AcquisitionSource {
+    #[serde(rename = "local-node-operator")]
+    LocalNodeOperator,
+}
+
+impl<'de> Deserialize<'de> for AcquisitionSource {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        // Serde's internally tagged unit visitor ignores extra fields. An
+        // empty struct variant enforces strictness while preserving the public
+        // unit variant and its exact {"kind":"local-node-operator"} JSON.
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", deny_unknown_fields)]
+        enum StrictSource {
+            #[serde(rename = "local-node-operator")]
+            LocalNodeOperator {},
+        }
+        match StrictSource::deserialize(deserializer)? {
+            StrictSource::LocalNodeOperator {} => Ok(Self::LocalNodeOperator),
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -21,8 +46,12 @@ pub struct Pointer {
     pub network: String,
     pub root: String,
     pub commit: String,
-    pub tip_height: u64,
-    pub tip_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<AcquisitionSource>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,8 +87,12 @@ pub struct StoredPublication {
     pub payload_length: u64,
     pub files: Vec<StoredFile>,
     pub pinned: Vec<StoredPin>,
-    pub tip_height: u64,
-    pub tip_hash: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_height: Option<u64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tip_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<AcquisitionSource>,
 }
 
 pub struct Verified {
@@ -99,8 +132,28 @@ fn check_component(text: &str) -> Result<(), WebError> {
     Ok(())
 }
 
+fn check_acquisition(pointer: &Pointer) -> Result<(), WebError> {
+    match pointer.format.as_str() {
+        Store::FORMAT => ensure_web!(
+            pointer.source.is_none() && pointer.tip_height.is_some() && pointer.tip_hash.is_some(),
+            "legacy store metadata requires both tips and no acquisition source"
+        ),
+        Store::OPERATOR_FORMAT => ensure_web!(
+            matches!(
+                pointer.source.as_ref(),
+                Some(AcquisitionSource::LocalNodeOperator)
+            ) && pointer.tip_height.is_none()
+                && pointer.tip_hash.is_none(),
+            "operator store metadata requires its acquisition source and no claimed tip"
+        ),
+        _ => return Err(WebError::Invalid("unsupported store format".into())),
+    }
+    Ok(())
+}
+
 impl Store {
     pub const FORMAT: &'static str = "URMA-WEB-STORE-2";
+    pub const OPERATOR_FORMAT: &'static str = "URMA-WEB-STORE-3";
     pub const MAX_POINTER_BYTES: usize = 64 * 1024;
     pub const MAX_TRANSACTION_BYTES: usize = 4 * 1024 * 1024;
     pub const MAX_OBJECT_BYTES: usize = 256 * 1024 * 1024;
@@ -133,6 +186,42 @@ impl Store {
             }
         }
         urma_io::write_replace(&path, bytes)?;
+        Ok(sha256)
+    }
+
+    /// Store bounded bytes without replacing an existing object. Existing
+    /// destinations must be regular files containing exactly the same bytes;
+    /// disagreement or a symlink is refused, including a dangling symlink.
+    pub fn put_object_immutable(&self, bytes: &[u8]) -> Result<String, WebError> {
+        ensure_web!(
+            bytes.len() <= Self::MAX_OBJECT_BYTES,
+            "store object exceeds the byte limit"
+        );
+        let sha256 = hex::encode(Sha256::digest(bytes));
+        let path = self.object_path(&sha256)?;
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) => {
+                ensure_web!(
+                    metadata.is_file(),
+                    "immutable object {sha256} must be a regular file"
+                );
+                ensure_web!(
+                    metadata.len() == u64::try_from(bytes.len())?,
+                    "immutable object {sha256} disagrees with new bytes"
+                );
+                // read_regular uses O_NOFOLLOW/O_NONBLOCK on Linux and bounds
+                // the read, even if the destination changes after metadata.
+                let existing = urma_io::read_regular(&path, bytes.len())?;
+                ensure_web!(
+                    existing.as_slice() == bytes,
+                    "immutable object {sha256} disagrees with new bytes"
+                );
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                urma_io::write_new(&path, bytes)?;
+            }
+            Err(error) => return Err(error.into()),
+        }
         Ok(sha256)
     }
 
@@ -198,7 +287,7 @@ impl Store {
     }
 
     pub fn put_pointer(&self, pointer: &Pointer) -> Result<(), WebError> {
-        ensure_web!(pointer.format == Self::FORMAT, "unsupported store format");
+        check_acquisition(pointer)?;
         ensure_web!(is_hex64(&pointer.commit), "pointer commit must be a TXID");
         let path = self.pointer_path(&pointer.network, &pointer.root)?;
         let Some(parent) = path.parent() else {
@@ -213,7 +302,7 @@ impl Store {
         let path = self.pointer_path(network, root)?;
         let pointer: Pointer =
             serde_json::from_slice(&urma_io::read_bounded(&path, Self::MAX_POINTER_BYTES)?)?;
-        ensure_web!(pointer.format == Self::FORMAT, "unsupported store format");
+        check_acquisition(&pointer)?;
         ensure_web!(
             pointer.network == network && pointer.root == root,
             "stored pointer names another network or root"
@@ -285,6 +374,7 @@ impl Store {
     }
 
     pub fn summary(&self, verified: &Verified) -> Result<StoredPublication, WebError> {
+        check_acquisition(&verified.pointer)?;
         let mut files = Vec::new();
         for file in &verified.package.files {
             files.push(StoredFile {
@@ -311,7 +401,7 @@ impl Store {
                 .ok_or_else(|| WebError::Invalid("payload length overflow".into()))?;
         }
         Ok(StoredPublication {
-            format: Self::FORMAT.into(),
+            format: verified.pointer.format.clone(),
             network: verified.pointer.network.clone(),
             root: verified.pointer.root.clone(),
             commit: verified.pointer.commit.clone(),
@@ -324,6 +414,7 @@ impl Store {
             pinned,
             tip_height: verified.pointer.tip_height,
             tip_hash: verified.pointer.tip_hash.clone(),
+            source: verified.pointer.source.clone(),
         })
     }
 
