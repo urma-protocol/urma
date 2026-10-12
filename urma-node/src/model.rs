@@ -5,6 +5,23 @@ use urma_chain::observation::Chain;
 pub const API_VERSION: u32 = 1;
 pub const SCAN_RULES_VERSION: u32 = 1;
 
+/// Acknowledges a local pin operation at its commit point. This is not a
+/// promise of current chain selection, object availability forever, or peer trust.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PinReceipt {
+    pub root: bitcoin::Txid,
+    pub pinned: bool,
+}
+
+/// Explicit local cache maintenance. Counts removed child records, not raw
+/// transactions or bytes; unpruned archives return zero without eviction.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PruneReceipt {
+    pub records_removed: u64,
+}
+
 /// Transport data, never trusted merely because it came from another node.
 /// The receiver selects the header independently before verifying this proof.
 /// `commit` authenticates the exact prevout through its TXID; this package does
