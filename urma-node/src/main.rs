@@ -537,6 +537,17 @@ mod peer_config_tests {
         assert!(Arguments::try_parse_from(&remote).is_err());
         remote.extend(["--peer-key", "transport.key"]);
         assert!(Arguments::try_parse_from(remote).is_ok());
+        for (value, expected) in [("0", 0), ("9223372036854775807", i64::MAX as u64)] {
+            let mut cache = base.to_vec();
+            cache.extend(["--cache-bytes", value]);
+            assert!(matches!(Arguments::try_parse_from(cache).unwrap().command,
+                Command::Serve { cache_bytes, p2p: false, .. } if cache_bytes == expected));
+        }
+        for value in ["-1", "9223372036854775808", "not-a-number"] {
+            let mut cache = base.to_vec();
+            cache.extend(["--cache-bytes", value]);
+            assert!(Arguments::try_parse_from(cache).is_err());
+        }
         for option in [
             "--max-object-bytes",
             "--max-object-nodes",
