@@ -15,6 +15,7 @@ use urma_names::{
 use urma_node_client::{
     Client,
     names::{NamesEntry, NamesStatus},
+    projection::IndexSnapshot,
 };
 use urma_runtime::error::{Error, ensure};
 
@@ -25,6 +26,7 @@ const TRAVERSAL_TIME: Duration = Duration::from_secs(30);
 
 pub(crate) struct View {
     status: NamesStatus,
+    snapshot: IndexSnapshot,
     names: BTreeMap<Name, NameState>,
     // Preserve legacy output order, distinct from displayed-hex wire ordering.
     pending: BTreeMap<Txid, PendingRecord>,
@@ -36,6 +38,18 @@ fn refused() -> Error {
 }
 
 impl View {
+    pub(crate) fn status(&self) -> &NamesStatus {
+        &self.status
+    }
+
+    pub(crate) fn snapshot(&self) -> &IndexSnapshot {
+        &self.snapshot
+    }
+
+    pub(crate) fn names(&self) -> &BTreeMap<Name, NameState> {
+        &self.names
+    }
+
     fn pending_rows(&self, name: Option<&Name>) -> Vec<Value> {
         self.pending
             .iter()
@@ -44,15 +58,19 @@ impl View {
             .collect()
     }
 
-    pub(crate) fn resolve(&self, network: &str, name: &Name) -> Value {
-        let resolution = match self.names.get(name) {
+    pub(crate) fn resolution(&self, name: &Name) -> Resolution {
+        match self.names.get(name) {
             Some(state) if state.suspended => Resolution::Suspended,
             Some(NameState {
                 binding: Binding::Bound(bound),
                 ..
             }) => Resolution::Bound(bound.clone()),
             _ => Resolution::Unbound,
-        };
+        }
+    }
+
+    pub(crate) fn resolve(&self, network: &str, name: &Name) -> Value {
+        let resolution = self.resolution(name);
         json!({
             "network":network,"registry":self.status.genesis.to_string(),
             "genesis_height":self.status.genesis_block.height,"height":self.status.projected.height,
@@ -136,6 +154,7 @@ pub(crate) fn read(
             None => {
                 return Ok(View {
                     status: page.status,
+                    snapshot: page.snapshot,
                     names,
                     pending,
                 });
