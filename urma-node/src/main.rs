@@ -246,6 +246,7 @@ fn connect_commit_source(
         rpc_url: rpc_url.clone(),
         cookie_file: cookie_file.clone(),
     })?;
+    node.require_txindex()?;
     Ok(Some(RuntimeCommitSource {
         node: Arc::new(node),
     }))

@@ -368,10 +368,11 @@ constructs no Node and chooses no endpoint, provider, history start or
 bootstrap. Absence is the runtime's typed Missing result or local JSON-RPC
 error code -5 (no such mempool or blockchain transaction, which includes
 lookups a node without `-txindex` cannot answer); it is a miss, not an error.
-Other failures are reported as errors. A miss or failure leaves the dependency
-unresolved. Parent bytes are auxiliary prevout evidence for a reveal; they add
-no parent placement, inclusion, witness or scan-coverage evidence. Names still
-requires a selected commit placement.
+The standalone daemon therefore requires a synchronized `txindex=1`, checked at
+startup like a connection failure. Other failures are reported as errors. A
+miss or failure leaves the dependency unresolved. Parent bytes are auxiliary
+prevout evidence for a reveal; they add no parent placement, inclusion, witness
+or scan-coverage evidence. Names still requires a selected commit placement.
 
 Embedded `Service` owners can call `with_commit_source(source, label)`; a source
 for another chain is refused at configuration. The standalone daemon enables one
