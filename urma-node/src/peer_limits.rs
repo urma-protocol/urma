@@ -12,12 +12,25 @@ use libp2p::{
 use std::{
     collections::{HashMap, HashSet},
     convert::Infallible,
+    fmt,
     task::{Context, Poll},
 };
 
 const PENDING_PER_DIRECTION: usize = 4;
-const ESTABLISHED_PER_DIRECTION: usize = 4;
+pub(crate) const ESTABLISHED_PER_DIRECTION: usize = 4;
 const ESTABLISHED_TOTAL: usize = 8;
+
+/// Typed local admission refusal, recognisable by downcast instead of text.
+#[derive(Debug)]
+pub(crate) struct LimitDenied(&'static str);
+
+impl fmt::Display for LimitDenied {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.0)
+    }
+}
+
+impl std::error::Error for LimitDenied {}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -33,7 +46,7 @@ pub(crate) struct Limits {
 }
 
 fn denied(reason: &'static str) -> ConnectionDenied {
-    ConnectionDenied::new(std::io::Error::other(reason))
+    ConnectionDenied::new(LimitDenied(reason))
 }
 
 fn reserve(pending: &mut HashSet<ConnectionId>, id: ConnectionId) -> Result<(), ConnectionDenied> {

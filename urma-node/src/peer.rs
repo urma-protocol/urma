@@ -7,7 +7,8 @@ use crate::{
     engine::Engine,
     model::RecordPackage,
     peer_codec::Codec,
-    peer_parent::Parent,
+    peer_limits::LimitDenied,
+    peer_parent::{Parent, validate_parent},
     peer_protocol::{
         Kind, PARENT_LIMIT, PROTOCOL, RESPONSE_LIMIT, Reply, Request, Response, VERSION,
     },
@@ -22,7 +23,7 @@ use libp2p::{
     multiaddr::Protocol,
     noise,
     request_response::{self, Message, OutboundRequestId, ResponseChannel},
-    swarm::{NetworkBehaviour, SwarmEvent},
+    swarm::{DialError, NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
 use std::{
@@ -71,14 +72,20 @@ pub struct PeerSource {
     stop: Arc<AtomicBool>,
 }
 
-struct Command {
+enum Command {
+    Fetch(Fetch),
+    /// Fire and forget: frees the slot held by a peer whose reply was rejected.
+    Disconnect(PeerId),
+}
+
+struct Fetch {
     address: PeerAddress,
     txid: Txid,
     deadline: Instant,
     answer: Answer,
 }
 
-struct Pending {
+pub(crate) struct Pending {
     peer: PeerId,
     txid: Txid,
     deadline: Instant,
@@ -240,12 +247,12 @@ impl PeerSource {
         let deadline = limit.min(Instant::now() + CALL_TIMEOUT);
         let (sender, receiver) = mpsc::sync_channel(1);
         self.commands
-            .try_send(Command {
+            .try_send(Command::Fetch(Fetch {
                 address: self.address.clone(),
                 txid,
                 deadline,
                 answer: answer(sender),
-            })
+            }))
             .map_err(|_| Error::Busy("peer command queue unavailable".into()))?;
         receiver
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
@@ -256,6 +263,13 @@ impl PeerSource {
 impl PeerSource {
     pub(crate) fn parent(&self, txid: Txid, deadline: Instant) -> Result<Parent, Error> {
         self.request(txid, deadline, Answer::Parent)
+    }
+
+    /// Fire and forget; a full queue only delays the idle-connection timeout.
+    pub(crate) fn disconnect(&self) {
+        let _ = self
+            .commands
+            .try_send(Command::Disconnect(self.address.peer_id()));
     }
 }
 
@@ -426,7 +440,11 @@ async fn run(
                 }
             }
             command = commands.recv() => {
-                let Some(command) = command else { break Ok(()); };
+                let command = match command {
+                    Some(Command::Fetch(fetch)) => fetch,
+                    Some(Command::Disconnect(peer)) => { let _ = swarm.disconnect_peer_id(peer); continue; }
+                    None => break Ok(()),
+                };
                 if Instant::now() >= command.deadline || pending.len() >= MAX_PENDING
                     || pending.values().any(|p| p.peer == command.address.peer_id()) {
                     command.answer.fail(Error::Busy("peer acquisition capacity or deadline".into()));
@@ -451,6 +469,9 @@ async fn run(
                     if let Some(ready) = ready.take() { let _ = ready.send(Ok(Some(address))); }
                 }
                 SwarmEvent::ListenerError { error, .. } if ready.is_some() => break Err(Error::Io(error)),
+                // Queued before request-response reports the same DialFailure.
+                SwarmEvent::OutgoingConnectionError { peer_id: Some(peer), error: DialError::Denied { cause }, .. }
+                    if cause.downcast_ref::<LimitDenied>().is_some() => release_denied(&mut pending, peer),
                 SwarmEvent::Behaviour(BehaviourEvent::Records(event)) => match event {
                     request_response::Event::Message { peer, message: Message::Request { request_id, request, channel }, .. } => {
                         // Every request, including refusals, consumes rate and
@@ -507,7 +528,20 @@ async fn run(
     result
 }
 
-fn bind_response(
+/// A dial refused by our own limits is local capacity, answered as Busy.
+fn release_denied(pending: &mut HashMap<OutboundRequestId, Pending>, peer: PeerId) {
+    pending.retain(|_, value| {
+        if value.peer != peer {
+            return true;
+        }
+        value.answer.fail(Error::Busy(
+            "peer dial denied by local connection limit".into(),
+        ));
+        false
+    });
+}
+
+pub(crate) fn bind_response(
     genesis: BlockHash,
     peer: PeerId,
     pending: &Pending,
@@ -526,28 +560,6 @@ fn bind_response(
         ));
     }
     Ok(())
-}
-
-/// Busy is capacity, not an answer. Hex is length-checked before any decode.
-/// TooLarge, WrongNetwork and UnsupportedVersion are definitive for that peer.
-fn validate_parent(
-    genesis: BlockHash,
-    peer: PeerId,
-    pending: &Pending,
-    response: Response,
-) -> Result<Parent, Error> {
-    bind_response(genesis, peer, pending, &response)?;
-    match response.result {
-        Reply::Parent(hex) if hex.len() <= 2 * PARENT_LIMIT => Ok(Parent::Hex(hex)),
-        Reply::Parent(_) => Err(Error::Invalid("peer parent exceeds byte limit".into())),
-        Reply::Busy => Ok(Parent::Busy),
-        Reply::Missing | Reply::TooLarge | Reply::WrongNetwork | Reply::UnsupportedVersion => {
-            Ok(Parent::Absent)
-        }
-        Reply::Record(_) => Err(Error::Invalid(
-            "peer answered a parent request with a record".into(),
-        )),
-    }
 }
 
 fn validate_response(

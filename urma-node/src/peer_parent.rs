@@ -1,10 +1,13 @@
 //! Raw commit parents from configured URMA peers over the overlay.
 use crate::{
     Error,
-    peer::PeerSource,
+    peer::{PeerSource, Pending, bind_response},
+    peer_limits::ESTABLISHED_PER_DIRECTION,
+    peer_protocol::{PARENT_LIMIT, Reply, Response},
     source::{CommitSource, check_cancelled, verify_parent},
 };
-use bitcoin::Txid;
+use bitcoin::{BlockHash, Txid};
+use libp2p::PeerId;
 use std::{
     sync::atomic::{AtomicBool, AtomicUsize, Ordering},
     time::{Duration, Instant},
@@ -19,9 +22,32 @@ pub(crate) enum Parent {
     Busy,
 }
 
-/// Tries up to PEERS_PER_FETCH configured peers from a rotating start.
-/// verify_parent binds bytes to the TXID; a peer whose bytes fail it only
-/// lets the next peer be tried. Engine verification remains final.
+/// Busy is capacity, not an answer. Hex is length-checked before any decode.
+/// TooLarge, WrongNetwork and UnsupportedVersion are definitive for that peer.
+pub(crate) fn validate_parent(
+    genesis: BlockHash,
+    peer: PeerId,
+    pending: &Pending,
+    response: Response,
+) -> Result<Parent, Error> {
+    bind_response(genesis, peer, pending, &response)?;
+    match response.result {
+        Reply::Parent(hex) if hex.len() <= 2 * PARENT_LIMIT => Ok(Parent::Hex(hex)),
+        Reply::Parent(_) => Err(Error::Invalid("peer parent exceeds byte limit".into())),
+        Reply::Busy => Ok(Parent::Busy),
+        Reply::Missing | Reply::TooLarge | Reply::WrongNetwork | Reply::UnsupportedVersion => {
+            Ok(Parent::Absent)
+        }
+        Reply::Record(_) => Err(Error::Invalid(
+            "peer answered a parent request with a record".into(),
+        )),
+    }
+}
+
+/// Tries one window of configured peers per fetch; successive fetches move to
+/// the next window, so every peer is visited. verify_parent binds bytes to the
+/// TXID; a peer whose bytes fail it only lets the next peer be tried and is
+/// disconnected so it keeps no outbound slot. Engine verification is final.
 pub struct OverlayCommitSource {
     chain: Chain,
     peers: Vec<PeerSource>,
@@ -29,7 +55,8 @@ pub struct OverlayCommitSource {
 }
 
 impl OverlayCommitSource {
-    const PEERS_PER_FETCH: usize = 8;
+    /// No more peers than outbound connections the limits admit at once.
+    const PEERS_PER_FETCH: usize = ESTABLISHED_PER_DIRECTION;
     const FETCH_DEADLINE: Duration = Duration::from_secs(20);
 
     pub(crate) fn new(chain: Chain, peers: Vec<PeerSource>) -> Self {
@@ -47,10 +74,10 @@ impl CommitSource for OverlayCommitSource {
     }
 
     /// Busy, local or remote, is no answer. Local Busy from request() also
-    /// covers deadline expiry and a stopped network, so timeouts are silent
-    /// (Ok(None), nothing in status); FETCH_DEADLINE bounds the whole round.
-    /// Zero answers plus any other peer or transport error is an error;
-    /// otherwise absence. First valid parent wins.
+    /// covers deadline expiry, a dial denied by our connection limits and a
+    /// stopped network, so these are silent (Ok(None), nothing in status);
+    /// FETCH_DEADLINE bounds the whole round. Zero answers plus any other peer
+    /// or transport error is an error; otherwise absence. First valid wins.
     fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
         check_cancelled(cancelled)?;
         let count = self.peers.len();
@@ -58,22 +85,30 @@ impl CommitSource for OverlayCommitSource {
             return Ok(None);
         }
         let deadline = Instant::now() + Self::FETCH_DEADLINE;
-        let start = self.next.fetch_add(1, Ordering::Relaxed) % count;
+        let window = count.min(Self::PEERS_PER_FETCH);
+        let start = self.next.fetch_add(window, Ordering::Relaxed) % count;
         let mut answered = false;
         let mut failure = None;
-        for offset in 0..count.min(Self::PEERS_PER_FETCH) {
+        for offset in 0..window {
             check_cancelled(cancelled)?;
             if Instant::now() >= deadline {
                 break;
             }
-            match self.peers[(start + offset) % count].parent(txid, deadline) {
+            let peer = &self.peers[(start + offset) % count];
+            match peer.parent(txid, deadline) {
                 Ok(Parent::Hex(hex)) => match self.decode(&hex, txid) {
                     Ok(raw) => return Ok(Some(raw)),
-                    Err(error) => failure = Some(error),
+                    Err(error) => {
+                        peer.disconnect();
+                        failure = Some(error);
+                    }
                 },
                 Ok(Parent::Absent) => answered = true,
                 Ok(Parent::Busy) | Err(Error::Busy(_)) => (),
-                Err(error) => failure = Some(error),
+                Err(error) => {
+                    peer.disconnect();
+                    failure = Some(error);
+                }
             }
         }
         match failure {
