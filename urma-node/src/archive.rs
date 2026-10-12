@@ -152,7 +152,10 @@ impl Archive {
             unresolved_dependencies,
             stored_transactions,
             scan_rules_version: SCAN_RULES_VERSION,
-            peer_synced_through: peers::synced_through(&self.db, start)?,
+            peer_synced_through: peers::synced_through(
+                &self.db,
+                self.config.application_start.height,
+            )?,
             peer_omissions: peers::omission_count(&self.db)?,
             unaudited_records: peers::unaudited_count(&self.db)?,
         })
