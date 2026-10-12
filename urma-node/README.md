@@ -59,7 +59,9 @@ A registry starts at its authenticated genesis in a fully scanned selected block
 there is no default registry or implicit pre-application history. Each step applies
 at most one consecutive fully scanned, dependency-resolved block, including empty
 blocks. A Names record's commit needs a selected scanned TXID placement separately
-from its authenticated raw bytes. Missing placement refuses the step.
+from its authenticated raw bytes. Missing placement refuses the step. Reveals
+whose known selected commit placements are all outside the registry's live
+window are skipped, allowing the block and its expirations to advance.
 
 Names state is stored per name and pending record, with per-block forward/undo
 deltas and outcomes. The registry is restored once when needed, not serialized in

@@ -286,10 +286,29 @@ fn observations(
                 ],
                 |r| Ok((unsigned(r, 0)?, r.get::<_, u32>(1)?)),
             )
-            .optional()?
-            .ok_or_else(|| {
-                Error::Busy("Names commit has no fully scanned selected placement".into())
-            })?;
+            .optional()?;
+        let Some(location) = location else {
+            // A known placement outside the registry's live window is not
+            // missing context. Like the autonomous scanner, omit that reveal
+            // while still advancing the block and applying its expirations.
+            let outside_window: bool = db.query_row(
+                "SELECT EXISTS(SELECT 1 FROM locators l
+                JOIN selected s ON s.hash=l.block_hash JOIN scans c ON c.block_hash=s.hash
+                WHERE l.txid=?1 AND s.height<?2 AND c.rules=?3 AND c.unresolved=0)",
+                params![
+                    outpoint.txid.to_string(),
+                    sql_integer(first_commit)?,
+                    SCAN_RULES_VERSION
+                ],
+                |r| r.get(0),
+            )?;
+            if outside_window {
+                continue;
+            }
+            return Err(Error::Busy(
+                "Names commit has no fully scanned selected placement".into(),
+            ));
+        };
         let observation = observation_from_record(
             &bytes,
             txid.parse().map_err(invalid)?,
