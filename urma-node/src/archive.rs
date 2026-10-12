@@ -321,10 +321,11 @@ impl Archive {
         ).optional()?)
     }
 
-    /// Placements of records and pending reveals this node located in fully
-    /// scanned selected blocks within [from, to], strictly after `after` as
-    /// (height, position), ascending; `limit` rows at most. Children pruned
-    /// before storage are absent; locators of evicted records survive.
+    /// Placements of records this node holds in fully scanned selected blocks
+    /// within [from, to], strictly after `after` as (height, position),
+    /// ascending; `limit` rows at most. Pending reveals appear once their
+    /// parent resolves. Evicted records drop out; only LeafManifest/DataPart
+    /// are ever evicted, and those are exempt from omission detection.
     pub(crate) fn inventory_page(
         &self,
         from: u64,
@@ -337,9 +338,7 @@ impl Archive {
             None => (-1, -1),
         };
         let mut statement = self.db.prepare(
-            "SELECT s.height,s.hash,l.position,l.txid,l.wtxid FROM
-               (SELECT block_hash,position FROM records
-                UNION SELECT block_hash,position FROM dependencies) p
+            "SELECT s.height,s.hash,l.position,l.txid,l.wtxid FROM records p
              JOIN locators l ON l.block_hash=p.block_hash AND l.position=p.position
              JOIN selected s ON s.hash=p.block_hash
              JOIN scans c ON c.block_hash=p.block_hash AND c.rules=?5
