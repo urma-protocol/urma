@@ -815,7 +815,7 @@ impl RpcGuard {
         }
         worker
             .join()
-            .map_err(|_| "owned RPC guard panicked".into())?;
+            .map_err(|_| "owned RPC guard panicked".to_owned())?;
         self.unchanged();
         Ok(())
     }
