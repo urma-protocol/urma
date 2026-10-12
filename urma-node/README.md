@@ -20,8 +20,16 @@ bootstrap file can supply an earlier trusted anchor and its preceding context;
 no historical anchor or application-start default is shipped. Starting the
 daemon is not evidence of historical coverage.
 
-The `Retention` configuration distinguishes pruned multipart roots from
-unpruned record retention. On-demand recovery follows authenticated references,
+Unpruned retention keeps all verified URMA records and multipart content acquired
+by the node. Pruned retention keeps every individual record (`Private`,
+`Container`, `Post`, `Reply`, `Profile`, `Avatar`, `WirePost`, `WireReply`, and
+`ProfileRecord`, including Names V0), all multipart `RootManifest` records, and
+their referenced raw reveal/commit transactions. Only multipart components
+`LeafManifest` and `DataPart` are eligible for omission during scanning or later
+eviction when unpinned. Record size does not decide retention. Pruning also
+collects raw transactions no longer referenced by any retained record or pending
+dependency; it does not remove the transactions needed by individual records.
+On-demand recovery follows authenticated references,
 using selective packages or full blocks at known transaction locations. Missing
 commit dependencies remain visible and can be resolved later. Local clients can
 share packages through the optional authenticated service; each receiving engine
