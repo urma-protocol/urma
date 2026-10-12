@@ -266,6 +266,10 @@ impl Service {
                         .engine
                         .names_step(genesis)
                         .and_then(|value| serde_json::to_value(value).map_err(Error::from)),
+                    NamesRequest::View(genesis, limit, cursor) => self
+                        .engine
+                        .names_view(genesis, cursor.as_ref(), limit)
+                        .and_then(|value| serde_json::to_value(value).map_err(Error::from)),
                 };
                 match result {
                     Ok(value) => respond(stream, 200, value),
@@ -394,6 +398,7 @@ enum NamesRequest {
     Resolve(bitcoin::Txid, urma_names::name::Name),
     Register(bitcoin::Txid, crate::model::ChainPoint),
     Step(bitcoin::Txid),
+    View(bitcoin::Txid, u32, Option<crate::names::NamesCursor>),
 }
 
 fn names_request(method: &str, path: &str) -> Result<Option<NamesRequest>, Error> {
@@ -406,6 +411,13 @@ fn names_request(method: &str, path: &str) -> Result<Option<NamesRequest>, Error
     let genesis = id.parse().map_err(|_| invalid())?;
     let request = match (method, operation) {
         ("GET", "") => NamesRequest::Status(genesis),
+        ("GET", operation) if operation.starts_with("view?") => {
+            let (limit, cursor) = names_view_query(&operation["view?".len()..])?;
+            if cursor.as_ref().is_some_and(|c| c.genesis != genesis) {
+                return Err(invalid());
+            }
+            NamesRequest::View(genesis, limit, cursor)
+        }
         ("GET", operation) if operation.starts_with("resolve/") => {
             // Canonical Names V0 uses only ASCII letters, digits and hyphens;
             // do not normalize, percent-decode or accept alternate spellings.
@@ -449,6 +461,45 @@ fn names_request(method: &str, path: &str) -> Result<Option<NamesRequest>, Error
         _ => return Ok(None),
     };
     Ok(Some(request))
+}
+
+fn names_view_query(query: &str) -> Result<(u32, Option<crate::names::NamesCursor>), Error> {
+    let invalid = || Error::Invalid("invalid Names view query".into());
+    let mut limit = None;
+    let mut cursor = None;
+    for field in query.split('&') {
+        match field.split_once('=') {
+            Some(("limit", value)) if limit.is_none() => {
+                if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                    return Err(invalid());
+                }
+                let value: u32 = value.parse().map_err(|_| invalid())?;
+                if !(1..=crate::names::MAX_NAMES_PAGE).contains(&value) {
+                    return Err(invalid());
+                }
+                limit = Some(value);
+            }
+            Some(("cursor", value)) if cursor.is_none() => {
+                if value.len() > 1024 {
+                    return Err(invalid());
+                }
+                let bytes = hex::decode(value).map_err(|_| invalid())?;
+                let decoded: crate::names::NamesCursor = serde_json::from_slice(&bytes)?;
+                if decoded.snapshot.instance.len() != 32
+                    || !decoded
+                        .snapshot
+                        .instance
+                        .bytes()
+                        .all(|b| b.is_ascii_hexdigit())
+                {
+                    return Err(invalid());
+                }
+                cursor = Some(decoded);
+            }
+            _ => return Err(invalid()),
+        }
+    }
+    Ok((limit.ok_or_else(invalid)?, cursor))
 }
 
 fn wire_query(query: &str) -> Result<(u32, Option<crate::projection::WireCursor>), Error> {

@@ -104,6 +104,19 @@ impl Engine {
         self.archive()?.names_step(genesis)
     }
 
+    /// Read normalized Names state without registration, projection or source
+    /// access. Metadata and rows share one archive lock. Any committed event or
+    /// Engine restart invalidates continuation; discard partial traversals.
+    pub fn names_view(
+        &self,
+        genesis: bitcoin::Txid,
+        cursor: Option<&crate::names::NamesCursor>,
+        limit: u32,
+    ) -> Result<crate::names::NamesPage, Error> {
+        self.archive()?
+            .names_view(&self.index_instance, genesis, cursor, limit)
+    }
+
     /// Orphaned projection checkpoints are refused until a maintenance step
     /// reconciles them; an orphaned genesis always requires explicit action.
     pub fn names_status(

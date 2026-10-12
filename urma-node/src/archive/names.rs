@@ -44,6 +44,122 @@ PRAGMA user_version=4;";
 
 const UNDO_BLOCKS: u64 = 1000;
 
+impl Archive {
+    pub(crate) fn names_view(
+        &self,
+        instance: &str,
+        genesis: Txid,
+        cursor: Option<&NamesCursor>,
+        limit: u32,
+    ) -> Result<NamesPage, Error> {
+        if !(1..=MAX_NAMES_PAGE).contains(&limit) || cursor.is_some_and(|c| c.genesis != genesis) {
+            return Err(invalid("invalid page limit or cursor registry"));
+        }
+        let snapshot = crate::projection::IndexSnapshot {
+            instance: instance.into(),
+            revision: self.db.query_row(
+                "SELECT COALESCE(MAX(sequence),0) FROM events",
+                [],
+                |r| unsigned(r, 0),
+            )?,
+        };
+        if cursor.is_some_and(|c| c.snapshot != snapshot) {
+            return Err(Error::Busy(
+                "Names snapshot changed; restart traversal".into(),
+            ));
+        }
+        // Bound rules before names_status/metadata decodes them as well. State
+        // and key bounds below also apply before allocating SQLite blobs in Rust.
+        let bytes = self.db.query_row(
+            "SELECT CASE WHEN length(rules)<=?2 THEN rules ELSE NULL END FROM names_registries WHERE genesis=?1",
+            params![genesis.to_string(), MAX_NAMES_STATE_BYTES as i64],
+            |r| r.get::<_, Option<Vec<u8>>>(0),
+        ).optional()?.ok_or_else(|| invalid("registry is not registered"))?
+            .ok_or_else(|| invalid("stored rules exceed page bound"))?;
+        let rules: Genesis = serde_json::from_slice(&bytes)?;
+        rules.validate().map_err(invalid)?;
+        let status = self
+            .names_status(genesis)?
+            .ok_or_else(|| invalid("registry is not registered"))?;
+        let mut entries = Vec::new();
+        let (phase, after) = cursor
+            .map(|c| c.after.order_key())
+            .unwrap_or((0, String::new()));
+        for section in phase..=1 {
+            let (table, column) = if section == 0 {
+                ("names_states", "name")
+            } else {
+                ("names_pending", "txid")
+            };
+            // Identifiers above are fixed code, never request data. Each query
+            // walks its indexed suffix; no full-map restore or UNION sort.
+            let query = format!(
+                "SELECT CASE WHEN length({column})<=64 THEN {column} ELSE NULL END,
+                 CASE WHEN length(state)<=?3 THEN state ELSE NULL END
+                 FROM {table} WHERE registry=?1 AND {column}>?2
+                 ORDER BY {column} LIMIT ?4"
+            );
+            let mut statement = self.db.prepare(&query)?;
+            let mut rows = statement.query(params![
+                genesis.to_string(),
+                if section == phase { after.as_str() } else { "" },
+                MAX_NAMES_STATE_BYTES as i64,
+                (limit as usize + 1 - entries.len()) as i64,
+            ])?;
+            while let Some(row) = rows.next()? {
+                let key = row
+                    .get::<_, Option<String>>(0)?
+                    .ok_or_else(|| invalid("stored key exceeds page bound"))?;
+                let bytes = row
+                    .get::<_, Option<Vec<u8>>>(1)?
+                    .ok_or_else(|| invalid("stored state exceeds page bound"))?;
+                entries.push(if section == 0 {
+                    NamesEntry::Name {
+                        name: Name::parse(&key).map_err(invalid)?,
+                        state: serde_json::from_slice(&bytes)?,
+                    }
+                } else {
+                    let txid: Txid = key.parse().map_err(invalid)?;
+                    if txid.to_string() != key {
+                        return Err(invalid("noncanonical stored TXID"));
+                    }
+                    NamesEntry::Pending {
+                        txid,
+                        record: serde_json::from_slice(&bytes)?,
+                    }
+                });
+            }
+            if entries.len() > limit as usize {
+                break;
+            }
+        }
+        let next = if entries.len() > limit as usize {
+            entries.pop();
+            Some(NamesCursor {
+                genesis,
+                snapshot: snapshot.clone(),
+                after: entries.last().expect("nonzero limit").key(),
+            })
+        } else {
+            None
+        };
+        let page = NamesPage {
+            snapshot,
+            chain_genesis: self.config.chain.genesis().map_err(invalid)?.0,
+            status,
+            rules,
+            entries,
+            next,
+        };
+        // Fail the whole page rather than silently omit an entry. This is below
+        // the common HTTP 32 MiB ceiling and is not an overall SQL time bound.
+        if serde_json::to_vec(&page)?.len() > MAX_NAMES_PAGE_BYTES {
+            return Err(invalid("Names page exceeds byte bound"));
+        }
+        Ok(page)
+    }
+}
+
 struct Metadata {
     genesis: ChainPoint,
     rules: Genesis,

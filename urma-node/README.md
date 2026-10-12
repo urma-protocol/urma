@@ -157,6 +157,24 @@ Names uses the same bearer authentication and bodyless request rules:
 - `GET /v1/names/GENESIS/resolve/NAME` returns local resolution at the reported
   projected block, with separate selected tip and completion status. NAME must
   already be canonical Names V0 ASCII; it is not normalized by the service.
+- `GET /v1/names/GENESIS/view?limit=N[&cursor=HEX]` reads normalized name states
+  and pending records, with chain identity, rules and projection status. `N` is
+  1..128 total entries. Names sort by canonical ASCII before pending TXIDs sorted
+  by their displayed hex. Unbound/suspended names and completed pending records
+  remain present. The cursor is hex-encoded JSON `NamesCursor`, bound to the
+  registry, engine instance, archive event revision and last emitted tagged key.
+  Restart or any committed event invalidates continuation with 409; discard the
+  partial traversal. Unregistered views are rejected with 422, never represented
+  as empty registries. Orphaned projections/genesis are refused with 409.
+
+View reads hold one archive lock across metadata and rows, without registration,
+stepping or acquisition. Rules/state JSON is bounded to 64 KiB before decoding;
+oversized entries or a serialized page over 16 MiB refuse the entire page. These
+are allocation/result bounds, not a SQL execution deadline. Consumers must also
+bound aggregate rows, bytes and traversal time, compare metadata across pages,
+and publish only a fully traversed snapshot. Local traversal completion does not
+establish `complete_to_tip`. A view supplies no autonomous scanner checkpoints,
+commit window or undo; it must not be fabricated into a resumable `NamesIndex`.
 
 Names mutations return typed JSON only on HTTP 200. Malformed fields on supported
 routes return 400; unsupported paths or methods return 404 (including a register
