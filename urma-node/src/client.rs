@@ -7,7 +7,7 @@
 
 use crate::{
     Error,
-    model::{ArchivedRecord, ObjectStatus},
+    model::{ArchivedRecord, ObjectStatus, PinReceipt, PruneReceipt},
 };
 use bitcoin::Txid;
 use std::{
@@ -44,7 +44,7 @@ impl Client {
     /// Read status reported by the local operator, without verifying its claims.
     pub fn status(&self) -> Result<serde_json::Value, Error> {
         let deadline = Instant::now() + OPERATION_TIMEOUT;
-        let (code, body) = self.get("/v1/status", deadline)?;
+        let (code, body) = self.request("GET", "/v1/status", deadline)?;
         if code != 200 {
             return Err(invalid(format!("local status HTTP {code}")));
         }
@@ -62,7 +62,7 @@ impl Client {
     /// `Engine::admit_record`. Deserialization does not establish those claims.
     pub fn record(&self, txid: Txid) -> Result<Option<ArchivedRecord>, Error> {
         let deadline = Instant::now() + OPERATION_TIMEOUT;
-        let (code, body) = self.get(&format!("/v1/records/{txid}"), deadline)?;
+        let (code, body) = self.request("GET", &format!("/v1/records/{txid}"), deadline)?;
         match code {
             200 => {
                 let record: ArchivedRecord = serde_json::from_slice(&body)?;
@@ -90,7 +90,7 @@ impl Client {
     /// not global absence. Root/count sanity checks establish no crypto claims.
     pub fn object_status(&self, root: Txid) -> Result<Option<ObjectStatus>, Error> {
         let deadline = Instant::now() + OPERATION_TIMEOUT;
-        let (code, body) = self.get(&format!("/v1/objects/{root}"), deadline)?;
+        let (code, body) = self.request("GET", &format!("/v1/objects/{root}"), deadline)?;
         match code {
             200 => {
                 let status: ObjectStatus = serde_json::from_slice(&body)?;
@@ -115,11 +115,57 @@ impl Client {
         }
     }
 
-    fn get(&self, path: &str, deadline: Instant) -> Result<(u16, Vec<u8>), Error> {
+    /// Request a local pin or unpin and read the operator's acknowledgement at
+    /// its commit point. This is not cryptographic evidence or a promise of
+    /// future availability, chain selection or pin state. Only HTTP 200 with
+    /// the requested root and pin value succeeds. No automatic retry occurs:
+    /// the operation may already have committed before a socket failure.
+    pub fn set_pin(&self, root: Txid, pin: bool) -> Result<PinReceipt, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        let action = if pin { "pin" } else { "unpin" };
+        let (code, body) =
+            self.request("POST", &format!("/v1/objects/{root}/{action}"), deadline)?;
+        if code != 200 {
+            return Err(invalid(format!("local {action} HTTP {code}")));
+        }
+        let receipt: PinReceipt = serde_json::from_slice(&body)?;
+        remaining(deadline)?;
+        if receipt.root != root || receipt.pinned != pin {
+            return Err(invalid("local pin receipt differs from request"));
+        }
+        Ok(receipt)
+    }
+
+    /// Request explicit local cache pruning and read the operator's removal
+    /// count. This acknowledgement is not cryptographic evidence or a promise
+    /// of future cache contents. Only HTTP 200 succeeds. No automatic retry
+    /// occurs, including when a socket failure leaves the commit outcome unknown.
+    pub fn prune_cache(&self) -> Result<PruneReceipt, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        let (code, body) = self.request("POST", "/v1/cache/prune", deadline)?;
+        if code != 200 {
+            return Err(invalid(format!("local cache prune HTTP {code}")));
+        }
+        let receipt = serde_json::from_slice(&body)?;
+        remaining(deadline)?;
+        Ok(receipt)
+    }
+
+    fn request(
+        &self,
+        method: &str,
+        path: &str,
+        deadline: Instant,
+    ) -> Result<(u16, Vec<u8>), Error> {
         let mut stream =
             TcpStream::connect_timeout(&self.address, CONNECT_TIMEOUT.min(remaining(deadline)?))?;
+        let body_length = if method == "POST" {
+            "Content-Length: 0\r\n"
+        } else {
+            ""
+        };
         let request = format!(
-            "GET {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nAccept: application/json\r\nAccept-Encoding: identity\r\nConnection: close\r\n\r\n",
+            "{method} {path} HTTP/1.1\r\nHost: {}\r\nAuthorization: Bearer {}\r\nAccept: application/json\r\nAccept-Encoding: identity\r\n{body_length}Connection: close\r\n\r\n",
             self.address, self.token
         );
         let mut pending = request.as_bytes();
