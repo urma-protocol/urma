@@ -160,7 +160,7 @@ impl Prepared {
                     // after the metadata check. Reuse never rewrites a file.
                     let existing = urma_io::read_regular(&path, Store::MAX_TRANSACTION_BYTES)?;
                     ensure!(
-                        existing == bytes,
+                        existing.as_slice() == bytes.as_slice(),
                         "stored transaction disagrees with acquired bytes"
                     );
                 }
