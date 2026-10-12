@@ -1,3 +1,4 @@
+use bitcoincore_rpc::{Error as RpcClientError, jsonrpc::Error as JsonRpcError};
 use std::fmt::{Display, Formatter};
 use urma_chain::validation::BlockValidationError;
 
@@ -161,6 +162,18 @@ impl Error {
         match self {
             Self::HeaderContext(_) => true,
             Self::Context { cause, .. } => cause.is_header_context(),
+            _ => false,
+        }
+    }
+
+    const MISSING_TRANSACTION_RPC_CODE: i32 = -5;
+
+    pub fn is_missing_transaction(&self) -> bool {
+        match self {
+            Self::Missing(_) => true,
+            Self::Rpc(RpcClientError::JsonRpc(JsonRpcError::Rpc(rejection))) => {
+                rejection.code == Self::MISSING_TRANSACTION_RPC_CODE
+            }
             _ => false,
         }
     }

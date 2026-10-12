@@ -43,15 +43,17 @@ impl CommitSource for RuntimeCommitSource {
     /// normalized transaction. The 16M-character/8M-byte admission cap applies
     /// after Node::call: its transport may allocate/decode first and owns its
     /// timeouts. There is no global deadline or transport-allocation promise.
-    /// Only the runtime's explicit Missing result is absence; other runtime
-    /// errors, including local RPC errors, become CommitSource without text matching.
+    /// Absence is the runtime's explicit Missing result or a local JSON-RPC
+    /// error with code -5 (no such mempool/blockchain transaction, including
+    /// lookups a node without -txindex cannot answer), per is_missing_transaction.
+    /// Other runtime errors become CommitSource without text matching.
     fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
         let result = match self.node.call(
             "getrawtransaction",
             &[serde_json::json!(txid), serde_json::json!(false)],
         ) {
             Ok(result) => result,
-            Err(urma_runtime::error::Error::Missing(_)) => return Ok(None),
+            Err(error) if error.is_missing_transaction() => return Ok(None),
             Err(error) => return Err(Error::CommitSource(error.to_string())),
         };
         let encoded = result

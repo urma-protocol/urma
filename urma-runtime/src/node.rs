@@ -462,10 +462,8 @@ impl Node {
         let result = self.call("getrawtransaction", &[json!(txid), json!(true)]);
         let value = match result {
             Ok(value) => value,
-            Err(Error::Rpc(bitcoincore_rpc::Error::JsonRpc(
-                bitcoincore_rpc::jsonrpc::Error::Rpc(error),
-            ))) if error.code == -5 => {
-                tracing::warn!(code = error.code, "transaction absent from node");
+            Err(error @ Error::Rpc(_)) if error.is_missing_transaction() => {
+                tracing::warn!(%error, "transaction absent from node");
                 return Ok(Presence::Missing);
             }
             Err(Error::Missing(message)) => {

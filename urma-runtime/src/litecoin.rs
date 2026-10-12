@@ -319,15 +319,13 @@ impl Rpc for Core {
             .contains(&method),
             "unsupported Litecoin RPC method"
         );
-        match self.client.call::<Value>(method, args) {
+        match self.client.call::<Value>(method, args).map_err(Error::from) {
             Ok(v) => Ok(v),
-            Err(bitcoincore_rpc::Error::JsonRpc(bitcoincore_rpc::jsonrpc::Error::Rpc(e)))
-                if method == "getrawtransaction" && e.code == -5 =>
-            {
-                tracing::warn!(code = e.code, "transaction absent from node");
+            Err(error) if method == "getrawtransaction" && error.is_missing_transaction() => {
+                tracing::warn!(%error, "transaction absent from node");
                 Ok(Value::Null)
             }
-            Err(error) => Err(error.into()),
+            Err(error) => Err(error),
         }
     }
 }

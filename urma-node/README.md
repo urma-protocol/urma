@@ -365,10 +365,13 @@ remaining references can require another explicit source call.
 `RuntimeCommitSource { node: Arc<Node> }` shares an explicitly configured
 runtime Node and preserves the original `getrawtransaction` hex bytes. It
 constructs no Node and chooses no endpoint, provider, history start or
-bootstrap. A source miss or failure leaves the dependency unresolved. Parent
-bytes are auxiliary prevout evidence for a reveal; they add no parent
-placement, inclusion, witness or scan-coverage evidence. Names still requires
-a selected commit placement.
+bootstrap. Absence is the runtime's typed Missing result or local JSON-RPC
+error code -5 (no such mempool or blockchain transaction, which includes
+lookups a node without `-txindex` cannot answer); it is a miss, not an error.
+Other failures are reported as errors. A miss or failure leaves the dependency
+unresolved. Parent bytes are auxiliary prevout evidence for a reveal; they add
+no parent placement, inclusion, witness or scan-coverage evidence. Names still
+requires a selected commit placement.
 
 Embedded `Service` owners can call `with_commit_source(source, label)`; a source
 for another chain is refused at configuration. The standalone daemon enables one
@@ -376,15 +379,14 @@ only with `serve --p2p --commit-rpc-url URL --commit-rpc-cookie PATH` (both
 required together). `Node::connect` requires an `http` URL whose host is a
 loopback IP literal (`localhost` is refused), path exactly `/`, no userinfo,
 query or fragment, and authenticates with the cookie file only. There is no
-default endpoint, public provider or fallback. The
-Node connects at startup, after archive ownership and before the control API
-listens; a connection failure exits nonzero. Each `run(true)` round, after
-scan/cached-dependency work and before Names, calls `resolve_next_dependency`
-once, so at most one missing parent is fetched per round, independent of that
-round's sync result. `run(false)` never calls the source. Status reports
-`commit_source` (label or null) and `last_dependency_error`; an error observed
-after a stop request is not recorded. A running fetch is not interrupted by
-stop; shutdown waits for it.
+default endpoint, public provider or fallback. The Node connects at startup,
+after archive ownership and before the control API listens; a connection
+failure exits nonzero. Each `run(true)` round, after scan/cached-dependency
+work and before Names, calls `resolve_next_dependency` once, so at most one
+missing parent is fetched per round, independent of that round's sync result.
+`run(false)` never calls the source. Status reports `commit_source` (label or
+null) and `last_dependency_error`; an error observed after a stop request is
+not recorded. A running fetch is not interrupted by stop; shutdown waits for it.
 
 The chain decoder limits raw input to 8,000,000 bytes. The runtime adapter checks
 16,000,000 hex characters before its own decode, but `Node::call` may already
