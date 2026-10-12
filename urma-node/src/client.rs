@@ -11,11 +11,13 @@
 
 use crate::{
     Error,
-    model::{ArchivedRecord, ObjectStatus, PinReceipt, PruneReceipt},
+    model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt},
+    names::{NamesResolution, NamesStatus, NamesStep},
     projection::{WireCursor, WirePage},
 };
 use bitcoin::Txid;
 use std::net::SocketAddr;
+use urma_names::name::Name;
 
 /// An optional local service connection, trusting the configured local operator.
 /// Construction performs no I/O. Each operation opens one bounded connection.
@@ -81,6 +83,33 @@ impl Client {
     /// traversal and explicitly restart. No paging, retry or readback is automatic.
     pub fn wire_page(&self, cursor: Option<&WireCursor>, limit: u32) -> Result<WirePage, Error> {
         self.inner.wire_page(cursor, limit).map_err(Error::from)
+    }
+
+    /// Register an explicitly located genesis with the local operator. This is
+    /// a local index acknowledgement, not independent evidence or permanent state.
+    /// HTTP 409 remains Busy; a possibly committed operation is never retried.
+    pub fn register_names(&self, genesis: Txid, block: ChainPoint) -> Result<NamesStatus, Error> {
+        self.inner
+            .register_names(genesis, block)
+            .map_err(Error::from)
+    }
+
+    /// Request one local Names step and read operator outcomes. No independent
+    /// proof, automatic stepping, retry or readback; HTTP 409 remains Busy.
+    pub fn names_step(&self, genesis: Txid) -> Result<NamesStep, Error> {
+        self.inner.names_step(genesis).map_err(Error::from)
+    }
+
+    /// Read operator Names progress. None means only locally unregistered (404),
+    /// not global absence. No stepping or retry; HTTP 409 remains Busy.
+    pub fn names_status(&self, genesis: Txid) -> Result<Option<NamesStatus>, Error> {
+        self.inner.names_status(genesis).map_err(Error::from)
+    }
+
+    /// Read local operator resolution for a canonical name, not independent
+    /// ownership evidence or permanent state. No stepping/retry; 409 remains Busy.
+    pub fn names_resolve(&self, genesis: Txid, name: &Name) -> Result<NamesResolution, Error> {
+        self.inner.names_resolve(genesis, name).map_err(Error::from)
     }
 }
 

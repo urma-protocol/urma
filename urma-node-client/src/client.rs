@@ -7,7 +7,8 @@
 
 use crate::{
     Error,
-    model::{ArchivedRecord, ObjectStatus, PinReceipt, PruneReceipt},
+    model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt},
+    names::{NamesResolution, NamesStatus, NamesStep},
     projection::{MAX_WIRE_PAGE, WireCursor, WirePage},
 };
 use bitcoin::Txid;
@@ -16,6 +17,7 @@ use std::{
     net::{SocketAddr, TcpStream},
     time::{Duration, Instant},
 };
+use urma_names::name::Name;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);
@@ -192,6 +194,117 @@ impl Client {
         Ok(page)
     }
 
+    /// Register one explicitly located Names genesis with the local operator.
+    /// The acknowledgement describes a local index, not independently verified
+    /// chain evidence or permanent registration/state. HTTP 409 is `Error::Busy`.
+    /// Heights above `i64::MAX` are refused before any I/O.
+    /// No retry occurs: registration may commit before a response is lost.
+    pub fn register_names(&self, genesis: Txid, block: ChainPoint) -> Result<NamesStatus, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        if block.height > i64::MAX as u64 {
+            return Err(invalid("local Names registration height is out of range"));
+        }
+        let path = format!(
+            "/v1/names/{genesis}/register?height={}&hash={}",
+            block.height, block.hash
+        );
+        let (code, body) = self.names_request("POST", &path, deadline)?;
+        if code != 200 {
+            return Err(invalid(format!("local Names registration HTTP {code}")));
+        }
+        let status: NamesStatus = serde_json::from_slice(&body)?;
+        remaining(deadline)?;
+        validate_names_status(&status, genesis)?;
+        if status.genesis_block != block {
+            return Err(invalid(
+                "local Names genesis block differs from registration",
+            ));
+        }
+        remaining(deadline)?;
+        Ok(status)
+    }
+
+    /// Request exactly one local Names projection step. Returned outcomes are
+    /// operator data, not cryptographic proofs or a promise of future state.
+    /// HTTP 409 is `Error::Busy`; no automatic stepping, retry or readback occurs,
+    /// including when a lost response leaves the operation's commit unknown.
+    pub fn names_step(&self, genesis: Txid) -> Result<NamesStep, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        let (code, body) =
+            self.names_request("POST", &format!("/v1/names/{genesis}/step"), deadline)?;
+        if code != 200 {
+            return Err(invalid(format!("local Names step HTTP {code}")));
+        }
+        let step: NamesStep = serde_json::from_slice(&body)?;
+        remaining(deadline)?;
+        validate_names_status(&step.status, genesis)?;
+        if step
+            .applied
+            .is_some_and(|point| point != step.status.projected)
+        {
+            return Err(invalid("local Names applied block differs from projection"));
+        }
+        remaining(deadline)?;
+        Ok(step)
+    }
+
+    /// Read the configured operator's local Names progress. HTTP 404 means only
+    /// that this registry is not registered locally, not global absence. Typed
+    /// progress and completion are not independent chain evidence. HTTP 409 is
+    /// `Error::Busy`; no registration, stepping or retry is performed.
+    pub fn names_status(&self, genesis: Txid) -> Result<Option<NamesStatus>, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        let (code, body) = self.names_request("GET", &format!("/v1/names/{genesis}"), deadline)?;
+        match code {
+            200 => {
+                let status: NamesStatus = serde_json::from_slice(&body)?;
+                remaining(deadline)?;
+                validate_names_status(&status, genesis)?;
+                remaining(deadline)?;
+                Ok(Some(status))
+            }
+            404 => {
+                let _: serde_json::Value = serde_json::from_slice(&body)?;
+                remaining(deadline)?;
+                Ok(None)
+            }
+            _ => Err(invalid(format!("local Names status HTTP {code}"))),
+        }
+    }
+
+    /// Read a canonical name's resolution from the local operator. This is
+    /// index data, not independent proof of ownership, coverage or future state.
+    /// The DTO carries no returned name to compare with the request. HTTP 409 is
+    /// `Error::Busy`; resolution never automatically steps or retries.
+    pub fn names_resolve(&self, genesis: Txid, name: &Name) -> Result<NamesResolution, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        let path = format!("/v1/names/{genesis}/resolve/{}", name.as_str());
+        let (code, body) = self.names_request("GET", &path, deadline)?;
+        if code != 200 {
+            return Err(invalid(format!("local Names resolution HTTP {code}")));
+        }
+        let resolution: NamesResolution = serde_json::from_slice(&body)?;
+        remaining(deadline)?;
+        validate_names_status(&resolution.status, genesis)?;
+        remaining(deadline)?;
+        Ok(resolution)
+    }
+
+    fn names_request(
+        &self,
+        method: &str,
+        path: &str,
+        deadline: Instant,
+    ) -> Result<(u16, Vec<u8>), Error> {
+        let response = self.request(method, path, deadline)?;
+        if response.0 == 409 {
+            return Err(Error::Busy(
+                "local Names operation busy or selected state changed".into(),
+            ));
+        }
+        Ok(response)
+    }
+
     fn request(
         &self,
         method: &str,
@@ -244,6 +357,34 @@ impl Client {
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
+}
+
+fn validate_names_status(status: &NamesStatus, genesis: Txid) -> Result<(), Error> {
+    if status.genesis != genesis {
+        return Err(invalid("local Names genesis differs from request"));
+    }
+    let tip = status
+        .selected_tip
+        .ok_or_else(|| invalid("local Names projection has no selected tip"))?;
+    if status.projected.height < status.genesis_block.height || tip.height < status.projected.height
+    {
+        return Err(invalid("local Names projection heights are inconsistent"));
+    }
+    for (left, right) in [
+        (status.genesis_block, status.projected),
+        (status.projected, tip),
+        (status.genesis_block, tip),
+    ] {
+        if left.height == right.height && left.hash != right.hash {
+            return Err(invalid("local Names equal-height block hashes differ"));
+        }
+    }
+    if status.complete_to_tip != (status.projected == tip) {
+        return Err(invalid(
+            "local Names completion differs from projection and tip",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_instance(instance: &str) -> Result<(), Error> {
