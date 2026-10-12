@@ -9,7 +9,8 @@ use urma_chain::observation::Chain;
 use urma_node::{
     engine::Engine,
     model::ArchiveConfig,
-    peer::{OverlayCommitSource, PeerNetwork},
+    peer::{OverlayCommitSource, PeerNetwork, PeerSource},
+    peer_sync::{OverlayInfo, PeerSync},
     peerbook::{Origin, PeerAddress, PeerBook},
     retrieval::RecordSource,
     service::{Service, create_token},
@@ -182,7 +183,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             );
             let outcome = service.run(synchronize);
             let network_outcome = match network {
-                Some(network) => network.shutdown(),
+                Some(network) => shutdown_overlay(network),
                 None => Ok(()),
             };
             outcome?;
@@ -232,7 +233,11 @@ struct OverlayOptions {
     commit_parents: bool,
 }
 
-type Overlay = (Service, Option<PeerNetwork>, Option<OverlayCommitSource>);
+type Overlay = (
+    Service,
+    Option<Arc<PeerNetwork>>,
+    Option<OverlayCommitSource>,
+);
 
 fn attach_overlay(
     service: Service,
@@ -266,7 +271,7 @@ fn attach_overlay(
         address.push(Protocol::Tcp(socket.port()));
         address
     });
-    let network = PeerNetwork::start(Arc::clone(engine), identity, listener)?;
+    let network = Arc::new(PeerNetwork::start(Arc::clone(engine), identity, listener)?);
     let peers: Vec<PeerAddress> = book.entries().into_iter().map(|entry| entry.0).collect();
     let sources = peers
         .iter()
@@ -274,6 +279,10 @@ fn attach_overlay(
         .map(|address| -> Arc<dyn RecordSource + Send + Sync> { Arc::new(network.source(address)) })
         .collect();
     let service = service.with_record_sources(sources)?;
+    let service = match options.commit_parents {
+        true => service.with_peer_sync(peer_sync(&network, &peers)?)?,
+        false => service,
+    };
     eprintln!(
         "URMA peer identity {} listener {:?}",
         network.peer_id(),
@@ -283,6 +292,43 @@ fn attach_overlay(
         .commit_parents
         .then(|| network.commit_source(chain, peers));
     Ok((service, Some(network), overlay))
+}
+
+/// Inventory peers come from the same peer-book entries as record and commit
+/// sources, one per peer identity; the first address of a peer wins.
+fn peer_sync(
+    network: &Arc<PeerNetwork>,
+    peers: &[PeerAddress],
+) -> Result<PeerSync, Box<dyn std::error::Error>> {
+    let mut entries: Vec<(String, PeerSource)> = Vec::new();
+    for address in peers {
+        let label = address.peer_id().to_string();
+        if entries.iter().any(|(known, _source)| *known == label) {
+            continue;
+        }
+        entries.push((label, network.source(address.clone())));
+    }
+    let shared = Arc::clone(network);
+    Ok(PeerSync {
+        peers: entries,
+        info: OverlayInfo {
+            peer_id: network.peer_id().to_string(),
+            listen: network.listen_address().map(|address| address.to_string()),
+            peer_book: u64::try_from(peers.len())?,
+            connected: Arc::new(move || shared.connected_peers()),
+        },
+    })
+}
+
+/// The service owned the only other handle; it is released when run returns.
+fn shutdown_overlay(network: Arc<PeerNetwork>) -> Result<(), urma_node::Error> {
+    match Arc::try_unwrap(network) {
+        Ok(network) => network.shutdown(),
+        Err(shared) => Err(urma_node::Error::Busy(format!(
+            "overlay still shared by {} handles after service stop",
+            Arc::strong_count(&shared)
+        ))),
+    }
 }
 
 fn attach_commit_sources(

@@ -3,6 +3,7 @@
 use crate::{
     Error,
     engine::Engine,
+    peer_sync::{PeerSync, Scheduler},
     retrieval::RecordSource,
     source::{CommitSource, CommitSources},
 };
@@ -55,6 +56,8 @@ pub struct Service {
     sources: Vec<Arc<dyn RecordSource + Send + Sync>>,
     commit_sources: Option<CommitSources>,
     dependency_error: Arc<Mutex<Option<String>>>,
+    peer_sync: Option<Scheduler>,
+    inventory_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Service {
@@ -83,6 +86,8 @@ impl Service {
             sources: Vec::new(),
             commit_sources: None,
             dependency_error: Arc::new(Mutex::new(None)),
+            peer_sync: None,
+            inventory_error: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -128,6 +133,13 @@ impl Service {
             }
         }
         self.commit_sources = Some(sources);
+        Ok(self)
+    }
+
+    /// Fast inventory synchronization from configured overlay peers. Only
+    /// run(true) schedules it; configuring peers does not dial or fetch.
+    pub fn with_peer_sync(mut self, sync: PeerSync) -> Result<Self, Error> {
+        self.peer_sync = Some(Scheduler::new(sync)?);
         Ok(self)
     }
 
@@ -182,9 +194,11 @@ impl Service {
     }
 
     fn worker_round(&self) {
-        let result = self
-            .engine
-            .synchronize_headers_until(&self.stop)
+        let headers = self.engine.synchronize_headers_until(&self.stop);
+        // Peer inventory is fast data: it runs before the full-block scan and
+        // independently of this round's header result, with its own status.
+        self.sync_next_inventory();
+        let result = headers
             .and_then(|_| self.engine.scan_next_until(&self.stop))
             .and_then(|status| {
                 if !self.stop.load(Ordering::Acquire) {
@@ -242,6 +256,22 @@ impl Service {
         }
     }
 
+    fn sync_next_inventory(&self) {
+        let Some(scheduler) = &self.peer_sync else {
+            return;
+        };
+        if self.stop.load(Ordering::Acquire) {
+            return;
+        }
+        let result = scheduler.step(&self.engine, &self.stop);
+        if self.stop.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(mut error) = self.inventory_error.lock() {
+            *error = result.err().map(|e| e.to_string());
+        }
+    }
+
     fn acquire_next_dependency(&self) {
         let Some(sources) = &self.commit_sources else {
             return;
@@ -285,6 +315,15 @@ impl Service {
             .lock()
             .map_err(|_| Error::Invalid("dependency status poisoned".into()))?
             .clone();
+        let inventory_error = self
+            .inventory_error
+            .lock()
+            .map_err(|_| Error::Invalid("inventory status poisoned".into()))?
+            .clone();
+        let overlay = match &self.peer_sync {
+            Some(scheduler) => scheduler.status(&self.engine)?,
+            None => serde_json::Value::Null,
+        };
         let mut commit_sources = Vec::new();
         for sources in self.commit_sources.iter() {
             for (label, last_error) in sources.status()? {
@@ -295,6 +334,7 @@ impl Service {
             json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
                 "last_names_error":names_error,
                 "commit_sources":commit_sources,"last_dependency_error":dependency_error,
+                "overlay":overlay,"last_inventory_error":inventory_error,
                 "cache_limit_bytes":self.cache_bytes,"last_cache_error":cache_status.error,
                 "last_cache_maintenance":cache_status.receipt,
                 "retention_configured":self.retention.is_some(),
@@ -510,6 +550,10 @@ impl Service {
                 }
             }
             "GET /v1/status HTTP/1.1" => respond(stream, 200, self.status_json()?),
+            "GET /v1/overlay/omissions HTTP/1.1" => match self.engine.peer_omissions() {
+                Ok(omissions) => respond(stream, 200, serde_json::to_value(omissions)?),
+                Err(error) => control_error(stream, error),
+            },
             "POST /v1/shutdown HTTP/1.1" => {
                 respond(stream, 200, json!({"stopping":true}))?;
                 self.stop.store(true, Ordering::Release);

@@ -16,6 +16,7 @@ mod peer_inventory;
 mod peer_limits;
 mod peer_parent;
 pub mod peer_protocol;
+pub mod peer_sync;
 pub mod peerbook;
 pub mod projection;
 pub mod retrieval;

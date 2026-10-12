@@ -278,6 +278,42 @@ The transport's network and archive-reader workers are joined at shutdown.
 The pinned `futures-timer` dependency also maintains one process-global timer
 thread until process exit; it is shared across successive network instances.
 
+### Fast peer synchronization
+
+With `serve --p2p --peer-key PATH`, each `run(true)` round takes one inventory
+step after header synchronization and before the full-block scan, whatever the
+header result. Peers come from the same peer-book entries as record and commit
+sources, one per identity. Status reports three separate progress values:
+
+- `selected_tip`: the locally selected header chain. Headers prove work and
+  order, not which URMA records a block contains.
+- `peer_synced_through`: heights where a peer listed every record it claims and
+  each listed record was fetched and proof-verified against the local headers.
+  This trusts the peer's completeness; it proves only what was listed.
+- `indexed_through`: the contiguous prefix this node scanned itself from full
+  blocks. It is the only completeness claim and stays independent of peers.
+
+A step picks the next peer in rotation, skipping peers with recorded omissions.
+It covers at most 4096 heights from that peer's persisted cursor, never past the
+selected tip, through inventory pages of up to 512 entries. Records not already
+present are fetched from the same peer and admitted; a placement that disagrees
+with the proven record, a refused admission or an out-of-order page abandons the
+range and is reported as that peer's `last_error`. Coverage is recorded only
+when a range ends with every listed record present, up to the lower of the range
+end and the peer's own scanned height. When the full-block scan later finds a
+record inside a peer-covered range that the peer never listed, the omission is
+recorded and that peer is no longer asked. `GET /v1/overlay/omissions` lists
+these omissions.
+
+Per round and peer: one inventory page, at most 16 package fetches, at least
+250 ms between requests to the peer (its serving bucket is four per second),
+and a 20-second step deadline, with cancellation checked between requests. A
+`Busy` reply ends the step and the same range continues on the peer's next turn.
+The `overlay` status block (null without `--peer-key`) reports the peer ID,
+listener, peer-book size, connected peers, records admitted and packages
+rejected since start, and each peer's cursor, synced height and last error;
+`last_inventory_error` reports a failed step.
+
 ## Explicit peer probe
 
 `cargo build -p urma-node --example peer_probe --locked` builds a two-process
