@@ -4,7 +4,7 @@ use crate::{
     model::{ChainPoint, SCAN_RULES_VERSION},
     names::*,
 };
-use bitcoin::{Transaction, Txid, consensus::deserialize};
+use bitcoin::Txid;
 use rusqlite::{Connection, OptionalExtension, params};
 use std::collections::BTreeMap;
 use urma_core::format::{PublicRecord, RecordKind, Urma};
@@ -32,7 +32,7 @@ CREATE TABLE names_pending (
 );
 CREATE TABLE names_blocks (
  registry TEXT NOT NULL REFERENCES names_registries(genesis), height INTEGER NOT NULL,
- block_hash TEXT NOT NULL REFERENCES headers(hash), delta BLOB NOT NULL,
+ block_hash TEXT NOT NULL REFERENCES headers(hash), delta BLOB,
  PRIMARY KEY(registry,height)
 );
 CREATE TABLE names_outcomes (
@@ -135,7 +135,7 @@ fn load_registry(db: &Connection, genesis: Txid, meta: &Metadata) -> Result<Regi
     }
     let mut undo = Vec::new();
     let mut stmt = db.prepare(
-        "SELECT height,delta FROM names_blocks WHERE registry=?1 AND height>?2 ORDER BY height",
+        "SELECT height,delta FROM names_blocks WHERE registry=?1 AND height>?2 AND delta IS NOT NULL ORDER BY height",
     )?;
     for row in stmt.query_map(
         params![
@@ -224,9 +224,16 @@ fn addresses_registry(payload: &Payload, genesis: Txid) -> bool {
 
 fn observations(
     db: &Connection,
-    genesis: Txid,
+    registry: &Registry,
+    chain: urma_chain::observation::Chain,
     block: ChainPoint,
 ) -> Result<Vec<Observation>, Error> {
+    let genesis = registry.genesis();
+    let first_commit = (registry.genesis_height() + 1).max(
+        block
+            .height
+            .saturating_sub(u64::from(registry.rules().reveal_max_blocks)),
+    );
     let mut stmt = db.prepare(
         "SELECT r.position,t.txid,r.author,
         CASE WHEN length(r.record)<=?2 THEN r.record ELSE NULL END,t.raw
@@ -258,7 +265,7 @@ fn observations(
         if !addresses_registry(&payload, genesis) {
             continue;
         }
-        let reveal: Transaction = deserialize(&raw).map_err(invalid)?;
+        let reveal = urma_chain::decode::transaction(&raw, chain).map_err(invalid)?;
         if reveal.input.len() != 1 || reveal.compute_txid().to_string() != txid {
             return Err(invalid("stored reveal identity mismatch"));
         }
@@ -269,12 +276,13 @@ fn observations(
             .query_row(
                 "SELECT s.height,l.position FROM locators l
             JOIN selected s ON s.hash=l.block_hash JOIN scans c ON c.block_hash=s.hash
-            WHERE l.txid=?1 AND s.height<=?2 AND c.rules=?3 AND c.unresolved=0
+            WHERE l.txid=?1 AND s.height<=?2 AND c.rules=?3 AND c.unresolved=0 AND s.height>=?4
             ORDER BY s.height,l.position LIMIT 1",
                 params![
                     outpoint.txid.to_string(),
                     sql_integer(block.height)?,
-                    SCAN_RULES_VERSION
+                    SCAN_RULES_VERSION,
+                    sql_integer(first_commit)?
                 ],
                 |r| Ok((unsigned(r, 0)?, r.get::<_, u32>(1)?)),
             )
@@ -313,7 +321,7 @@ impl Archive {
         }
         if let Some(old) = metadata(&self.db, genesis)? {
             if old.genesis != block {
-                return Err(invalid("registry already bound to another genesis block"));
+                return Err(Error::Stale);
             }
             return self
                 .names_status(genesis)?
@@ -462,11 +470,14 @@ impl Archive {
             _ => None,
         };
         let applied = match next {
-            Some(block) => Some(
-                registry
-                    .connect_delta(block.height, observations(&self.db, genesis, block)?)
-                    .map_err(invalid)?,
-            ),
+            Some(block) => {
+                let observations = observations(&self.db, &registry, self.config.chain, block)?;
+                Some(
+                    registry
+                        .connect_delta(block.height, observations)
+                        .map_err(invalid)?,
+                )
+            }
             None => None,
         };
         let outcomes = applied
@@ -519,6 +530,15 @@ impl Archive {
                 // Retain the floor checkpoint in addition to 1000 undo frames.
                 tx.execute(
                     "DELETE FROM names_blocks WHERE registry=?1 AND height<?2",
+                    params![
+                        genesis.to_string(),
+                        sql_integer(current.height - UNDO_BLOCKS)?
+                    ],
+                )?;
+                // The floor is a checkpoint only. Keeping its delta would make
+                // older undo reappear after rolling back to the floor and reopening.
+                tx.execute(
+                    "UPDATE names_blocks SET delta=NULL WHERE registry=?1 AND height=?2",
                     params![
                         genesis.to_string(),
                         sql_integer(current.height - UNDO_BLOCKS)?
