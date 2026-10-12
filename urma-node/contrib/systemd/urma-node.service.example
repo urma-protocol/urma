@@ -1,0 +1,18 @@
+# Linux user-unit template: edit every REPLACE placeholder before use.
+# Keep an existing operator-owned config and private token; see sibling README.md.
+# This base serves local retained data offline. Network opt-ins are separate edits.
+[Unit]
+Description=URMA Node authenticated local archive
+
+[Service]
+Type=simple
+ExecStart="/REPLACE/ABSOLUTE/PATH/urma-node" --data "/REPLACE/ABSOLUTE/PATH/archive" --config "/REPLACE/ABSOLUTE/PATH/archive.json" serve --listen "127.0.0.1:REPLACE_PORT" --token-file "/REPLACE/ABSOLUTE/PATH/token"
+Restart=no
+UMask=0077
+KillSignal=SIGTERM
+KillMode=control-group
+# Cooperative stop first; an unfinished stop is forcibly terminated after 30s.
+TimeoutStopSec=30s
+SendSIGKILL=yes
+
+# No [Install]: start manually in a running user manager, with no enablement.
