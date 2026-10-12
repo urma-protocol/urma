@@ -227,15 +227,17 @@ impl Drop for PeerNetwork {
 }
 
 impl PeerSource {
+    /// Bounded by CALL_TIMEOUT and by the caller's own deadline, if earlier.
     fn request<T>(
         &self,
         txid: Txid,
+        limit: Instant,
         answer: fn(mpsc::SyncSender<Result<T, Error>>) -> Answer,
     ) -> Result<T, Error> {
         if self.stop.load(Ordering::Acquire) {
             return Err(Error::Busy("peer network stopped".into()));
         }
-        let deadline = Instant::now() + CALL_TIMEOUT;
+        let deadline = limit.min(Instant::now() + CALL_TIMEOUT);
         let (sender, receiver) = mpsc::sync_channel(1);
         self.commands
             .try_send(Command {
@@ -252,14 +254,14 @@ impl PeerSource {
 }
 
 impl PeerSource {
-    pub(crate) fn parent(&self, txid: Txid) -> Result<Parent, Error> {
-        self.request(txid, Answer::Parent)
+    pub(crate) fn parent(&self, txid: Txid, deadline: Instant) -> Result<Parent, Error> {
+        self.request(txid, deadline, Answer::Parent)
     }
 }
 
 impl RecordSource for PeerSource {
     fn fetch(&self, txid: Txid) -> Result<Option<RecordPackage>, Error> {
-        self.request(txid, Answer::Record)
+        self.request(txid, Instant::now() + CALL_TIMEOUT, Answer::Record)
     }
 }
 
@@ -527,6 +529,7 @@ fn bind_response(
 }
 
 /// Busy is capacity, not an answer. Hex is length-checked before any decode.
+/// TooLarge, WrongNetwork and UnsupportedVersion are definitive for that peer.
 fn validate_parent(
     genesis: BlockHash,
     peer: PeerId,
