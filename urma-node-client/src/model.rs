@@ -117,4 +117,10 @@ pub struct ArchiveStatus {
     pub unresolved_dependencies: u64,
     pub stored_transactions: u64,
     pub scan_rules_version: u32,
+    /// Highest height whose prefix from app start lies in current peer coverage.
+    pub peer_synced_through: Option<ChainPoint>,
+    /// Selected placements a covering peer did not list, found by a later scan.
+    pub peer_omissions: u64,
+    /// Selected records admitted selectively whose block has not been scanned.
+    pub unaudited_records: u64,
 }

@@ -9,6 +9,16 @@ pub struct ScanTicket {
     pub(crate) point: ChainPoint,
 }
 
+/// A selected record placement a peer's coverage claimed but did not list.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Omission {
+    pub peer: String,
+    pub block: ChainPoint,
+    pub position: u32,
+    pub txid: bitcoin::Txid,
+    pub generation: u64,
+}
+
 impl ScanTicket {
     pub fn point(self) -> ChainPoint {
         self.point

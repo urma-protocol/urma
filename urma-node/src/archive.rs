@@ -13,6 +13,7 @@ use std::{
 mod cache;
 mod names;
 mod objects;
+mod peers;
 mod projections;
 pub(crate) use objects::ObjectMember;
 
@@ -81,7 +82,7 @@ impl Archive {
             tx.execute_batch(include_str!("schema.sql"))?;
             tx.execute("INSERT INTO config VALUES(1,?1)", [&encoded])?;
             tx.commit()?;
-        } else if !(1..=4).contains(&version) {
+        } else if !(1..=5).contains(&version) {
             return Err(Error::Invalid(format!(
                 "unsupported archive schema {version}"
             )));
@@ -97,16 +98,7 @@ impl Archive {
         }
         // Configuration identity is checked before any existing archive migration.
         // Schema 1 remains intact if the additive migration fails.
-        if version < 4 {
-            let tx = db.transaction()?;
-            if version < 2 {
-                tx.execute_batch(objects::SCHEMA)?;
-            } else if version == 2 {
-                objects::migrate_v2(&tx)?;
-            }
-            tx.execute_batch(names::SCHEMA)?;
-            tx.commit()?;
-        }
+        migrate(&mut db, version)?;
         Ok(Self {
             db,
             _lock: lock,
@@ -174,6 +166,9 @@ impl Archive {
             unresolved_dependencies,
             stored_transactions,
             scan_rules_version: SCAN_RULES_VERSION,
+            peer_synced_through: peers::synced_through(&self.db, start)?,
+            peer_omissions: peers::omission_count(&self.db)?,
+            unaudited_records: peers::unaudited_count(&self.db)?,
         })
     }
 
@@ -260,6 +255,7 @@ impl Archive {
                 [],
             )?;
             tx.execute("INSERT INTO events(generation,kind,height) SELECT generation,'reorg',?1 FROM state", [sql_integer(height)?])?;
+            peers::reorg(&tx, height)?;
         }
         for (offset, header) in headers.iter().enumerate() {
             let hash = header.block_hash().to_string();
@@ -504,6 +500,7 @@ impl Archive {
         // One transaction includes all records, dependencies, progress and event.
         // An I/O/constraint failure rolls it all back, including progress.
         tx.execute("DELETE FROM dependencies WHERE block_hash=?1", [&hash])?;
+        peers::record_omissions(&tx, &batch)?;
         for record in batch.records {
             store_record(&tx, &hash, &record)?;
         }
@@ -526,6 +523,24 @@ impl Archive {
         tx.commit()?;
         Ok(())
     }
+}
+
+fn migrate(db: &mut Connection, version: u32) -> Result<(), Error> {
+    if version >= 5 {
+        return Ok(());
+    }
+    let tx = db.transaction()?;
+    if version < 2 {
+        tx.execute_batch(objects::SCHEMA)?;
+    } else if version == 2 {
+        objects::migrate_v2(&tx)?;
+    }
+    if version < 4 {
+        tx.execute_batch(names::SCHEMA)?;
+    }
+    tx.execute_batch(peers::SCHEMA)?;
+    tx.commit()?;
+    Ok(())
 }
 
 fn generation(db: &Connection) -> Result<u64, Error> {

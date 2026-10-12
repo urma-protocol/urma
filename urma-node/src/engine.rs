@@ -63,7 +63,7 @@ impl Engine {
         })
     }
 
-    fn archive(&self) -> Result<MutexGuard<'_, Archive>, Error> {
+    pub(crate) fn archive(&self) -> Result<MutexGuard<'_, Archive>, Error> {
         self.archive
             .lock()
             .map_err(|_| Error::Invalid("archive coordinator panicked".into()))

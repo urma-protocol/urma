@@ -1,0 +1,34 @@
+//! Peer synchronization bookkeeping. Coverage is a local claim about which
+//! peer listings were fully admitted; full-block scans remain the audit.
+use crate::{
+    Error,
+    engine::Engine,
+    model::{ChainPoint, Omission},
+};
+
+impl Engine {
+    /// Record that `peer` listed every placement in selected [from, to] and
+    /// each one was admitted or already held, in the current generation.
+    /// admit_record keeps multipart children even in Pruned mode, so synced
+    /// components stay until cache maintenance evicts them.
+    pub fn record_peer_coverage(&self, peer: &str, from: u64, to: u64) -> Result<(), Error> {
+        self.archive()?.record_peer_coverage(peer, from, to)
+    }
+
+    /// First height after the peer's contiguous coverage from app start.
+    pub fn peer_cursor(&self, peer: &str) -> Result<u64, Error> {
+        self.archive()?.peer_cursor(peer)
+    }
+
+    pub fn peer_synced_through(&self) -> Result<Option<ChainPoint>, Error> {
+        self.archive()?.peer_synced_through()
+    }
+
+    pub fn omitting_peers(&self) -> Result<Vec<String>, Error> {
+        self.archive()?.omitting_peers()
+    }
+
+    pub fn peer_omissions(&self) -> Result<Vec<Omission>, Error> {
+        self.archive()?.peer_omissions()
+    }
+}
