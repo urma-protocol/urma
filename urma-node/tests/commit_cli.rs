@@ -280,6 +280,12 @@ impl Stub {
         }
     }
 
+    fn fetches(&self, txid: Txid) -> usize {
+        let call = ("getrawtransaction".to_owned(), json!([txid, false]));
+        let calls = self.calls.lock().unwrap();
+        calls.iter().filter(|&observed| *observed == call).count()
+    }
+
     fn halt(&mut self) {
         self.stop.store(true, Ordering::Release);
         if let Some(thread) = self.thread.take() {
@@ -392,6 +398,8 @@ struct Fixture {
     token_path: PathBuf,
     cookie_path: PathBuf,
     pair: SignedPair,
+    // A second pending parent that the local RPC does not have (-5).
+    absent: SignedPair,
     block: Block,
     config: ArchiveConfig,
     sequence: Cell<u32>,
@@ -401,7 +409,9 @@ impl Fixture {
     // Files only: the archive directory is created by seed() alone.
     fn new(root: &Path) -> Self {
         let pair = profile();
-        let block = witness_block(std::slice::from_ref(&pair.reveal), None, 40001);
+        let absent = SignedPair::load("proof-post");
+        let reveals = [pair.reveal.clone(), absent.reveal.clone()];
+        let block = witness_block(&reveals, None, 40001);
         let config = ArchiveConfig {
             chain: Chain::LitecoinTestnet,
             application_start: point(FIRST_HEIGHT, &block),
@@ -414,6 +424,7 @@ impl Fixture {
             token_path: root.join("service.token"),
             cookie_path: root.join("rpc.cookie"),
             pair,
+            absent,
             block,
             config,
             sequence: Cell::new(0),
@@ -435,7 +446,7 @@ impl Fixture {
         fixture
     }
 
-    // In-process scan leaves exactly one unresolved commit parent.
+    // In-process scan leaves exactly two unresolved commit parents.
     fn seed(&self) -> Snapshot {
         let source = Arc::new(MemorySource::with_bodies(
             Chain::LitecoinTestnet,
@@ -446,7 +457,7 @@ impl Fixture {
         engine.synchronize_headers().unwrap();
         let status = engine.scan_next().unwrap();
         assert_eq!(status.scanned_blocks, 1);
-        assert_eq!(status.unresolved_dependencies, 1);
+        assert_eq!(status.unresolved_dependencies, 2);
         assert_eq!(status.indexed_through, None);
         assert_eq!(status.stored_transactions, 0);
         drop(engine);
@@ -573,9 +584,9 @@ fn unreachable(control: &Path) {
     assert!(!result.status.success(), "{}", result.stderr);
     assert!(!result.stderr.contains(LISTENING), "{}", result.stderr);
     assert_eq!(snapshot(&fixture.data), before, "no durable progress");
-    // Ownership was released and the parent is still pending.
+    // Ownership was released and both parents are still pending.
     let engine = Engine::open(&fixture.data, fixture.config.clone(), None).unwrap();
-    assert_eq!(engine.status().unwrap().unresolved_dependencies, 1);
+    assert_eq!(engine.status().unwrap().unresolved_dependencies, 2);
 }
 
 fn resolves(control: &Path) {
@@ -597,33 +608,40 @@ fn resolves(control: &Path) {
         fixture.cookie(),
     ]);
     let address = child.listening_address();
+    let absent = fixture.absent.commit.compute_txid();
+    // One parent per round: a second -5 fetch of the absent parent means the
+    // worker finished a whole round after the first absent answer was recorded.
     let status = poll(&mut child, address, |status| {
-        status["archive"]["unresolved_dependencies"] == 0
+        status["archive"]["unresolved_dependencies"] == 1 && stub.fetches(absent) >= 2
     });
     assert_eq!(status["commit_source"], "local-rpc", "{status}");
     assert!(status["last_dependency_error"].is_null(), "{status}");
-    assert_eq!(
-        status["archive"]["indexed_through"],
-        serde_json::to_value(fixture.config.application_start).unwrap()
-    );
+    assert!(status["archive"]["indexed_through"].is_null(), "{status}");
     shutdown(child, address);
     let (calls, rejected) = stub.finish();
     assert_eq!(rejected, 0, "cookie authentication mismatch");
+    assert_eq!(calls[0], ("getblockhash".to_owned(), json!([0])));
+    let fetched = |txid: Txid| {
+        let call = ("getrawtransaction".to_owned(), json!([txid, false]));
+        calls.iter().filter(|&observed| *observed == call).count()
+    };
+    assert_eq!(fetched(parent), 1, "{calls:?}");
+    assert!(fetched(absent) >= 2, "{calls:?}");
     assert_eq!(
-        calls,
-        vec![
-            ("getblockhash".to_owned(), json!([0])),
-            ("getrawtransaction".to_owned(), json!([parent, false])),
-        ]
+        1 + fetched(parent) + fetched(absent),
+        calls.len(),
+        "{calls:?}"
     );
     let engine = Engine::open(&fixture.data, fixture.config.clone(), None).unwrap();
-    assert_eq!(engine.status().unwrap().unresolved_dependencies, 0);
+    assert_eq!(engine.status().unwrap().unresolved_dependencies, 1);
     let record = engine
         .record(fixture.pair.reveal.compute_txid())
         .unwrap()
         .unwrap();
     assert_eq!(record.package.commit, fixture.pair.raw_commit);
     assert_eq!(record.package.reveal.transaction, fixture.pair.raw_reveal);
+    let pending = engine.record(fixture.absent.reveal.compute_txid());
+    assert!(pending.unwrap().is_none());
 }
 
 #[test]
