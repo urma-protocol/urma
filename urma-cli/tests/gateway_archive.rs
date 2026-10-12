@@ -615,13 +615,7 @@ impl GatewayProcess {
             .env("XDG_DATA_HOME", directory.join("data"))
             .env("URMA_CONFIG", config)
             .env("URMA_LOG_OUTPUT", "stderr")
-            .args([
-                "gateway",
-                "serve",
-                "--domain",
-                "portal.example",
-                "--registry",
-            ])
+            .args(["gateway", "serve", "--domain", "localhost", "--registry"])
             .arg(format!("tbtc={genesis}"))
             .args([
                 "--bind",
@@ -675,7 +669,7 @@ impl GatewayProcess {
     fn wait(&mut self, mut predicate: impl FnMut(&Value) -> bool) -> Value {
         let deadline = Instant::now() + POLL_TIMEOUT;
         loop {
-            let response = get(self.address, "portal.example", "/.well-known/urma/ready");
+            let response = get(self.address, "localhost", "/.well-known/urma/ready");
             if let Ok(response) = response {
                 let value = response.json();
                 if predicate(&value) {
@@ -763,7 +757,7 @@ fn assert_source(source: &Value, page: &NamesPage) {
     assert_eq!(source["trust"], TRUST);
 }
 fn assert_ready(gateway: &GatewayProcess, page: &NamesPage, ready: bool) -> Value {
-    let response = get(gateway.address, "portal.example", "/.well-known/urma/ready").unwrap();
+    let response = get(gateway.address, "localhost", "/.well-known/urma/ready").unwrap();
     assert_eq!(response.code, if ready { 200 } else { 503 });
     let value = response.json();
     assert_eq!(value["ready"], ready);
@@ -782,7 +776,7 @@ fn assert_ready(gateway: &GatewayProcess, page: &NamesPage, ready: bool) -> Valu
 fn proof(gateway: &GatewayProcess, page: &NamesPage, name: &str) -> Value {
     let response = get(
         gateway.address,
-        &format!("{name}.tbtc.portal.example"),
+        &format!("{name}.tbtc.localhost"),
         "/.well-known/urma/proof",
     )
     .unwrap();
@@ -858,7 +852,7 @@ fn proof(gateway: &GatewayProcess, page: &NamesPage, name: &str) -> Value {
     value
 }
 fn ordinary_unbound(gateway: &GatewayProcess, page: &NamesPage, behind: bool) {
-    let response = get(gateway.address, "bravo.tbtc.portal.example", "/").unwrap();
+    let response = get(gateway.address, "bravo.tbtc.localhost", "/").unwrap();
     assert_eq!(response.code, if behind { 503 } else { 404 });
     assert_eq!(
         response.header("URMA-State"),
@@ -1238,7 +1232,7 @@ fn invalid_traversal(control: &Path) {
         rpc.local_addr().unwrap(),
     );
     gateway.wait_failures(0, 1);
-    let response = get(gateway.address, "portal.example", "/.well-known/urma/ready").unwrap();
+    let response = get(gateway.address, "localhost", "/.well-known/urma/ready").unwrap();
     assert_eq!(response.code, 503);
     let value = response.json();
     assert_eq!(value["ready"], false);
