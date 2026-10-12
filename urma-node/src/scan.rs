@@ -25,6 +25,16 @@ pub(crate) struct Dependency {
     pub proof: TransactionProof,
 }
 
+/// Multipart components a pruned archive may omit while scanning.
+pub(crate) fn prunable(record: &VerifiedRecord) -> Result<bool, Error> {
+    let kind =
+        RecordKind::parse(record.record_bytes()).map_err(|e| Error::Invalid(e.to_string()))?;
+    Ok(matches!(
+        kind,
+        RecordKind::DataPart | RecordKind::LeafManifest
+    ))
+}
+
 /// Produced only by checking an entire supplied block, never by a peer's
 /// declaration of completeness or by a list of selective proofs.
 pub(crate) struct ScanBatch {
@@ -93,11 +103,7 @@ impl ScanBatch {
             else {
                 continue;
             };
-            let kind = RecordKind::parse(verified.record_bytes())
-                .map_err(|e| Error::Invalid(e.to_string()))?;
-            if retention == Retention::Pruned
-                && matches!(kind, RecordKind::DataPart | RecordKind::LeafManifest)
-            {
+            if retention == Retention::Pruned && prunable(&verified)? {
                 continue;
             }
             records.push(Record {

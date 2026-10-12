@@ -2,7 +2,7 @@ use super::{Archive, generation, point, sql_integer, unsigned};
 use crate::{
     Error,
     model::{ChainPoint, Omission},
-    scan::ScanBatch,
+    scan::{ScanBatch, prunable},
 };
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -186,6 +186,8 @@ pub(super) fn omission_count(db: &Connection) -> Result<u64, Error> {
 
 /// Placements found by a full scan that no earlier admission supplied are
 /// omissions of every peer whose current coverage claims this height.
+/// LeafManifest and DataPart records are exempt: a pruned peer may omit them
+/// while scanning. Roots, individual records and dependencies stay checked.
 pub(super) fn record_omissions(db: &Connection, batch: &ScanBatch) -> Result<(), Error> {
     let block = batch.ticket.point();
     let hash = block.hash.to_string();
@@ -202,7 +204,13 @@ pub(super) fn record_omissions(db: &Connection, batch: &ScanBatch) -> Result<(),
     if peers.is_empty() {
         return Ok(());
     }
-    let positions = batch.records.iter().map(|record| record.position).chain(
+    let mut positions = Vec::new();
+    for record in &batch.records {
+        if !prunable(&record.verified)? {
+            positions.push(record.position);
+        }
+    }
+    positions.extend(
         batch
             .dependencies
             .iter()
