@@ -51,11 +51,11 @@ enum Command {
         #[arg(long, requires = "peer_key")]
         urma_peer: Vec<libp2p::Multiaddr>,
         /// Maximum payload per background object attempt (not a protocol limit).
-        #[arg(long, default_value_t = 64 * 1024 * 1024)]
+        #[arg(long, default_value_t = 64 * 1024 * 1024, value_parser = clap::value_parser!(u64).range(1..))]
         max_object_bytes: u64,
-        #[arg(long, default_value_t = 4096)]
+        #[arg(long, default_value_t = 4096, value_parser = clap::value_parser!(u32).range(1..))]
         max_object_nodes: u32,
-        #[arg(long, default_value_t = 15)]
+        #[arg(long, default_value_t = 15, value_parser = clap::value_parser!(u64).range(1..))]
         object_timeout_seconds: u64,
     },
 }
@@ -532,5 +532,14 @@ mod peer_config_tests {
         assert!(Arguments::try_parse_from(&remote).is_err());
         remote.extend(["--peer-key", "transport.key"]);
         assert!(Arguments::try_parse_from(remote).is_ok());
+        for option in [
+            "--max-object-bytes",
+            "--max-object-nodes",
+            "--object-timeout-seconds",
+        ] {
+            let mut invalid = base.to_vec();
+            invalid.extend([option, "0", "--peer-key", "transport.key"]);
+            assert!(Arguments::try_parse_from(invalid).is_err());
+        }
     }
 }
