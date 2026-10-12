@@ -21,14 +21,16 @@ no historical anchor or application-start default is shipped. Starting the
 daemon is not evidence of historical coverage.
 
 Unpruned retention keeps all verified URMA records and multipart content acquired
-by the node. Pruned retention keeps every individual record (`Private`,
-`Container`, `Post`, `Reply`, `Profile`, `Avatar`, `WirePost`, `WireReply`, and
+by the node. Pruned retention keeps every admissible individual record (`Private`,
+`Post`, `Reply`, `Profile`, `Avatar`, `WirePost`, `WireReply`, and
 `ProfileRecord`, including Names V0), all multipart `RootManifest` records, and
 their referenced raw reveal/commit transactions. Only multipart components
 `LeafManifest` and `DataPart` are eligible for omission during scanning or later
 eviction when unpinned. Record size does not decide retention. Pruning also
 collects raw transactions no longer referenced by any retained record or pending
 dependency; it does not remove the transactions needed by individual records.
+`Container` is an offline wrapper forbidden in on-chain reveals by V0; it is
+rejected during verification, independently of retention mode.
 On-demand recovery follows authenticated references,
 using selective packages or full blocks at known transaction locations. Missing
 commit dependencies remain visible and can be resolved later. Local clients can
