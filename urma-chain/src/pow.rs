@@ -15,6 +15,7 @@ pub enum PowError {
     Unmet,
     EmptyWindow,
     ShortWindow { needed: usize, got: usize },
+    MissingDifficultyContext { first_height: u64 },
     HeightOverflow,
     TimeOverflow,
     Width(TryFromIntError),
@@ -30,6 +31,12 @@ impl std::fmt::Display for PowError {
             Self::EmptyWindow => f.write_str("header window is empty"),
             Self::ShortWindow { needed, got } => {
                 write!(f, "retarget needs {needed} headers, window holds {got}")
+            }
+            Self::MissingDifficultyContext { first_height } => {
+                write!(
+                    f,
+                    "minimum-difficulty lookup lacks context before first available height {first_height}"
+                )
             }
             Self::HeightOverflow => f.write_str("header height overflow"),
             Self::TimeOverflow => f.write_str("header time overflow"),
@@ -48,6 +55,7 @@ impl std::error::Error for PowError {
             | Self::Unmet
             | Self::EmptyWindow
             | Self::ShortWindow { .. }
+            | Self::MissingDifficultyContext { .. }
             | Self::HeightOverflow
             | Self::TimeOverflow => None,
         }
@@ -123,12 +131,7 @@ pub fn expected_bits(
         if next_time > grace {
             return Ok(limit_bits);
         }
-        return Ok(last_regular_bits(
-            headers,
-            last_height,
-            params.retarget_interval,
-            limit_bits,
-        ));
+        return last_regular_bits(headers, last_height, params.retarget_interval, limit_bits);
     }
     let lookback = match next_height == params.retarget_interval {
         true => params.retarget_interval - 1,
@@ -150,14 +153,19 @@ fn last_regular_bits(
     last_height: u64,
     interval: u64,
     limit_bits: CompactTarget,
-) -> CompactTarget {
+) -> Result<CompactTarget, PowError> {
     let mut index = headers.len() - 1;
     let mut height = last_height;
     while index > 0 && height % interval != 0 && headers[index].bits == limit_bits {
         index -= 1;
         height -= 1;
     }
-    headers[index].bits
+    if index == 0 && height % interval != 0 && headers[index].bits == limit_bits {
+        return Err(PowError::MissingDifficultyContext {
+            first_height: height,
+        });
+    }
+    Ok(headers[index].bits)
 }
 
 fn retarget(
