@@ -12,6 +12,33 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use urma_core::error::{Error, ensure};
 
+/// One touched key, preserving absence separately from a present empty state.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Change<K, V> {
+    pub key: K,
+    pub before: Option<V>,
+    pub after: Option<V>,
+}
+
+/// A block's changes in forward orientation, including expiry and inert effects.
+/// Apply `after` to connect and `before` to disconnect. The height is not proof
+/// of block inclusion or selected-chain membership; the caller anchors it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BlockDelta {
+    pub height: u64,
+    pub names: Vec<Change<Name, NameState>>,
+    pub pending: Vec<Change<Txid, PendingRecord>>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AppliedBlock {
+    pub outcomes: Vec<Outcome>,
+    pub delta: BlockDelta,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 enum Previous<T> {
     Absent,
@@ -22,6 +49,20 @@ enum Previous<T> {
 struct Delta {
     names: Vec<(Name, Previous<NameState>)>,
     pending: Vec<(Txid, Previous<PendingRecord>)>,
+}
+
+fn previous<T>(value: Option<T>) -> Previous<T> {
+    match value {
+        Some(value) => Previous::Present(value),
+        None => Previous::Absent,
+    }
+}
+
+fn before_value<T: Clone>(value: &Previous<T>) -> Option<T> {
+    match value {
+        Previous::Present(value) => Some(value.clone()),
+        Previous::Absent => None,
+    }
 }
 
 enum Admission {
@@ -72,6 +113,89 @@ impl Registry {
         })
     }
 
+    /// Restores explicitly trusted local state without verifying its provenance.
+    /// Undo frames must be a contiguous suffix ending at `height`, with unique
+    /// keys and after-values consistent with the supplied maps when reversed.
+    /// Expiries are rebuilt from the final names; legacy undo encoding is kept.
+    pub fn from_parts(
+        genesis: Txid,
+        genesis_height: u64,
+        rules: Genesis,
+        height: u64,
+        names: BTreeMap<Name, NameState>,
+        pending: BTreeMap<Txid, PendingRecord>,
+        undo: Vec<BlockDelta>,
+    ) -> Result<Self, Error> {
+        let mut registry = Self::new(genesis, genesis_height, rules)?;
+        ensure!(height >= genesis_height, "registry height before genesis");
+        let mut previous_names = names.clone();
+        let mut previous_pending = pending.clone();
+        let mut expected = height;
+        for frame in undo.iter().rev() {
+            ensure!(
+                frame.height == expected && frame.height > genesis_height,
+                "noncontiguous undo suffix or frame at/before genesis"
+            );
+            let mut name_keys = BTreeSet::new();
+            let mut pending_keys = BTreeSet::new();
+            for change in &frame.names {
+                ensure!(name_keys.insert(&change.key), "duplicate undo name key");
+                ensure!(
+                    previous_names.get(&change.key) == change.after.as_ref(),
+                    "undo name after-value mismatch"
+                );
+                match &change.before {
+                    Some(state) => {
+                        previous_names.insert(change.key.clone(), state.clone());
+                    }
+                    None => {
+                        previous_names.remove(&change.key);
+                    }
+                }
+            }
+            for change in &frame.pending {
+                ensure!(
+                    pending_keys.insert(change.key),
+                    "duplicate undo pending key"
+                );
+                ensure!(
+                    previous_pending.get(&change.key) == change.after.as_ref(),
+                    "undo pending after-value mismatch"
+                );
+                match &change.before {
+                    Some(record) => {
+                        previous_pending.insert(change.key, record.clone());
+                    }
+                    None => {
+                        previous_pending.remove(&change.key);
+                    }
+                }
+            }
+            expected -= 1; // frame.height > genesis_height, so nonzero.
+        }
+        for (name, state) in names {
+            registry.store(name, state);
+        }
+        registry.pending = pending;
+        registry.height = height;
+        registry.undo = undo
+            .into_iter()
+            .map(|frame| Delta {
+                names: frame
+                    .names
+                    .into_iter()
+                    .map(|change| (change.key, previous(change.before)))
+                    .collect(),
+                pending: frame
+                    .pending
+                    .into_iter()
+                    .map(|change| (change.key, previous(change.before)))
+                    .collect(),
+            })
+            .collect();
+        Ok(registry)
+    }
+
     pub fn genesis(&self) -> Txid {
         self.genesis
     }
@@ -114,8 +238,18 @@ impl Registry {
     pub fn connect(
         &mut self,
         height: u64,
-        mut observations: Vec<Observation>,
+        observations: Vec<Observation>,
     ) -> Result<Vec<Outcome>, Error> {
+        Ok(self.connect_delta(height, observations)?.outcomes)
+    }
+
+    /// Applies one consecutive block and returns only touched keys' before/after
+    /// values. An empty block still advances height and has an undo frame.
+    pub fn connect_delta(
+        &mut self,
+        height: u64,
+        mut observations: Vec<Observation>,
+    ) -> Result<AppliedBlock, Error> {
         let expected = self
             .height
             .checked_add(1)
@@ -149,13 +283,26 @@ impl Registry {
             self.claims(&observations, &mut outcomes);
         }
         self.owner_records(&observations, &mut outcomes);
-        Ok(outcomes)
+        let delta = self.forward_delta(self.undo.last().expect("connect frame exists"));
+        Ok(AppliedBlock { outcomes, delta })
     }
 
     pub fn disconnect(&mut self) -> Result<u64, Error> {
-        let Some(delta) = self.undo.pop() else {
+        Ok(self.disconnect_delta()?.height)
+    }
+
+    /// Reverts the newest reversible block and returns its forward frame:
+    /// `before` is the restored state, `after` is the removed state.
+    pub fn disconnect_delta(&mut self) -> Result<BlockDelta, Error> {
+        let Some(delta) = self.undo.last() else {
             return Err(Error::Missing("no reversible block".into()));
         };
+        let restored_height = self
+            .height
+            .checked_sub(1)
+            .ok_or_else(|| Error::Capacity("height underflow".into()))?;
+        let forward = self.forward_delta(delta);
+        let delta = self.undo.pop().expect("disconnect frame exists");
         for (name, previous) in delta.names {
             match previous {
                 Previous::Present(state) => self.store(name, state),
@@ -172,11 +319,32 @@ impl Registry {
                 }
             }
         }
-        let height = self.height;
-        self.height = height
-            .checked_sub(1)
-            .ok_or_else(|| Error::Capacity("height underflow".into()))?;
-        Ok(height)
+        self.height = restored_height;
+        Ok(forward)
+    }
+
+    fn forward_delta(&self, delta: &Delta) -> BlockDelta {
+        BlockDelta {
+            height: self.height,
+            names: delta
+                .names
+                .iter()
+                .map(|(key, before)| Change {
+                    key: key.clone(),
+                    before: before_value(before),
+                    after: self.names.get(key).cloned(),
+                })
+                .collect(),
+            pending: delta
+                .pending
+                .iter()
+                .map(|(key, before)| Change {
+                    key: *key,
+                    before: before_value(before),
+                    after: self.pending.get(key).cloned(),
+                })
+                .collect(),
+        }
     }
 
     pub fn prune(&mut self, keep: usize) {
