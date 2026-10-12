@@ -21,7 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-pub type ConnectedPeers = Arc<dyn Fn() -> usize + Send + Sync>;
+pub type ConnectedPeers = Arc<dyn Fn() -> u64 + Send + Sync>;
 
 /// Public overlay identity facts reported in status; never secrets.
 pub struct OverlayInfo {
@@ -41,7 +41,7 @@ pub struct PeerSync {
 struct Range {
     from: u64,
     to: u64,
-    after: Option<(u64, u32)>,
+    after: Option<Placement>,
     entries: Vec<Placement>,
     next: usize,
     more: bool,
@@ -60,6 +60,7 @@ struct Peer {
 /// Why a step stopped early without blaming the peer.
 enum Pause {
     Done,
+    Abandon,
     Error(Error),
 }
 
@@ -185,15 +186,11 @@ impl Scheduler {
         }
         match self.walk(peer, engine, &mut slot, round) {
             Ok(()) | Err(Pause::Done) => Ok(()),
-            Err(Pause::Error(Error::Stale)) => {
-                tracing::debug!(peer = %peer.label, "selected view changed; range restarts next round");
+            Err(Pause::Abandon) | Err(Pause::Error(Error::Stale)) => {
                 *slot = None;
                 Ok(())
             }
-            Err(Pause::Error(Error::Busy(message))) => {
-                tracing::debug!(peer = %peer.label, %message, "inventory peer busy; retry next round");
-                Ok(())
-            }
+            Err(Pause::Error(Error::Busy(_retry_next_round))) => Ok(()),
             Err(Pause::Error(error)) => {
                 // A failed admission or a lying page abandons the range; it is
                 // requested again from the persisted cursor on this peer's turn.
@@ -213,6 +210,9 @@ impl Scheduler {
         while let Some(range) = slot.as_mut() {
             round.open()?;
             if let Some(entry) = range.entries.get(range.next) {
+                if !selected(engine, entry)? {
+                    return Err(Pause::Abandon);
+                }
                 if engine.record(entry.txid)?.is_none() {
                     if round.fetched == Self::ROUND_FETCHES {
                         return Err(Pause::Done);
@@ -228,13 +228,16 @@ impl Scheduler {
                 }
                 round.requested_page = true;
                 pace(peer, round)?;
-                let page = peer.source.inventory(
+                let Some(page) = peer.source.inventory(
                     range.from,
                     range.to,
                     range.after,
                     Self::PAGE_ENTRIES,
                     round.stop,
-                )?;
+                )?
+                else {
+                    return Err(Pause::Done);
+                };
                 if !accept(range, page)? {
                     *slot = None;
                 }
@@ -248,11 +251,9 @@ impl Scheduler {
     }
 
     /// Fetch one advertised record from the advertising peer and admit it.
-    fn acquire(&self, peer: &Peer, engine: &Engine, entry: &Placement) -> Result<(), Error> {
+    fn acquire(&self, peer: &Peer, engine: &Engine, entry: &Placement) -> Result<(), Pause> {
         let Some(package) = peer.source.fetch(entry.txid)? else {
-            return Err(Error::Invalid(
-                "peer advertised a record it did not serve".into(),
-            ));
+            return Err(Pause::Done);
         };
         let receipt = match engine.admit_record(package) {
             Ok(receipt) => receipt,
@@ -260,14 +261,14 @@ impl Scheduler {
                 if !matches!(error, Error::Busy(_)) {
                     self.rejected.fetch_add(1, Ordering::Relaxed);
                 }
-                return Err(error);
+                return Err(Pause::Error(error));
             }
         };
         self.admitted.fetch_add(1, Ordering::Relaxed);
         if !placed(&receipt, entry) {
-            return Err(Error::Invalid(
+            return Err(Pause::Error(Error::Invalid(
                 "peer inventory placement disagrees with its proven record".into(),
-            ));
+            )));
         }
         Ok(())
     }
@@ -335,34 +336,44 @@ fn open(peer: &Peer, engine: &Engine) -> Result<Option<Range>, Error> {
 /// Entries must be strictly ordered after the page cursor, inside the range
 /// and inside the peer's own scanned prefix; anything else is a peer error.
 fn accept(range: &mut Range, page: InventoryPage) -> Result<bool, Error> {
-    if page.scanned_through < range.from {
+    let Some(scanned_through) = page.scanned_through.filter(|height| *height >= range.from) else {
         return Ok(false);
-    }
+    };
     let limit = usize::try_from(Scheduler::PAGE_ENTRIES)
         .map_err(|error| Error::Invalid(format!("page limit: {error}")))?;
     if page.entries.len() > limit || (page.more && page.entries.is_empty()) {
         return Err(Error::Invalid("peer inventory page size is invalid".into()));
     }
-    let ceiling = range.to.min(page.scanned_through);
+    let ceiling = range.to.min(scanned_through);
     let mut previous = range.after;
     for entry in &page.entries {
-        let key = (entry.height, entry.position);
         if entry.height < range.from
             || entry.height > ceiling
-            || previous.is_some_and(|last| key <= last)
+            || previous
+                .is_some_and(|last| (entry.height, entry.position) <= (last.height, last.position))
         {
             return Err(Error::Invalid(
                 "peer inventory entry is out of range or order".into(),
             ));
         }
-        previous = Some(key);
+        previous = Some(*entry);
     }
     range.after = previous;
     range.entries = page.entries;
     range.next = 0;
     range.more = page.more;
-    range.scanned_through = page.scanned_through;
+    range.scanned_through = scanned_through;
     Ok(true)
+}
+
+/// A listing whose block differs from our selected header at that height comes
+/// from another view of the chain (a reorg in flight); it is not a peer error.
+fn selected(engine: &Engine, entry: &Placement) -> Result<bool, Error> {
+    match engine.archive()?.ticket(entry.height) {
+        Ok(ticket) => Ok(ticket.point().hash == entry.block_hash),
+        Err(Error::Invalid(_outside_selected_view)) => Ok(false),
+        Err(error) => Err(error),
+    }
 }
 
 fn placed(receipt: &RecordReceipt, entry: &Placement) -> bool {

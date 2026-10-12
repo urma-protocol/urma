@@ -308,7 +308,10 @@ these omissions.
 Per round and peer: one inventory page, at most 16 package fetches, at least
 250 ms between requests to the peer (its serving bucket is four per second),
 and a 20-second step deadline, with cancellation checked between requests. A
-`Busy` reply ends the step and the same range continues on the peer's next turn.
+`Busy` or empty reply ends the step and the same range continues on the peer's
+next turn. A listed block that differs from the local selected header at that
+height, or a reorg during the step, drops the range quietly: no peer error and
+no coverage.
 The `overlay` status block (null without `--peer-key`) reports the peer ID,
 listener, peer-book size, connected peers, records admitted and packages
 rejected since start, and each peer's cursor, synced height and last error;
