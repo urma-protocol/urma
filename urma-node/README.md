@@ -94,8 +94,8 @@ source calls and SQL commits are not forcibly interrupted. Failed acquisitions
 remain incomplete and the local status reports the last retention error.
 Pruned mode does not automatically download complete objects.
 
-Distributed peer discovery, historical dependency acquisition beyond available
-local evidence, remaining application adapters and Linux service packaging are
+Distributed peer discovery, automatic historical dependency acquisition,
+remaining application adapters and Linux service packaging are
 not yet delivered. The soft multipart cache target is described below.
 This development stage targets Linux for implementation and testing. Windows
 I/O/ACL porting, an installer and Windows Service integration are deferred and
@@ -342,3 +342,31 @@ These are historical measurements, not live usage after later admission/pinning.
 A failed step preserves the previous successful receipt and reports its error;
 its database mutations roll back. Manual `cache/prune` retains its existing
 all-unprotected-children behavior.
+
+### Explicit missing commit acquisition
+
+Embedded owners can supply a `CommitSource` to
+`Engine::resolve_next_dependency(source, cancelled)`. One call selects one
+distinct missing parent from dependencies in the selected scanned view. An
+in-memory cursor advances on misses and errors so unavailable parents do not
+starve later ones; it is not persisted across restart. The source's configured
+chain and the returned transaction's computed TXID must match the request.
+The selected generation remains fixed across acquisition and verification;
+a reorg refuses the attempted completion instead of adopting a newer branch.
+At most 128 existing references are finalized atomically. When parent bytes were
+retained, `resolve_cached_dependency` can finish remaining references locally.
+
+`RuntimeCommitSource { node: &node }` borrows an explicitly configured runtime
+Node and preserves the original `getrawtransaction` hex bytes. It constructs
+no Node and chooses no endpoint, provider, history start or bootstrap. No such
+source is enabled automatically by the standalone service. A source miss or
+failure leaves the dependency unresolved. Parent bytes authenticate the exact
+prevout used by a reveal; they add no parent placement, inclusion, witness or
+scan-coverage evidence. Names still requires a selected commit placement.
+
+The chain decoder limits raw input to 8,000,000 bytes. The runtime adapter checks
+16,000,000 hex characters before its own decode, but `Node::call` may already
+have allocated or decoded transport data. These are admission limits, not a
+transport allocation or RSS bound. Sources own their I/O limits. Cancellation
+is checked between callbacks/proof work and after the final archive lock;
+entered source I/O or SQL is not preempted, and no global deadline is promised.
