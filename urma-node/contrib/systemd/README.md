@@ -84,9 +84,10 @@ deliberately if needed; never infer successful cleanup from a forced termination
 Normal database recovery checks still apply on the next explicit start.
 
 The signal implementation in base `10d953d770f0b5f614caf36accce2311e45a287e`
-has compiled and received static review. The runtime SIGTERM gate is pending
-separately at this template's introduction. This document does not claim a
-tested systemd installation or supervised shutdown.
+passed dedicated Linux process tests: SIGINT/SIGTERM/SIGHUP normal exit and
+archive reopen, SIGTERM with an explicit offline overlay, and embedded worker
+shutdown. Those tests do not establish a tested systemd installation or
+supervised shutdown.
 
 ## Explicit network opt-ins
 
@@ -145,7 +146,7 @@ the fixture and vendor unit directories, excluding real user units. The proposed
 command, with all paths substituted, is:
 
 ```sh
-env -i HOME="/REPLACE/OWNED-TEMP/home" XDG_CONFIG_HOME="/REPLACE/OWNED-TEMP/config" XDG_DATA_HOME="/REPLACE/OWNED-TEMP/data" XDG_RUNTIME_DIR="/REPLACE/OWNED-TEMP/runtime" SYSTEMD_UNIT_PATH="/REPLACE/OWNED-TEMP/units:/usr/lib/systemd/user:/lib/systemd/user" /usr/bin/systemd-analyze --user --man=no verify "/REPLACE/OWNED-TEMP/units/urma-node.service"
+env -i HOME="/REPLACE/OWNED-TEMP/home" XDG_CONFIG_HOME="/REPLACE/OWNED-TEMP/config" XDG_DATA_HOME="/REPLACE/OWNED-TEMP/data" XDG_RUNTIME_DIR="/REPLACE/OWNED-TEMP/runtime" SYSTEMD_UNIT_PATH="/REPLACE/OWNED-TEMP/units:/usr/lib/systemd/user:/lib/systemd/user" /usr/bin/systemd-analyze --user --generators=no --man=no verify "/REPLACE/OWNED-TEMP/units/urma-node.service"
 ```
 
 Adjust vendor and executable locations to the host; do not enable unit generators.
