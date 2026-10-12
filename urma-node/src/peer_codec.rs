@@ -1,0 +1,153 @@
+//! Bounded framing for untrusted peer JSON. No record or chain verification.
+//! The request-response layer owns timeouts, including waiting for stream EOF.
+use crate::peer_protocol::{PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Request, Response};
+use async_trait::async_trait;
+use libp2p::{
+    StreamProtocol,
+    futures::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt},
+};
+use serde::{Serialize, de::DeserializeOwned};
+use std::io::{self, Write};
+
+#[derive(Clone, Default)]
+pub struct Codec;
+
+fn protocol(protocol: &StreamProtocol) -> io::Result<()> {
+    if protocol.as_ref() != PROTOCOL {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported peer protocol",
+        ));
+    }
+    Ok(())
+}
+
+async fn read<T: AsyncRead + Unpin + Send, V: DeserializeOwned>(
+    io: &mut T,
+    limit: usize,
+) -> io::Result<V> {
+    let mut prefix = [0; 4];
+    io.read_exact(&mut prefix).await?;
+    let length = u32::from_be_bytes(prefix) as usize;
+    if length == 0 || length > limit {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "peer frame length outside limits",
+        ));
+    }
+    let mut bytes = Vec::new();
+    bytes.try_reserve_exact(length).map_err(io::Error::other)?;
+    bytes.resize(length, 0);
+    io.read_exact(&mut bytes).await?;
+    let mut trailing = [0];
+    if io.read(&mut trailing).await? != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "trailing peer frame bytes",
+        ));
+    }
+    serde_json::from_slice(&bytes)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+struct BoundedVec {
+    bytes: Vec<u8>,
+    limit: usize,
+}
+
+impl Write for BoundedVec {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        if bytes.len() > self.limit - self.bytes.len() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "encoded peer frame exceeds byte limit",
+            ));
+        }
+        let needed = self.bytes.len() + bytes.len();
+        if needed > self.bytes.capacity() {
+            // Amortize small serializer writes, without reserving past the cap.
+            let capacity = needed
+                .max(self.bytes.capacity().saturating_mul(2))
+                .min(self.limit);
+            self.bytes
+                .try_reserve_exact(capacity - self.bytes.len())
+                .map_err(io::Error::other)?;
+        }
+        self.bytes.extend_from_slice(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+
+async fn write<T: AsyncWrite + Unpin + Send, V: Serialize>(
+    io: &mut T,
+    value: &V,
+    limit: usize,
+) -> io::Result<()> {
+    let mut body = BoundedVec {
+        bytes: Vec::new(),
+        limit,
+    };
+    serde_json::to_writer(&mut body, value)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidInput, error))?;
+    let length = u32::try_from(body.bytes.len()).map_err(io::Error::other)?;
+    io.write_all(&length.to_be_bytes()).await?;
+    io.write_all(&body.bytes).await?;
+    io.close().await
+}
+
+#[async_trait]
+impl libp2p::request_response::Codec for Codec {
+    type Protocol = StreamProtocol;
+    type Request = Request;
+    type Response = Response;
+
+    async fn read_request<T>(
+        &mut self,
+        negotiated: &StreamProtocol,
+        io: &mut T,
+    ) -> io::Result<Request>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        protocol(negotiated)?;
+        read(io, REQUEST_LIMIT).await
+    }
+    async fn read_response<T>(
+        &mut self,
+        negotiated: &StreamProtocol,
+        io: &mut T,
+    ) -> io::Result<Response>
+    where
+        T: AsyncRead + Unpin + Send,
+    {
+        protocol(negotiated)?;
+        read(io, RESPONSE_LIMIT).await
+    }
+    async fn write_request<T>(
+        &mut self,
+        negotiated: &StreamProtocol,
+        io: &mut T,
+        request: Request,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        protocol(negotiated)?;
+        write(io, &request, REQUEST_LIMIT).await
+    }
+    async fn write_response<T>(
+        &mut self,
+        negotiated: &StreamProtocol,
+        io: &mut T,
+        response: Response,
+    ) -> io::Result<()>
+    where
+        T: AsyncWrite + Unpin + Send,
+    {
+        protocol(negotiated)?;
+        write(io, &response, RESPONSE_LIMIT).await
+    }
+}
