@@ -368,7 +368,6 @@ async fn run(
                     if let Some(ready) = ready.take() { let _ = ready.send(Ok(Some(address))); }
                 }
                 SwarmEvent::ListenerError { error, .. } if ready.is_some() => break Err(Error::Io(error)),
-                SwarmEvent::ConnectionClosed { peer_id, num_established: 0, .. } => { rates.remove(&peer_id); }
                 SwarmEvent::Behaviour(BehaviourEvent::Records(event)) => match event {
                     request_response::Event::Message { peer, message: Message::Request { request_id, request, channel }, .. } => {
                         // Every request, including refusals, consumes rate and
@@ -485,7 +484,9 @@ impl Bucket {
         }
     }
     fn take(&mut self, amount: u64) -> bool {
-        let now = Instant::now();
+        self.take_at(amount, Instant::now())
+    }
+    fn refill(&mut self, now: Instant) {
         let added = (now.duration_since(self.updated).as_nanos() * u128::from(self.per_second)
             / 1_000_000_000)
             .min(u128::from(self.capacity)) as u64;
@@ -493,6 +494,9 @@ impl Bucket {
             self.available = self.available.saturating_add(added).min(self.capacity);
             self.updated = now;
         }
+    }
+    fn take_at(&mut self, amount: u64, now: Instant) -> bool {
+        self.refill(now);
         if self.available < amount {
             return false;
         }
@@ -502,13 +506,30 @@ impl Bucket {
 }
 
 fn peer_rate(rates: &mut HashMap<PeerId, Bucket>, peer: PeerId) -> bool {
-    if !rates.contains_key(&peer) && rates.len() >= 8 {
+    peer_rate_at(rates, peer, Instant::now())
+}
+
+fn peer_rate_at(rates: &mut HashMap<PeerId, Bucket>, peer: PeerId, now: Instant) -> bool {
+    // Retain spent allowance across disconnects. Only fully replenished
+    // identities may be forgotten: recreating those buckets changes no budget.
+    // History is bounded independently of connection churn; at capacity a new
+    // identity is refused instead of evicting another identity's spent budget.
+    rates.retain(|_, bucket| {
+        bucket.refill(now);
+        bucket.available < bucket.capacity
+    });
+    if !rates.contains_key(&peer) && rates.len() >= 256 {
         return false;
     }
     rates
         .entry(peer)
-        .or_insert_with(|| Bucket::new(4, 4))
-        .take(1)
+        .or_insert_with(|| Bucket {
+            available: 4,
+            capacity: 4,
+            per_second: 4,
+            updated: now,
+        })
+        .take_at(1, now)
 }
 
 #[cfg(test)]
@@ -565,21 +586,23 @@ mod tests {
     fn request_rate_history_and_response_serialization_are_bounded() {
         let mut rates = HashMap::new();
         let mut peers = Vec::new();
-        for _ in 0..8 {
+        let now = Instant::now();
+        for _ in 0..256 {
             let peer = Keypair::generate_ed25519().public().to_peer_id();
-            assert!(peer_rate(&mut rates, peer));
+            assert!(peer_rate_at(&mut rates, peer, now));
             peers.push(peer);
         }
-        assert!(!peer_rate(
+        assert!(!peer_rate_at(
             &mut rates,
-            Keypair::generate_ed25519().public().to_peer_id()
+            Keypair::generate_ed25519().public().to_peer_id(),
+            now
         ));
-        assert_eq!(rates.len(), 8);
+        assert_eq!(rates.len(), 256);
         rates.get_mut(&peers[0]).unwrap().per_second = 0;
         for _ in 0..3 {
-            assert!(peer_rate(&mut rates, peers[0]));
+            assert!(peer_rate_at(&mut rates, peers[0], now));
         }
-        assert!(!peer_rate(&mut rates, peers[0]));
+        assert!(!peer_rate_at(&mut rates, peers[0], now));
         let mut count = Count(RESPONSE_LIMIT - 1);
         count.write_all(&[0]).unwrap();
         assert!(count.write_all(&[0]).is_err());
@@ -587,6 +610,34 @@ mod tests {
         let mut bytes = Bucket::new(1024, 0);
         assert!(bytes.take(1024));
         assert!(!bytes.take(1));
+    }
+
+    #[test]
+    fn identity_rate_survives_reconnect_until_allowance_replenishes() {
+        let mut rates = HashMap::new();
+        let peer = Keypair::generate_ed25519().public().to_peer_id();
+        let now = Instant::now();
+        for _ in 0..4 {
+            assert!(peer_rate_at(&mut rates, peer, now));
+        }
+        // Connection lifetime has no effect on the identity accounting.
+        assert!(!peer_rate_at(&mut rates, peer, now));
+        let later = now + Duration::from_millis(250);
+        assert!(peer_rate_at(&mut rates, peer, later));
+        assert!(!peer_rate_at(&mut rates, peer, later));
+        let replenished = later + Duration::from_secs(1);
+        for _ in 0..4 {
+            assert!(peer_rate_at(&mut rates, peer, replenished));
+        }
+        assert!(!peer_rate_at(&mut rates, peer, replenished));
+        let other = Keypair::generate_ed25519().public().to_peer_id();
+        assert!(peer_rate_at(
+            &mut rates,
+            other,
+            replenished + Duration::from_secs(1)
+        ));
+        assert_eq!(rates.len(), 1);
+        assert!(!rates.contains_key(&peer));
     }
 
     #[test]

@@ -133,8 +133,12 @@ one per peer, with at most four pending handshakes per direction. Request-respon
 streams are limited to two per connection; Yamux uses its bounded 0.12 backend
 with four streams and 256 KiB buffering per stream. Application queues, active
 requests and archive-reader work are separately bounded. Serving permits 16
-requests per second globally and four per peer with matching burst sizes;
-response bytes have a 64 MiB burst and 4 MiB/s refill. Overload can refuse data.
+requests per second globally and four per peer identity with matching burst sizes.
+Spent identity allowance survives reconnects; a maximum of 256 recent buckets
+is retained, and only fully replenished buckets are forgotten. At capacity, new
+identities are refused instead of evicting spent allowance. Response payload
+allowance has a 64 MiB burst and 4 MiB/s refill; this does not count TCP, Noise or
+framing overhead. Overload can refuse data.
 These are operational limits, not changes to URMA V0.
 
 Connect/handshake timeout is five seconds; the request-response stream timeout
