@@ -59,3 +59,44 @@ fn the_light_client_stays_cold_until_a_block_range_need() {
     assert_eq!(provider.state(), LightSync::Cold(cold));
     assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
 }
+
+#[test]
+fn explicit_bootstrap_construction_and_local_header_reads_stay_cold() {
+    use urma_runtime::p2p::HeaderBootstrap;
+    let chain = Chain::BitcoinRegtest;
+    let header = bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Regtest).header;
+    let bootstrap = HeaderBootstrap::new(chain, 0, header, Vec::new()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let provider = P2pProvider::with_bootstrap(dir.path(), bootstrap, Vec::new()).unwrap();
+    let before = provider.state();
+    assert!(matches!(
+        before,
+        LightSync::Cold(Progress {
+            peers_connected: 0,
+            synced: false,
+            ..
+        })
+    ));
+    let result = provider
+        .call(
+            chain,
+            "getblockheader",
+            &[json!(header.block_hash().to_string())],
+        )
+        .unwrap();
+    assert_eq!(result["height"], json!(0));
+    assert_eq!(result["hash"], json!(header.block_hash().to_string()));
+    assert!(
+        provider
+            .call(
+                chain,
+                "getblock",
+                &[json!(header.block_hash().to_string()), json!(0)]
+            )
+            .unwrap_err()
+            .to_string()
+            .contains("not been started")
+    );
+    assert_eq!(provider.state(), before);
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 0);
+}

@@ -15,9 +15,10 @@ that an interval has been fully scanned.
 
 The archive requires an explicit chain and application-start height/hash. It
 does not replace the application start with a recent checkpoint. The existing
-Litecoin header backend cannot retrieve heights before its anchor. Historical
-bootstrap context is still being implemented; starting the daemon is not
-evidence of historical coverage.
+Litecoin header backend cannot retrieve heights before its anchor. An explicit
+bootstrap file can supply an earlier trusted anchor and its preceding context;
+no historical anchor or application-start default is shipped. Starting the
+daemon is not evidence of historical coverage.
 
 The `Retention` configuration distinguishes pruned multipart roots from
 unpruned record retention. On-demand recovery follows authenticated references,
@@ -75,6 +76,20 @@ opts into the Litecoin source. `GET /v1/status`, `GET /v1/records/TXID`,
 `Authorization: Bearer TOKEN`. Clients do not open the service database for
 writing. The archive uses a process ownership lock and SQLite WAL/FULL on a
 local filesystem.
+
+`serve --p2p --header-bootstrap FILE` supplies an explicit checkpoint with
+preceding context instead of the embedded legacy checkpoint. The bounded JSON
+file has fields `version` (1), `chain` (matching the archive), `height`, `header`
+(80-byte anchor encoded as 160 hex characters) and `ancestors` (header hex strings,
+oldest first). Litecoin requires exactly `min(height, 2016)` ancestors. The
+application start must be at or after this anchor. There is no default historical
+anchor file: its chain membership and height are an explicit operator trust
+decision. Ancestor hash links and PoW are checked before opening the separate
+strict cache; every successor then gets difficulty and median-time checks with
+the required context. Ancestors do not become scan coverage or selectable history.
+This does not establish contextual consensus before the trusted anchor. Without
+this option, the embedded legacy bootstrap still pins its first successor and
+initially uses a truncated median-time window.
 
 Header validation is relative to the configured checkpoint and local cache.
 Insufficient local difficulty history is reported separately from an invalid
