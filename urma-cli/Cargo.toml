@@ -60,3 +60,7 @@ urma-web = { version = "0.2.2", path = "../urma-web" }
 
 [dev-dependencies]
 anyhow = "1"
+
+# Actual-service consumer fixtures only; the production CLI uses node-client.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+urma-node = { version = "0.2.2", path = "../urma-node" }
