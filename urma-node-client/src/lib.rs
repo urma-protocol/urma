@@ -5,6 +5,7 @@
 mod client;
 mod error;
 pub mod model;
+pub mod names;
 pub mod projection;
 
 pub use client::Client;

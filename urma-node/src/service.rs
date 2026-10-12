@@ -214,6 +214,53 @@ impl Service {
             return respond(stream, 401, json!({"error":"authentication required"}));
         }
         match first {
+            line if (line.starts_with("GET /v1/names/") || line.starts_with("POST /v1/names/"))
+                && line.ends_with(" HTTP/1.1") =>
+            {
+                let (method, path) = line[..line.len() - " HTTP/1.1".len()]
+                    .split_once(' ')
+                    .expect("matched HTTP method");
+                let request = match names_request(method, path) {
+                    Ok(Some(request)) => request,
+                    Ok(None) => {
+                        return respond(stream, 404, json!({"error":"unknown endpoint"}));
+                    }
+                    Err(_) => {
+                        return respond(stream, 400, json!({"error":"invalid Names request"}));
+                    }
+                };
+                // Reads never register or advance a registry. Mutations are
+                // explicit one-shot commands under the Engine archive mutex.
+                let result = match request {
+                    NamesRequest::Status(genesis) => match self.engine.names_status(genesis) {
+                        Ok(Some(status)) => serde_json::to_value(status).map_err(Error::from),
+                        Ok(None) => {
+                            return respond(
+                                stream,
+                                404,
+                                json!({"error":"Names registry is not registered locally"}),
+                            );
+                        }
+                        Err(error) => Err(error),
+                    },
+                    NamesRequest::Resolve(genesis, name) => self
+                        .engine
+                        .names_resolve(genesis, &name)
+                        .and_then(|value| serde_json::to_value(value).map_err(Error::from)),
+                    NamesRequest::Register(genesis, point) => self
+                        .engine
+                        .register_names(genesis, point)
+                        .and_then(|value| serde_json::to_value(value).map_err(Error::from)),
+                    NamesRequest::Step(genesis) => self
+                        .engine
+                        .names_step(genesis)
+                        .and_then(|value| serde_json::to_value(value).map_err(Error::from)),
+                };
+                match result {
+                    Ok(value) => respond(stream, 200, value),
+                    Err(error) => control_error(stream, error),
+                }
+            }
             line if line.starts_with("GET /v1/wire?") && line.ends_with(" HTTP/1.1") => {
                 let query = &line["GET /v1/wire?".len()..line.len() - " HTTP/1.1".len()];
                 let (limit, cursor) = match wire_query(query) {
@@ -312,7 +359,7 @@ impl Service {
                     json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
                         "retention_configured":self.retention.is_some(),
                         "record_sources_configured":self.sources.len(),
-                        "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune","wire-index"]}),
+                        "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune","wire-index","names-index"]}),
                 )
             }
             "POST /v1/shutdown HTTP/1.1" => {
@@ -323,6 +370,68 @@ impl Service {
             _ => respond(stream, 404, json!({"error":"unknown endpoint"})),
         }
     }
+}
+
+enum NamesRequest {
+    Status(bitcoin::Txid),
+    Resolve(bitcoin::Txid, urma_names::name::Name),
+    Register(bitcoin::Txid, crate::model::ChainPoint),
+    Step(bitcoin::Txid),
+}
+
+fn names_request(method: &str, path: &str) -> Result<Option<NamesRequest>, Error> {
+    let invalid = || Error::Invalid("invalid Names request".into());
+    let path = path.strip_prefix("/v1/names/").ok_or_else(invalid)?;
+    let (id, operation) = path.split_once('/').unwrap_or((path, ""));
+    if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(invalid());
+    }
+    let genesis = id.parse().map_err(|_| invalid())?;
+    let request = match (method, operation) {
+        ("GET", "") => NamesRequest::Status(genesis),
+        ("GET", operation) if operation.starts_with("resolve/") => {
+            // Canonical Names V0 uses only ASCII letters, digits and hyphens;
+            // do not normalize, percent-decode or accept alternate spellings.
+            let name = urma_names::name::Name::parse(&operation["resolve/".len()..])
+                .map_err(|_| invalid())?;
+            NamesRequest::Resolve(genesis, name)
+        }
+        ("POST", "step") => NamesRequest::Step(genesis),
+        ("POST", operation) if operation.starts_with("register?") => {
+            let mut height = None;
+            let mut hash = None;
+            for field in operation["register?".len()..].split('&') {
+                match field.split_once('=') {
+                    Some(("height", value)) if height.is_none() => {
+                        if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+                            return Err(invalid());
+                        }
+                        let value: u64 = value.parse().map_err(|_| invalid())?;
+                        if value > i64::MAX as u64 {
+                            return Err(invalid());
+                        }
+                        height = Some(value);
+                    }
+                    Some(("hash", value)) if hash.is_none() => {
+                        if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit()) {
+                            return Err(invalid());
+                        }
+                        hash = Some(value.parse().map_err(|_| invalid())?);
+                    }
+                    _ => return Err(invalid()),
+                }
+            }
+            NamesRequest::Register(
+                genesis,
+                crate::model::ChainPoint {
+                    height: height.ok_or_else(invalid)?,
+                    hash: hash.ok_or_else(invalid)?,
+                },
+            )
+        }
+        _ => return Ok(None),
+    };
+    Ok(Some(request))
 }
 
 fn wire_query(query: &str) -> Result<(u32, Option<crate::projection::WireCursor>), Error> {

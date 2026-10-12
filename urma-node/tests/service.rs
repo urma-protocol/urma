@@ -459,7 +459,8 @@ fn offline_status_requires_auth_and_rejects_duplicate_auth_and_request_bodies() 
             "object-status",
             "object-pin",
             "cache-prune",
-            "wire-index"
+            "wire-index",
+            "names-index"
         ])
     );
     assert!(!fixture.data.join("headers").exists());

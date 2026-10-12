@@ -3718,6 +3718,7 @@ dependencies = [
  "serde_json",
  "urma-chain",
  "urma-core",
+ "urma-names",
  "urma-wire",
 ]
 

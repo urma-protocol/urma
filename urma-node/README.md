@@ -70,8 +70,9 @@ SQL transaction under the archive coordinator. Reads refuse orphaned checkpoints
 until a step reconciles them; an orphaned genesis is refused without rebinding.
 The archive retains 1,000 undo frames plus their floor checkpoint; deeper reorgs
 require an explicit rebuild. Resolution carries its projected block and separate
-completion status. These Engine APIs do not yet provide a Names HTTP endpoint,
-background registration scheduler or consumer adapter.
+completion status. Authenticated local Names endpoints expose the same explicit
+operations; reads never register or advance a registry. Background registry
+maintenance and consumer adapters are not yet provided.
 
 Unpruned background rounds attempt a block scan, then at most one
 incomplete object. Previously verified cached objects can complete even when
@@ -128,6 +129,24 @@ page or absent continuation means only that the local result set ended; imported
 selective records can appear before their blocks have been fully scanned.
 These are explicitly trusted local index results. Portable inclusion evidence
 is available through record packages and requires independent verification.
+
+Names uses the same bearer authentication and bodyless request rules:
+
+- `POST /v1/names/GENESIS/register?height=HEIGHT&hash=BLOCKHASH` binds an explicit,
+  already scanned genesis placement. Repeating the same binding is idempotent.
+- `POST /v1/names/GENESIS/step` reconciles retained undo and applies at most one
+  next fully scanned block. It never downloads missing history.
+- `GET /v1/names/GENESIS` reports the registered projection; HTTP 404 means only
+  that this registry is not registered locally.
+- `GET /v1/names/GENESIS/resolve/NAME` returns local resolution at the reported
+  projected block, with separate selected tip and completion status. NAME must
+  already be canonical Names V0 ASCII; it is not normalized by the service.
+
+Names mutations return typed JSON only on HTTP 200. Invalid syntax returns 400,
+unavailable context or stale selection 409, and rejected operations 422. Internal
+failures return a generic 500. A transport failure can follow a committed step;
+do not automatically repeat mutations. These local operator results are not
+portable chain proofs, and a partial projection is not a complete registry view.
 
 `serve --p2p --header-bootstrap FILE` supplies an explicit checkpoint with
 preceding context instead of the embedded legacy checkpoint. The bounded JSON

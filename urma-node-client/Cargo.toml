@@ -16,3 +16,4 @@ hex = "0.4"
 urma-chain = { path = "../urma-chain", version = "0.2.2" }
 urma-core = { path = "../urma-core", version = "0.2.2" }
 urma-wire = { path = "../urma-wire", version = "0.2.2" }
+urma-names = { path = "../urma-names", version = "0.2.2" }
