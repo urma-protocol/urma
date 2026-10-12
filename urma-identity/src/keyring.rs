@@ -2,6 +2,7 @@ use crate::{
     error::IdentityError,
     identity::{IdentityKey, IdentitySlot},
     phrase::IdentityPhrase,
+    root::Root,
 };
 use zeroize::Zeroizing;
 
@@ -12,7 +13,8 @@ pub struct NamedIdentity {
 }
 
 pub struct Keyring {
-    pub(crate) entropy: Zeroizing<[u8; 32]>,
+    pub(crate) phrase: IdentityPhrase,
+    pub(crate) root: Root,
     pub(crate) entries: Vec<NamedIdentity>,
     pub(crate) active: IdentitySlot,
 }
@@ -20,8 +22,11 @@ impl Keyring {
     pub fn create(phrase: &IdentityPhrase, name: &str) -> Result<Self, IdentityError> {
         let slot = IdentitySlot::new(0)?;
         validate_name(name)?;
+        let root = Root::from_phrase(phrase)?;
+        root.identity(slot)?;
         Ok(Self {
-            entropy: Zeroizing::new(*phrase.entropy()),
+            phrase: IdentityPhrase::from_entropy(Zeroizing::new(*phrase.entropy())),
+            root,
             entries: vec![NamedIdentity {
                 slot,
                 name: name.into(),
@@ -36,6 +41,9 @@ impl Keyring {
         }
         Ok(keyring)
     }
+    pub fn root(&self) -> &Root {
+        &self.root
+    }
     pub fn identities(&self) -> &[NamedIdentity] {
         &self.entries
     }
@@ -49,12 +57,10 @@ impl Keyring {
         if !self.entries.iter().any(|entry| entry.slot == slot) {
             return Err(IdentityError::MissingIdentity);
         }
-        IdentityKey::derive(&self.entropy, slot)
+        self.root.identity(slot)
     }
     pub fn select(&mut self, slot: IdentitySlot) -> Result<(), IdentityError> {
-        if !self.entries.iter().any(|entry| entry.slot == slot) {
-            return Err(IdentityError::MissingIdentity);
-        }
+        self.identity(slot)?;
         self.active = slot;
         Ok(())
     }
@@ -65,6 +71,7 @@ impl Keyring {
         }
         let index = u16::try_from(self.entries.len())?;
         let slot = IdentitySlot::new(index)?;
+        self.root.identity(slot)?;
         self.entries.push(NamedIdentity {
             slot,
             name: name.into(),

@@ -1,3 +1,8 @@
+use crate::identity::IdentitySlot;
+use bitcoin::{
+    bech32::{primitives::hrp, segwit},
+    bip32,
+};
 use std::fmt;
 
 #[derive(Debug)]
@@ -10,8 +15,13 @@ pub enum IdentityError {
     Integer(std::num::TryFromIntError),
     Slice(std::array::TryFromSliceError),
     Utf8(std::str::Utf8Error),
+    Bip32(bip32::Error),
+    AddressPrefix(hrp::Error),
+    AddressEncoding(segwit::EncodeError),
 
     InvalidPhrase,
+    InvalidSlot(IdentitySlot),
+    Descriptor,
     InvalidPassword,
     InvalidName,
     DuplicateName,
@@ -27,7 +37,13 @@ pub enum IdentityError {
 impl fmt::Display for IdentityError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let message = match self {
-            Self::Phrase(_) | Self::InvalidPhrase => "invalid URMA identity recovery phrase",
+            Self::Phrase(_) | Self::InvalidPhrase => {
+                "invalid URMA recovery phrase: expected 12 English BIP39 words"
+            }
+            Self::InvalidSlot(_) => "identity slot has no valid key; choose another slot",
+            Self::Bip32(_) => "wallet key derivation failed",
+            Self::AddressPrefix(_) | Self::AddressEncoding(_) => "wallet address encoding failed",
+            Self::Descriptor => "output descriptor contains an unsupported character",
             Self::InvalidPassword => "vault password must contain 12..1024 UTF-8 bytes",
             Self::InvalidName => {
                 "identity name must be 1..64 UTF-8 bytes without control or edge whitespace"
@@ -59,6 +75,9 @@ impl std::error::Error for IdentityError {
             Self::Utf8(cause) => Some(cause),
             Self::Random(cause) => Some(cause),
             Self::Signing(cause) => Some(cause),
+            Self::Bip32(cause) => Some(cause),
+            Self::AddressPrefix(cause) => Some(cause),
+            Self::AddressEncoding(cause) => Some(cause),
             _ => None,
         }
     }
@@ -71,6 +90,24 @@ impl From<rand::Error> for IdentityError {
 impl From<bitcoin::secp256k1::Error> for IdentityError {
     fn from(error: bitcoin::secp256k1::Error) -> Self {
         Self::Signing(error)
+    }
+}
+
+impl From<bip32::Error> for IdentityError {
+    fn from(cause: bip32::Error) -> Self {
+        Self::Bip32(cause)
+    }
+}
+
+impl From<hrp::Error> for IdentityError {
+    fn from(cause: hrp::Error) -> Self {
+        Self::AddressPrefix(cause)
+    }
+}
+
+impl From<segwit::EncodeError> for IdentityError {
+    fn from(cause: segwit::EncodeError) -> Self {
+        Self::AddressEncoding(cause)
     }
 }
 

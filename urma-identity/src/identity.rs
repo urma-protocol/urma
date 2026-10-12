@@ -1,10 +1,9 @@
-use crate::{error::IdentityError, keys::AuthorIdentity};
+use crate::{bip85, error::IdentityError, keys::AuthorIdentity};
 use bitcoin::{
     PublicKey,
+    bip32::Xpriv,
     secp256k1::{Keypair, Message, Secp256k1, ecdsa, schnorr},
 };
-use hkdf::Hkdf;
-use sha2::Sha256;
 use zeroize::Zeroizing;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -37,28 +36,24 @@ impl Drop for TemporaryKeypair {
 }
 
 impl IdentityKey {
-    pub(crate) fn derive(entropy: &[u8; 32], slot: IdentitySlot) -> Result<Self, IdentityError> {
-        let hkdf = Hkdf::<Sha256>::new(Some(b"URMA/identity/v1"), entropy);
-        for counter in 0..256u32 {
-            let mut info = b"secp256k1".to_vec();
-            info.extend_from_slice(&u32::from(slot.index()).to_le_bytes());
-            info.extend_from_slice(&counter.to_le_bytes());
-            let mut key = Zeroizing::new([0; 32]);
-            hkdf.expand(&info, key.as_mut())?;
-            match Keypair::from_seckey_slice(&Secp256k1::new(), key.as_ref()) {
-                Ok(pair) => {
-                    let temporary = TemporaryKeypair(pair);
-                    drop(temporary);
-                    return Ok(Self(key));
-                }
-                Err(error) => {
-                    if error != bitcoin::secp256k1::Error::InvalidSecretKey {
-                        return Err(error.into());
-                    }
-                }
+    pub(crate) fn derive(master: &Xpriv, slot: IdentitySlot) -> Result<Self, IdentityError> {
+        let entropy = match bip85::hex(master, 32, u32::from(slot.index())) {
+            Ok(entropy) => entropy,
+            Err(IdentityError::Derivation) => return Err(IdentityError::InvalidSlot(slot)),
+            Err(other) => return Err(other),
+        };
+        let key = Zeroizing::new(<[u8; 32]>::try_from(entropy.as_slice())?);
+        match Keypair::from_seckey_slice(&Secp256k1::new(), key.as_ref()) {
+            Ok(pair) => {
+                let temporary = TemporaryKeypair(pair);
+                drop(temporary);
+                Ok(Self(key))
             }
+            Err(bitcoin::secp256k1::Error::InvalidSecretKey) => {
+                Err(IdentityError::InvalidSlot(slot))
+            }
+            Err(other) => Err(other.into()),
         }
-        Err(IdentityError::Derivation)
     }
     fn keypair(&self) -> TemporaryKeypair {
         match Keypair::from_seckey_slice(&Secp256k1::new(), self.0.as_ref()) {
@@ -68,6 +63,13 @@ impl IdentityKey {
     }
     pub fn author(&self) -> AuthorIdentity {
         AuthorIdentity(self.keypair().0.x_only_public_key().0)
+    }
+    pub fn sign_author_with_aux_rand(
+        &self,
+        message: Message,
+        aux: &[u8; 32],
+    ) -> schnorr::Signature {
+        Secp256k1::new().sign_schnorr_with_aux_rand(&message, &self.keypair().0, aux)
     }
 }
 impl IdentitySigner for IdentityKey {

@@ -20,18 +20,17 @@ pub struct UnlockedVault {
 
 impl EncryptedVault {
     pub const HEADER_BYTES: usize = 192;
-    pub const MAX_BYTES: usize = 4532;
+    pub const MIN_BYTES: usize = 232;
+    pub const MAX_BYTES: usize = 4516;
     pub const MAGIC: [u8; 8] = *b"URMAVLT\0";
-    pub const VERSION: u16 = 1;
+    pub const VERSION: u16 = 2;
+    const SUITE: [u8; 16] = [2, 0, 0, 0, 0, 0, 1, 0, 3, 0, 0, 0, 4, 0, 0, 0];
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, IdentityError> {
-        if !(248..=Self::MAX_BYTES).contains(&bytes.len()) {
+        if !(Self::MIN_BYTES..=Self::MAX_BYTES).contains(&bytes.len()) {
             return Err(IdentityError::InvalidVault);
         }
-        if bytes[..8] != Self::MAGIC
-            || bytes[8..12] != [1, 0, 0, 0]
-            || bytes[12..24] != [0, 0, 1, 0, 3, 0, 0, 0, 4, 0, 0, 0]
-        {
+        if bytes[..8] != Self::MAGIC || bytes[8..24] != Self::SUITE {
             return Err(IdentityError::UnsupportedVersion);
         }
         let size = u32::from_le_bytes(bytes[188..192].try_into()?);
@@ -55,7 +54,7 @@ impl EncryptedVault {
                 "password",
             ),
             UnlockCredential::RecoveryPhrase(phrase) => (
-                crypto::recovery_key(phrase.entropy(), &bytes[24..40])?,
+                crypto::recovery_key(phrase, &bytes[24..40])?,
                 &bytes[116..128],
                 &bytes[128..176],
                 "recovery",
@@ -66,7 +65,7 @@ impl EncryptedVault {
         let data_key = Zeroizing::new(raw_key.as_slice().try_into()?);
         let plaintext = crypto::decrypt(&data_key, &bytes[176..188], &bytes[..192], &bytes[192..])?;
         let keyring = payload::decode(&plaintext)?;
-        let recovery_key = crypto::recovery_key(&keyring.entropy, &bytes[24..40])?;
+        let recovery_key = crypto::recovery_key(&keyring.phrase, &bytes[24..40])?;
         let expected = crypto::encrypt(
             &recovery_key,
             &bytes[116..128],
@@ -91,16 +90,13 @@ impl UnlockedVault {
         rng: &mut R,
     ) -> Result<Self, IdentityError> {
         let mut header = Vec::from(EncryptedVault::MAGIC);
-        header.extend_from_slice(&[1, 0, 0, 0]);
-        header.extend_from_slice(&65536u32.to_le_bytes());
-        header.extend_from_slice(&3u32.to_le_bytes());
-        header.extend_from_slice(&4u32.to_le_bytes());
+        header.extend_from_slice(&EncryptedVault::SUITE);
         header.resize(56, 0);
         rng.try_fill_bytes(&mut header[24..56])?;
         let mut data_key = Zeroizing::new([0; 32]);
         rng.try_fill_bytes(data_key.as_mut())?;
         let password_key = crypto::password_key(password, &header[40..56])?;
-        let recovery_key = crypto::recovery_key(&keyring.entropy, &header[24..40])?;
+        let recovery_key = crypto::recovery_key(&keyring.phrase, &header[24..40])?;
         for (key, label) in [(&password_key, "password"), (&recovery_key, "recovery")] {
             let mut nonce = [0; 12];
             rng.try_fill_bytes(&mut nonce)?;
@@ -150,7 +146,7 @@ impl UnlockedVault {
 }
 fn slot_aad(base: &[u8], label: &str) -> Vec<u8> {
     let mut aad = base.to_vec();
-    aad.extend_from_slice(b"URMA/vault/v1/");
+    aad.extend_from_slice(b"URMA/vault/v2/");
     aad.extend_from_slice(label.as_bytes());
     aad
 }

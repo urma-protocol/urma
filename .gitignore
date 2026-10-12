@@ -21,8 +21,9 @@
 !/tests/vectors/**/*.reveal
 !/tests/vectors/**/*.urma
 !/tests/vectors/**/*.vault
-!/tests/vectors/identity-vault-v1/generate.py
+!/tests/vectors/identity-vault-v2/bip39-english.txt
 !/scripts/generate-vectors.py
+!/scripts/generate-identity-vault-v2-vectors.py
 !/scripts/generate-multipart-vectors.py
 !/scripts/generate-names-vectors.py
 !/scripts/generate-portal-vectors.py

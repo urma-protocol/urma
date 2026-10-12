@@ -3735,6 +3735,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "static_assertions",
+ "urma-chain",
  "zeroize",
 ]
 

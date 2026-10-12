@@ -1,4 +1,4 @@
-use crate::error::IdentityError;
+use crate::{error::IdentityError, phrase::IdentityPhrase};
 use aes_gcm::{
     Aes256Gcm, Nonce,
     aead::{AeadInPlace, KeyInit},
@@ -24,11 +24,13 @@ pub(super) fn password_key(
 }
 
 pub(super) fn recovery_key(
-    entropy: &[u8; 32],
+    phrase: &IdentityPhrase,
     id: &[u8],
 ) -> Result<Zeroizing<[u8; 32]>, IdentityError> {
+    let seed = phrase.seed()?;
     let mut key = Zeroizing::new([0; 32]);
-    Hkdf::<Sha256>::new(Some(id), entropy).expand(b"URMA/vault/v1/recovery-wrap", key.as_mut())?;
+    Hkdf::<Sha256>::new(Some(id), seed.as_ref())
+        .expand(b"URMA/vault/v2/recovery-wrap", key.as_mut())?;
     Ok(key)
 }
 

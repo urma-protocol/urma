@@ -1,0 +1,151 @@
+{
+  "format": "URMA Identity/Vault v2",
+  "warning": "PUBLIC TEST KEYS: NEVER FUND",
+  "phrase": "abandon amount liar amount expire adjust cage candy arch gather drum buyer",
+  "entropy": "000102030405060708090a0b0c0d0e0f",
+  "seed": "3779b041fab425e9c0fd55846b2a03e9a388fb12784067bd8ebdb464c2574a05bcc7a8eb54d7b2a2c8420ff60f630722ea5132d28605dbc996c8ca7d7a8311c0",
+  "master_xprv": "xprv9s21ZrQH143K2XojduRLQnU8D8K59KSBoMuQKGx8dW3NBitFDMkYGiJPwZdanjZonM7eXvcEbxwuGf3RdkCyyXjsbHSkwtLnJcsZ9US42Gd",
+  "fingerprint": "05d027a5",
+  "chains": [
+    {
+      "chain": "bitcoin-mainnet",
+      "path": "m/84'/0'/0'",
+      "hrp": "bc",
+      "account_xpub": "xpub6D98itZqvQ6btEVsyNqRPN7L9xajAqoquVVDrSK8SH3tezpuRi6bPibAXwmVt6cKv6nZmvLPmF79cMWRVSUhtT26aW2FwycQr5H99PnSJvV",
+      "descriptors": [
+        "wpkh([05d027a5/84h/0h/0h]xpub6D98itZqvQ6btEVsyNqRPN7L9xajAqoquVVDrSK8SH3tezpuRi6bPibAXwmVt6cKv6nZmvLPmF79cMWRVSUhtT26aW2FwycQr5H99PnSJvV/0/*)#r9hg0src",
+        "wpkh([05d027a5/84h/0h/0h]xpub6D98itZqvQ6btEVsyNqRPN7L9xajAqoquVVDrSK8SH3tezpuRi6bPibAXwmVt6cKv6nZmvLPmF79cMWRVSUhtT26aW2FwycQr5H99PnSJvV/1/*)#j3jfj9nq"
+      ],
+      "external_0": "bc1qdsdxmlnu5phmwaw9fy88vm57n552l9ztcg4rev",
+      "external_1": "bc1qn8e93hk0gdmwwq7xhmqy7k7pza8gunlftgyltp",
+      "internal_0": "bc1q3z8cjf2k4sq9erdxvjn25xvs6ee4e9lmxgvuth"
+    },
+    {
+      "chain": "litecoin-mainnet",
+      "path": "m/84'/2'/0'",
+      "hrp": "ltc",
+      "account_xpub": "xpub6C83rAqLB8hJ34wEkj4GY7gf3KgDUrgeFQc1mAAEiyYwZDcCuwjY5Eu9AyEgHuUoKtjJKyYLRJZpG3WW4zpxaowdSHSugdp2htiWVugG8jV",
+      "descriptors": [
+        "wpkh([05d027a5/84h/2h/0h]xpub6C83rAqLB8hJ34wEkj4GY7gf3KgDUrgeFQc1mAAEiyYwZDcCuwjY5Eu9AyEgHuUoKtjJKyYLRJZpG3WW4zpxaowdSHSugdp2htiWVugG8jV/0/*)#35qjrvjg",
+        "wpkh([05d027a5/84h/2h/0h]xpub6C83rAqLB8hJ34wEkj4GY7gf3KgDUrgeFQc1mAAEiyYwZDcCuwjY5Eu9AyEgHuUoKtjJKyYLRJZpG3WW4zpxaowdSHSugdp2htiWVugG8jV/1/*)#qq9n7ezs"
+      ],
+      "external_0": "ltc1q6hku5at2sfjdv3444y4r4a8slaa0q8zcpm0u5n",
+      "external_1": "ltc1q974nd2t9f8qsv9kaf7mrf9c3htukmrtpdwn5nw",
+      "internal_0": "ltc1qwud3p8kjvs6uc4q0654k5n40l94unq2rc8s0lv"
+    },
+    {
+      "chain": "bitcoin-testnet4",
+      "path": "m/84'/1'/0'",
+      "hrp": "tb",
+      "account_xpub": "tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj",
+      "descriptors": [
+        "wpkh([05d027a5/84h/1h/0h]tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj/0/*)#7nxu5gmw",
+        "wpkh([05d027a5/84h/1h/0h]tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj/1/*)#08rafatk"
+      ],
+      "external_0": "tb1q2cec2gekurckshaypcpwklk35ft5s0f9adk3rx",
+      "external_1": "tb1qhc4ld6087mmeh0uu9k7yy52nlv9gzkl4g0f97g",
+      "internal_0": "tb1q8udxc22esjj2gxmuj2u4cf9fw5ufsjxkz5a7fl"
+    },
+    {
+      "chain": "bitcoin-regtest",
+      "path": "m/84'/1'/0'",
+      "hrp": "bcrt",
+      "account_xpub": "tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj",
+      "descriptors": [
+        "wpkh([05d027a5/84h/1h/0h]tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj/0/*)#7nxu5gmw",
+        "wpkh([05d027a5/84h/1h/0h]tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj/1/*)#08rafatk"
+      ],
+      "external_0": "bcrt1q2cec2gekurckshaypcpwklk35ft5s0f9ly0u50",
+      "external_1": "bcrt1qhc4ld6087mmeh0uu9k7yy52nlv9gzkl42xsgfp",
+      "internal_0": "bcrt1q8udxc22esjj2gxmuj2u4cf9fw5ufsjxkqayn7k"
+    },
+    {
+      "chain": "litecoin-testnet",
+      "path": "m/84'/1'/0'",
+      "hrp": "tltc",
+      "account_xpub": "tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj",
+      "descriptors": [
+        "wpkh([05d027a5/84h/1h/0h]tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj/0/*)#7nxu5gmw",
+        "wpkh([05d027a5/84h/1h/0h]tpubDCfkLVrAEobJz792GR8ikDV3FtftjVNx7wMXJgvnTR3S7vHvT2f2fBx5kT9yPYgUTbzxzbMYfagUeepWTiYuSWtVWiCxWwQzdXnVhWyqmyj/1/*)#08rafatk"
+      ],
+      "external_0": "tltc1q2cec2gekurckshaypcpwklk35ft5s0f9y950n0",
+      "external_1": "tltc1qhc4ld6087mmeh0uu9k7yy52nlv9gzkl438tmwp",
+      "internal_0": "tltc1q8udxc22esjj2gxmuj2u4cf9fw5ufsjxkmulqek"
+    }
+  ],
+  "digest": "a0a1a2a3a4a5a6a7a8a9aaabacadaeafb0b1b2b3b4b5b6b7b8b9babbbcbdbebf",
+  "aux": "c0c1c2c3c4c5c6c7c8c9cacbcccdcecfd0d1d2d3d4d5d6d7d8d9dadbdcdddedf",
+  "slots": [
+    {
+      "slot": 0,
+      "path": "m/83696968'/128169'/32'/0'",
+      "k": "87756e47aeaec64c31aba399b73a1ef13a57230d3c5c141e0e455c10c5adf265",
+      "entropy": "70f91a950cf0359c9070d472f685609a9d62208a888918ce25c3ee0cdbf1e0af",
+      "scalar": "70f91a950cf0359c9070d472f685609a9d62208a888918ce25c3ee0cdbf1e0af",
+      "author": "980eff5f2b847fbd55d42e2cb2ec6a1ed78598d4f4f431320b2248bb127f05a8",
+      "signature": "b94994cc454b8532fdba9ae4d549fc728f96b95e7cd7c1ddc7788d0cd3494bab0f2151915a6e5df9017134a3d0557abb819b1c0e8eb40a1858092541e7e5ad6f"
+    },
+    {
+      "slot": 1,
+      "path": "m/83696968'/128169'/32'/1'",
+      "k": "945008ebff6ed448e03ce3c44a77809bde4cca438dcf17fc31d1dbafa85b25d3",
+      "entropy": "eb65fde0d47f640c3f19e5286d48b446c068ca63192985cd21f5a34f7ced7952",
+      "scalar": "eb65fde0d47f640c3f19e5286d48b446c068ca63192985cd21f5a34f7ced7952",
+      "author": "45c28418e2bdbc795087330ec40629f558a00b56882b4545df9d62ceb6f89add",
+      "signature": "4eb150de141641ccc7041ab9f89d5cfcd1b5c21b91dacdf59989b6395bd29a4b2502d43c7a87231a70ad77ce7cce7d4222848f10b00ac1b777125fce1ecebe57"
+    },
+    {
+      "slot": 63,
+      "path": "m/83696968'/128169'/32'/63'",
+      "k": "5422ad49f7c3b81960974b3534bd8b371df90cd14cc5a81a8f88c0a19aacc485",
+      "entropy": "1e42fb11703a4a3674abb9dff88a41f093396a6f9b274b9764e4d3ed686f3840",
+      "scalar": "1e42fb11703a4a3674abb9dff88a41f093396a6f9b274b9764e4d3ed686f3840",
+      "author": "c42594ed6beeecff44fa6a8b2bd854d5ed212e77e3677bced500237d9e605f38",
+      "signature": "3a4890576be0faaf23fcc8d6b675266e92662b220b5be654e6c8433b6dd0cf0a295f5b32ccd37c038ba939f5a7231c598cc65c7d6331582507112b4535c793c4"
+    }
+  ],
+  "invalid_phrases": {
+    "bad-checksum": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon",
+    "fifteen-words": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon address",
+    "twenty-four-words": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon art",
+    "eleven-words": "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon"
+  },
+  "vault": {
+    "password": "URMA public test password 2026",
+    "password_key": "f34790ad5316bd95d79692a4d469e52357e947b165934991969887a0a2fce982",
+    "recovery_key": "745832c75c7eb4a9638eddb6a444c2c4d8cbd470f286467121e72316d3bc5eaa",
+    "data_key": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "plaintext": "02000100000102030405060708090a0b0c0d0e0f0000046d61696e0100087265706f72746572",
+    "active_slot": 1,
+    "names": [
+      "main",
+      "reporter"
+    ],
+    "file": "valid.vault"
+  },
+  "negative": {
+    "version-1": "parse",
+    "unfamiliar-kdf": "parse",
+    "trailing-file": "parse",
+    "bad-tag": "unlock",
+    "entropy-24-words": "unlock",
+    "trailing-payload": "unlock",
+    "seed-wrap-mismatch": "unlock",
+    "active-out-of-range": "unlock",
+    "duplicate-slot": "unlock",
+    "duplicate-name": "unlock"
+  },
+  "sha256": {
+    "active-out-of-range.vault": "eee9b8a9052f1f7cd2bc1721d08f2c891cab28a8f7d2c5d56f829dfa89c670de",
+    "bad-tag.vault": "e9720df12898748f627d657f6515a26181e586f8d1c64ab106f1507461c71339",
+    "duplicate-name.vault": "846bfac091f3955cc230849e114965978a77a8724850e784761cf63de7c719d5",
+    "duplicate-slot.vault": "18ad959337cb2986e08eb4523a8061cad1f449b4c276c12eb02da23dcd6b7336",
+    "entropy-24-words.vault": "68b42d676ce9f1a002986b774187d9cbcc8462ba83612e7ffe8aa375c12f9563",
+    "seed-wrap-mismatch.vault": "4c6d98bc79e281bd5fc8e7447c8f819c8006104f0ad6d75553364731aacfefdf",
+    "trailing-file.vault": "fa9282d00872c28b3621e9cc73af8ee9ce706d396c48dbc5b90f978e8747bc7d",
+    "trailing-payload.vault": "ad92d81e09bff1ed813e2f2a3d3e9f1f0a1e5d1b2c60640dd3422a14d0411e2e",
+    "unfamiliar-kdf.vault": "f842f5f4ff135c66005b6e3046672868edf98dd895574164d6699fb5e0a6ea5a",
+    "valid.vault": "c0dc1745fb698b86b691e7b2dad6ca14c20f01bb7bb2bd5daa58545fc9fc09e8",
+    "version-1.vault": "e2a53525f16564762706986349e4fab565486ed07f2f2dd1a32c3fb1ffbf67d1"
+  }
+}

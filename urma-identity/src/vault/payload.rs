@@ -8,7 +8,7 @@ pub(super) fn encode(keyring: &Keyring) -> Result<Zeroizing<Vec<u8>>, IdentityEr
     let count = u16::try_from(keyring.entries.len())?;
     bytes.extend_from_slice(&count.to_le_bytes());
     bytes.extend_from_slice(&keyring.active.index().to_le_bytes());
-    bytes.extend_from_slice(keyring.entropy.as_ref());
+    bytes.extend_from_slice(keyring.phrase.entropy());
     for entry in &keyring.entries {
         bytes.extend_from_slice(&entry.slot.index().to_le_bytes());
         bytes.push(u8::try_from(entry.name.len())?);
@@ -18,7 +18,7 @@ pub(super) fn encode(keyring: &Keyring) -> Result<Zeroizing<Vec<u8>>, IdentityEr
 }
 
 pub(super) fn decode(bytes: &[u8]) -> Result<Keyring, IdentityError> {
-    if bytes.len() < 40 {
+    if bytes.len() < 20 {
         return Err(IdentityError::InvalidVault);
     }
     let count = u16::from_le_bytes([bytes[0], bytes[1]]);
@@ -26,11 +26,11 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Keyring, IdentityError> {
     if count == 0 || count > IdentitySlot::CAPACITY || active.index() >= count {
         return Err(IdentityError::InvalidVault);
     }
-    let entropy = bytes[4..36].try_into()?;
+    let entropy = bytes[4..20].try_into()?;
     let phrase = IdentityPhrase::from_entropy(Zeroizing::new(entropy));
     let mut keyring = Keyring::create(&phrase, "pending")?;
     keyring.entries.clear();
-    let mut offset = 36;
+    let mut offset = 20;
     for index in 0..count {
         let prefix = bytes
             .get(offset..offset + 3)
