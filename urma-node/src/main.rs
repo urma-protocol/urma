@@ -50,6 +50,9 @@ enum Command {
         /// Explicit IP/TCP/p2p routing hint; saved in this archive's peer book.
         #[arg(long, requires = "peer_key")]
         urma_peer: Vec<libp2p::Multiaddr>,
+        /// Soft reclaimable cache target (not a SQLite/WAL or total archive quota).
+        #[arg(long, default_value_t = urma_node::cache::DEFAULT_CACHE_BYTES, value_parser = clap::value_parser!(u64).range(..=i64::MAX as u64))]
+        cache_bytes: u64,
         /// Maximum payload per background object attempt (not a protocol limit).
         #[arg(long, default_value_t = 64 * 1024 * 1024, value_parser = clap::value_parser!(u64).range(1..))]
         max_object_bytes: u64,
@@ -107,6 +110,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             listen,
             token_file,
             max_object_bytes,
+            cache_bytes,
             max_object_nodes,
             object_timeout_seconds,
             peer_key,
@@ -117,7 +121,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             let token = read_token(&token_file)?;
             let retain =
                 synchronize && engine.status()?.retention == urma_node::model::Retention::Unpruned;
-            let mut service = Service::bind(listen, token, engine.clone())?;
+            let mut service =
+                Service::bind(listen, token, engine.clone())?.with_cache_limit(cache_bytes)?;
             if retain {
                 let scratch = args.data.join("scratch");
                 let mut builder = std::fs::DirBuilder::new();

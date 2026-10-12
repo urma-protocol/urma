@@ -194,6 +194,33 @@ impl Engine {
         self.archive()?.prune_cache()
     }
 
+    /// Enforce a soft logical-byte target on unpinned multipart cache only.
+    /// Deletes at most 128 child placements and 512 currently unreferenced raw
+    /// transactions per call. SQL accounting work and elapsed time are not
+    /// bounded by these row limits. No source calls or scan progress occur.
+    /// Existing pins and individual/root evidence survive; in-flight unpinned
+    /// recovery may lose cache and must refuse incomplete completion.
+    pub fn maintain_cache(
+        &self,
+        limit_bytes: u64,
+        cancelled: &AtomicBool,
+    ) -> Result<crate::cache::CacheMaintenance, Error> {
+        if limit_bytes > i64::MAX as u64 {
+            return Err(Error::Invalid("cache limit exceeds storage range".into()));
+        }
+        let check = || {
+            if cancelled.load(Ordering::Acquire) {
+                Err(Error::Busy("cache maintenance cancelled".into()))
+            } else {
+                Ok(())
+            }
+        };
+        check()?;
+        let mut archive = self.archive()?;
+        check()?;
+        archive.maintain_cache(limit_bytes)
+    }
+
     /// One fair, bounded unpruned maintenance step. Scan coverage is never
     /// advanced by object recovery. Failures advance the cursor, so the next
     /// round can attempt another root. Pruned mode performs no acquisition.

@@ -291,3 +291,43 @@ It still depends on the URMA chain/proof and Wire data types. The Node `Client`
 wrapper preserves its error API and implements the Node-local record-source
 interface. Both clients treat index pages as local operator data; parsing is not
 independent verification of author signatures or chain inclusion.
+
+### Soft multipart cache target
+
+Background `run(true)` rounds also maintain the pruned multipart cache, after
+scan/dependency, Names and object work, even when another stage fails. The
+operational `--cache-bytes` target defaults to 128 MiB; zero requests eventual
+drainage over successive steps. It does not change persisted archive identity.
+`run(false)` remains worker-free. Embedded/offline users can call
+`Engine::maintain_cache(limit_bytes, cancelled)` explicitly.
+
+The metric counts unpinned LeafManifest/DataPart `record` and `proof` bytes per
+placement, plus raw transactions once per WTXID when no protected record or
+unresolved dependency needs them. Already unreferenced raw backlog is included.
+All individual records, roots, pinned exact members (including orphans), and
+raw evidence referenced by retained records/dependencies remain protected.
+Unpruned mode reports enforcement disabled and deletes nothing.
+
+Each atomic step deletes at most 128 child placements in block-hash/position
+order, then at most 512 currently unreferenced raw rows in WTXID order. This is
+not LRU or a minimal eviction set. Shared raw survives until every remaining
+record reference is gone; dependencies protect all witness variants of their
+parent TXID. Scan coverage, locators, object identities/member hashes, pins and
+Names projections survive. Mutation, including raw-only reclamation, writes an
+event so prior paged snapshots become stale.
+
+This is a soft target for reclaimable logical evidence, not total stored bytes,
+SQLite/WAL size, RSS, or instantaneous admission capacity. Protected data may
+grow beyond the target. SQL accounting work and duration are not bounded by the
+deleted-row caps, and entered SQL is not preempted. Cancellation is checked
+before and after acquiring the archive mutex. Recovery not yet atomically pinned
+may lose cache under pressure and must refuse incomplete completion; its success
+is not guaranteed under eviction. Existing pins remain protected.
+
+HTTP status exposes `cache_limit_bytes`, independent `last_cache_error`, and
+`last_cache_maintenance`: the last successful maintenance receipt, with before
+and remaining bytes, actual deletion counts, enabled mode, and `over_budget`.
+These are historical measurements, not live usage after later admission/pinning.
+A failed step preserves the previous successful receipt and reports its error;
+its database mutations roll back. Manual `cache/prune` retains its existing
+all-unprotected-children behavior.

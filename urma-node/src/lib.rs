@@ -3,6 +3,7 @@
 //! or running the standalone service.
 
 pub mod archive;
+pub mod cache;
 pub mod client;
 pub mod engine;
 mod error;

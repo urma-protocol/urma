@@ -15,6 +15,12 @@ use std::{
     time::Duration,
 };
 
+#[derive(Default, Clone)]
+struct CacheStatus {
+    receipt: Option<crate::cache::CacheMaintenance>,
+    error: Option<String>,
+}
+
 pub struct Service {
     listener: TcpListener,
     token: String,
@@ -23,6 +29,8 @@ pub struct Service {
     sync_error: Arc<Mutex<Option<String>>>,
     names_error: Arc<Mutex<Option<String>>>,
     retention_error: Arc<Mutex<Option<String>>>,
+    cache_status: Arc<Mutex<CacheStatus>>,
+    cache_bytes: u64,
     retention: Option<(PathBuf, urma_runtime::multipart::RecoveryLimits)>,
     sources: Vec<Arc<dyn crate::retrieval::RecordSource + Send + Sync>>,
 }
@@ -47,6 +55,8 @@ impl Service {
             sync_error: Arc::new(Mutex::new(None)),
             names_error: Arc::new(Mutex::new(None)),
             retention_error: Arc::new(Mutex::new(None)),
+            cache_status: Arc::new(Mutex::new(CacheStatus::default())),
+            cache_bytes: crate::cache::DEFAULT_CACHE_BYTES,
             retention: None,
             sources: Vec::new(),
         })
@@ -66,6 +76,17 @@ impl Service {
             return Err(Error::Invalid("too many configured record sources".into()));
         }
         self.sources = sources;
+        Ok(self)
+    }
+
+    /// Operational soft target, not persisted archive identity or a disk quota.
+    /// Only run(true) schedules enforcement; run(false) remains worker-free.
+    /// Zero requests eventual drainage of unprotected cache over bounded steps.
+    pub fn with_cache_limit(mut self, bytes: u64) -> Result<Self, Error> {
+        if bytes > i64::MAX as u64 {
+            return Err(Error::Invalid("cache limit exceeds storage range".into()));
+        }
+        self.cache_bytes = bytes;
         Ok(self)
     }
 
@@ -132,6 +153,22 @@ impl Service {
                                     .retain_next_object(&sources, *limits, scratch, &self.stop);
                                 if let Ok(mut error) = self.retention_error.lock() {
                                     *error = result.err().map(|e| e.to_string());
+                                }
+                            }
+                        }
+                        // Independent local maintenance also runs after failed
+                        // acquisition/projection/retention. It never opens a source.
+                        if !self.stop.load(Ordering::Acquire) {
+                            let result = self.engine.maintain_cache(self.cache_bytes, &self.stop);
+                            if let Ok(mut status) = self.cache_status.lock() {
+                                match result {
+                                    Ok(receipt) => {
+                                        status.receipt = Some(receipt);
+                                        status.error = None;
+                                    }
+                                    Err(cause) => {
+                                        status.error = Some(cause.to_string());
+                                    }
                                 }
                             }
                         }
@@ -373,11 +410,18 @@ impl Service {
                     .lock()
                     .map_err(|_| Error::Invalid("Names status poisoned".into()))?
                     .clone();
+                let cache_status = self
+                    .cache_status
+                    .lock()
+                    .map_err(|_| Error::Invalid("cache status poisoned".into()))?
+                    .clone();
                 respond(
                     stream,
                     200,
                     json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
                         "last_names_error":names_error,
+                        "cache_limit_bytes":self.cache_bytes,"last_cache_error":cache_status.error,
+                        "last_cache_maintenance":cache_status.receipt,
                         "retention_configured":self.retention.is_some(),
                         "record_sources_configured":self.sources.len(),
                         "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune","wire-index","names-index"]}),
