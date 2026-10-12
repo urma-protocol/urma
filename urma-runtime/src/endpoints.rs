@@ -79,6 +79,12 @@ impl PublicEndpoint {
 
 pub fn defaults(chain: Chain) -> Vec<PublicEndpoint> {
     match chain {
+        Chain::BitcoinMainnet => vec![
+            PublicEndpoint::Electrum("ssl://electrum.blockstream.info:50002".into()),
+            PublicEndpoint::Electrum("ssl://bitcoin.lu.ke:50002".into()),
+            PublicEndpoint::Esplora("https://blockstream.info/api".into()),
+            PublicEndpoint::Esplora("https://mempool.space/api".into()),
+        ],
         Chain::LitecoinMainnet => vec![
             PublicEndpoint::Electrum("ssl://electrum.ltc.xurious.com:50002".into()),
             PublicEndpoint::Electrum("ssl://electrum-ltc.bysh.me:50002".into()),

@@ -7,7 +7,7 @@ use urma_runtime::{node::Node, quote::Quote};
 pub(crate) fn currency(chain: Chain) -> &'static str {
     match chain {
         Chain::LitecoinMainnet | Chain::LitecoinTestnet => "LTC",
-        Chain::BitcoinTestnet4 | Chain::BitcoinRegtest => "BTC",
+        Chain::BitcoinMainnet | Chain::BitcoinTestnet4 | Chain::BitcoinRegtest => "BTC",
     }
 }
 

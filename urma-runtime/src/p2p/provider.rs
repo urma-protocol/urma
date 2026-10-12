@@ -243,7 +243,7 @@ impl P2pProvider {
         self.refresh_if_stale()?;
         let headers = locked(&self.shared.headers, "headers");
         let name = match self.chain {
-            Chain::LitecoinMainnet => "main",
+            Chain::BitcoinMainnet | Chain::LitecoinMainnet => "main",
             Chain::LitecoinTestnet | Chain::BitcoinTestnet4 => "test",
             Chain::BitcoinRegtest => "regtest",
         };

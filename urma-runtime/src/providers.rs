@@ -56,7 +56,7 @@ pub(crate) fn light_clients(chain: Chain, cache_dir: &Path) -> Result<LightClien
         Chain::LitecoinMainnet | Chain::LitecoinTestnet => Ok(LightClient::P2p(Arc::new(
             P2pProvider::new(chain, cache_dir)?,
         ))),
-        Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => {
+        Chain::BitcoinMainnet | Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => {
             tracing::debug!(
                 ?chain,
                 "no light client provider for this chain; reads start at public providers"

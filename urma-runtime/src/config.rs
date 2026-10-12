@@ -204,6 +204,6 @@ pub fn publication_return(chain: urma_chain::observation::Chain) -> u64 {
     use urma_chain::observation::Chain;
     match chain {
         Chain::LitecoinTestnet | Chain::LitecoinMainnet => 110 * LITECOIN_DUST_RELAY_FEE / 1000,
-        Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => 1000,
+        Chain::BitcoinMainnet | Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => 1000,
     }
 }

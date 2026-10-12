@@ -10,6 +10,7 @@ use urma_identity::identity::IdentitySigner;
 
 pub fn destination_script(address: &str, chain: Chain) -> Result<ScriptBuf, WalletError> {
     match chain {
+        Chain::BitcoinMainnet => bitcoin_script(address, Network::Bitcoin),
         Chain::BitcoinRegtest => bitcoin_script(address, Network::Regtest),
         Chain::BitcoinTestnet4 => bitcoin_script(address, Network::Testnet4),
         Chain::LitecoinMainnet => litecoin_script(address, "ltc"),
@@ -40,6 +41,7 @@ pub fn receive_address(signer: &impl IdentitySigner, chain: Chain) -> Result<Str
     let public = CompressedPublicKey::try_from(signer.public_key())
         .map_err(|cause| WalletError::Protocol(cause.into()))?;
     match chain {
+        Chain::BitcoinMainnet => Ok(Address::p2wpkh(&public, Network::Bitcoin).to_string()),
         Chain::BitcoinRegtest => Ok(Address::p2wpkh(&public, Network::Regtest).to_string()),
         Chain::BitcoinTestnet4 => Ok(Address::p2wpkh(&public, Network::Testnet4).to_string()),
         Chain::LitecoinMainnet => segwit::encode(

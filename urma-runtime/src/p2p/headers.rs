@@ -36,9 +36,11 @@ pub fn checkpoint(chain: Chain) -> Result<&'static Checkpoint, Error> {
     match chain {
         Chain::LitecoinMainnet => Ok(&LITECOIN_MAINNET_CHECKPOINT),
         Chain::LitecoinTestnet => Ok(&LITECOIN_TESTNET_CHECKPOINT),
-        Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => Err(Error::Unsupported(
-            "the peer-to-peer light client serves Litecoin networks only".into(),
-        )),
+        Chain::BitcoinMainnet | Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => {
+            Err(Error::Unsupported(
+                "the peer-to-peer light client serves Litecoin networks only".into(),
+            ))
+        }
     }
 }
 
