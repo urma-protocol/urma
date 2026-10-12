@@ -41,6 +41,11 @@ pub(crate) fn with_root(mut proof: Value, root: RootEvidence<'_>) -> Value {
         "payload_length": publication.payload_length,
         "fetched_at": {"height": publication.tip_height, "block_hash": publication.tip_hash},
     });
+    if publication.source.is_some() {
+        proof["root"]["fetched_at"] = Value::Null;
+        proof["root"]["source"] = json!(publication.source);
+        proof["root"]["inclusion"] = json!("not_checked");
+    }
     proof["declared"] = json!({
         "entry": publication.entry,
         "files": publication.files,

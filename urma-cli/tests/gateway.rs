@@ -388,8 +388,9 @@ fn stored_publication() -> StoredPublication {
             sha256: PAYLOAD.into(),
             length: 4096,
         }],
-        tip_height: 4898690,
-        tip_hash: BLOCK.into(),
+        source: None,
+        tip_height: Some(4898690),
+        tip_hash: Some(BLOCK.into()),
     }
 }
 
@@ -444,6 +445,23 @@ fn proofs_follow_urma_portal_proof_1() -> Result<()> {
         "pinned": [{"path": "media/film.mp4", "mime": "video/mp4", "root_txid": ROSINT, "sha256": PAYLOAD, "length": 4096}],
     });
     assert_eq!(rooted, expected);
+    let mut operator = publication;
+    operator.format = urma_web::store::Store::OPERATOR_FORMAT.into();
+    operator.source = Some(urma_web::store::AcquisitionSource::LocalNodeOperator);
+    operator.tip_height = None;
+    operator.tip_hash = None;
+    let operator_proof = with_root(
+        evidence(&portal, resolver, &tip),
+        RootEvidence {
+            publication: &operator,
+            commit_hex: "02aa".into(),
+            reveal_hex: "02bb".into(),
+        },
+    );
+    expected["root"]["fetched_at"] = Value::Null;
+    expected["root"]["source"] = json!({"kind": "local-node-operator"});
+    expected["root"]["inclusion"] = json!("not_checked");
+    assert_eq!(operator_proof, expected);
     assert_eq!(
         evidence(&local()?, json!({}), &tip)["portal"]["domain"],
         "localhost:8080"

@@ -39,6 +39,7 @@ mod object_archive;
 mod provider_warnings;
 mod public_cli;
 mod wallet_cli;
+mod web_archive;
 mod web_cli;
 mod wire_live_cli;
 use clap::{Parser, Subcommand};

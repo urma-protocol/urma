@@ -352,9 +352,17 @@ fn publish(args: PublishArgs) -> Result<Value, Error> {
 }
 
 fn fetch(args: FetchArgs) -> Result<Value, Error> {
-    let node = args.node.connect()?;
     let store = config::web_store(StoreChoice(args.store))?;
-    let summary = store_publication(&node, args.root, &store, args.max_bytes)?;
+    let summary = if let Some(prepared) =
+        crate::web_archive::prepare(args.node.chain()?, args.root, args.max_bytes)?
+    {
+        let summary = prepared.publish(&store)?;
+        progress("Web content and signatures verified from the local operator archive; chain inclusion not checked.".into());
+        summary
+    } else {
+        let node = args.node.connect()?;
+        store_publication(&node, args.root, &store, args.max_bytes)?
+    };
     Ok(json!({
         "status": "stored",
         "store": store,
@@ -432,8 +440,9 @@ fn store_proofs(node: &Node, store: &Store, root: Txid) -> Result<String, Error>
         network: network.clone(),
         root: root.to_string(),
         commit: commit_txid,
-        tip_height: tip.0,
-        tip_hash: tip.1,
+        source: None,
+        tip_height: Some(tip.0),
+        tip_hash: Some(tip.1),
     }))?;
     Ok(network)
 }

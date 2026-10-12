@@ -225,3 +225,33 @@ responses with a resolved snapshot also include `URMA-Names-Source`
 and `URMA-Names-Complete-To-Tip`; these are provenance labels, not ownership or
 chain proofs. Existing root evidence verification is unchanged. Gateway startup
 still requires explicit network registries and does not start a Node daemon.
+
+### Optional local Web recovery
+
+`web fetch` also tries the explicit `archive` configuration before opening a
+chain connection. It verifies the root, every multipart child and every declared
+pin, then checks the Web package and its resource limits in a private store.
+Content and author signatures are verified; package paths and operator receipts
+do not establish chain inclusion. The shared acquisition budget covers the root
+and all pins: at most 32,768 record requests, 512 MiB of cumulative raw transaction
+pairs, and 256 MiB of recovered payload lengths plus embedded file copies. These
+are byte accounting limits, not RSS limits. The single 30-second deadline is
+cooperative across acquisition, validation and publication; entered HTTP,
+cryptographic and filesystem operations are not preempted.
+
+A refused acquisition is discarded before the existing autonomous recovery is
+attempted. After private validation, live cache entries are reused only when
+identical; conflicting entries are refused. The publication pointer is written
+last. Errors after live publication begins do not trigger fallback; they may
+leave immutable cache files, but do not replace the old pointer prematurely.
+
+Operator acquisitions use local store format `URMA-WEB-STORE-3`, with
+`source: {"kind":"local-node-operator"}` and no `tip_height` or `tip_hash`.
+Autonomous recovery retains format 2 and its existing observation metadata.
+Old readers refuse format 3. This preserves legacy JSON, while the Rust store
+API now represents optional metadata explicitly. Offline Web verification still
+retains and verifies the root pair and package, plus pinned payload hashes; it
+is not a retained proof graph for every multipart child. Gateway root evidence
+labels operator acquisition with `inclusion: "not_checked"` and `fetched_at: null`;
+rootless responses remain rootless. Gateway and approval acquisition paths remain
+autonomous. This local store metadata does not change the signed URMAWEB1 format.
