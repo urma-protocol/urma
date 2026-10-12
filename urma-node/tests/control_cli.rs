@@ -17,10 +17,18 @@ use std::{
     thread,
     time::{Duration, Instant},
 };
+use urma_names::state::{Outcome, Resolution, Verdict};
+use urma_node::{
+    model::ChainPoint,
+    names::{NamesResolution, NamesStatus, NamesStep},
+};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const ROOT: &str = "0707070707070707070707070707070707070707070707070707070707070707";
 const OTHER: &str = "0808080808080808080808080808080808080808080808080808080808080808";
+const PROJECTED_HASH: &str = "0909090909090909090909090909090909090909090909090909090909090909";
+const TIP_HASH: &str = "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a";
+const MAX_HEIGHT: &str = "9223372036854775807";
 const PROCESS_TIMEOUT: Duration = Duration::from_secs(8);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(3);
 const HTTP_TIMEOUT: Duration = Duration::from_secs(3);
@@ -293,6 +301,53 @@ fn object() -> Value {
         "members_total": 3, "members_local": 1, "members_selected": 3, "pinned": false})
 }
 
+// Coherent operator DTOs for CLI transport/JSON tests, not chain placements,
+// signed observations or evidence of real Names ownership/scan coverage.
+fn names_status(height: u64) -> NamesStatus {
+    let point = ChainPoint {
+        height,
+        hash: OTHER.parse().unwrap(),
+    };
+    NamesStatus {
+        genesis: ROOT.parse().unwrap(),
+        genesis_block: point,
+        projected: point,
+        generation: 9,
+        selected_tip: Some(point),
+        complete_to_tip: true,
+    }
+}
+
+fn names_step() -> NamesStep {
+    let mut status = names_status(100);
+    status.projected = ChainPoint {
+        height: 102,
+        hash: PROJECTED_HASH.parse().unwrap(),
+    };
+    status.selected_tip = Some(ChainPoint {
+        height: 103,
+        hash: TIP_HASH.parse().unwrap(),
+    });
+    status.complete_to_tip = false;
+    NamesStep {
+        applied: Some(status.projected),
+        status,
+        rolled_back: 0,
+        outcomes: vec![Outcome {
+            txid: OTHER.parse().unwrap(),
+            position: 1,
+            verdict: Verdict::Pending,
+        }],
+    }
+}
+
+fn names_resolution() -> NamesResolution {
+    NamesResolution {
+        status: names_status(100),
+        resolution: Resolution::Unbound,
+    }
+}
+
 #[test]
 fn status_and_object_emit_exact_json_and_404_emits_explicit_null() {
     let fixture = Fixture::new(format!("{TOKEN}\n").as_bytes());
@@ -317,6 +372,34 @@ fn status_and_object_emit_exact_json_and_404_emits_explicit_null() {
             404,
             json!({"error":"unknown locally"}),
             Value::Null,
+        ),
+        (
+            vec!["names-status", ROOT],
+            format!("/v1/names/{ROOT}"),
+            200,
+            serde_json::to_value(names_status(100)).unwrap(),
+            serde_json::to_value(names_status(100)).unwrap(),
+        ),
+        (
+            vec!["names-status", ROOT],
+            format!("/v1/names/{ROOT}"),
+            404,
+            json!({"error":"unregistered locally"}),
+            Value::Null,
+        ),
+        (
+            vec!["names-resolve", ROOT, "atelier"],
+            format!("/v1/names/{ROOT}/resolve/atelier"),
+            200,
+            serde_json::to_value(names_resolution()).unwrap(),
+            serde_json::to_value(names_resolution()).unwrap(),
+        ),
+        (
+            vec!["names-resolve", ROOT, "a-1"],
+            format!("/v1/names/{ROOT}/resolve/a-1"),
+            200,
+            serde_json::to_value(names_resolution()).unwrap(),
+            serde_json::to_value(names_resolution()).unwrap(),
         ),
     ] {
         let mock = Mock::new();
@@ -356,6 +439,26 @@ fn pin_unpin_and_prune_emit_typed_receipts_without_implicit_readback() {
             "/v1/cache/prune".into(),
             json!({"records_removed":0}),
         ),
+        (
+            vec!["names-register", ROOT, "100", OTHER],
+            format!("/v1/names/{ROOT}/register?height=100&hash={OTHER}"),
+            serde_json::to_value(names_status(100)).unwrap(),
+        ),
+        (
+            vec!["names-register", ROOT, "0", OTHER],
+            format!("/v1/names/{ROOT}/register?height=0&hash={OTHER}"),
+            serde_json::to_value(names_status(0)).unwrap(),
+        ),
+        (
+            vec!["names-register", ROOT, MAX_HEIGHT, OTHER],
+            format!("/v1/names/{ROOT}/register?height={MAX_HEIGHT}&hash={OTHER}"),
+            serde_json::to_value(names_status(i64::MAX as u64)).unwrap(),
+        ),
+        (
+            vec!["names-step", ROOT],
+            format!("/v1/names/{ROOT}/step"),
+            serde_json::to_value(names_step()).unwrap(),
+        ),
     ] {
         let mock = Mock::new();
         let child = fixture.spawn(mock.address, &args);
@@ -374,18 +477,44 @@ fn pin_unpin_and_prune_emit_typed_receipts_without_implicit_readback() {
 fn authentication_conflict_incomplete_and_internal_failures_are_nonzero_without_retry() {
     let fixture = Fixture::new(TOKEN.as_bytes());
     for code in [400, 401, 409, 422, 500] {
-        let mock = Mock::new();
-        let child = fixture.spawn(mock.address, &["pin", ROOT]);
-        mock.respond(
-            "POST",
-            &format!("/v1/objects/{ROOT}/pin"),
-            &response(code, br#"{"error":"refused"}"#),
-        );
-        let output = child.finish();
-        failure(&output);
-        assert!(String::from_utf8_lossy(&output.stderr).contains(&format!("HTTP {code}")));
-        mock.assert_no_connection();
+        for (args, method, path) in [
+            (vec!["pin", ROOT], "POST", format!("/v1/objects/{ROOT}/pin")),
+            (
+                vec!["names-status", ROOT],
+                "GET",
+                format!("/v1/names/{ROOT}"),
+            ),
+            (
+                vec!["names-register", ROOT, "100", OTHER],
+                "POST",
+                format!("/v1/names/{ROOT}/register?height=100&hash={OTHER}"),
+            ),
+            (
+                vec!["names-step", ROOT],
+                "POST",
+                format!("/v1/names/{ROOT}/step"),
+            ),
+            (
+                vec!["names-resolve", ROOT, "atelier"],
+                "GET",
+                format!("/v1/names/{ROOT}/resolve/atelier"),
+            ),
+        ] {
+            let mock = Mock::new();
+            let child = fixture.spawn(mock.address, &args);
+            mock.respond(method, &path, &response(code, br#"{"error":"refused"}"#));
+            let output = child.finish();
+            failure(&output);
+            let message = String::from_utf8_lossy(&output.stderr);
+            if code == 409 && args[0].starts_with("names-") {
+                assert!(message.contains("busy"));
+            } else {
+                assert!(message.contains(&format!("HTTP {code}")));
+            }
+            mock.assert_no_connection();
+        }
     }
+    fixture.assert_only_owned_files();
 }
 
 #[test]
@@ -393,6 +522,12 @@ fn malformed_receipts_and_truncated_response_fail_without_retry_or_token_logs() 
     let fixture = Fixture::new(TOKEN.as_bytes());
     let mut lost_response = response(200, br#"{"records_removed":1}"#);
     let _ = lost_response.pop(); // Lost reply after possible mutation.
+    let mut lost_register = response(200, &serde_json::to_vec(&names_status(100)).unwrap());
+    let _ = lost_register.pop();
+    let mut lost_step = response(200, &serde_json::to_vec(&names_step()).unwrap());
+    let _ = lost_step.pop();
+    let mut reflected_names = serde_json::to_value(names_status(100)).unwrap();
+    reflected_names["generation"] = json!(TOKEN);
     for (args, path, raw) in [
         (
             vec!["pin", ROOT],
@@ -425,17 +560,44 @@ fn malformed_receipts_and_truncated_response_fail_without_retry_or_token_logs() 
         ),
         (vec!["status"], "/v1/status".into(), response(200, b"{")),
         (vec!["prune"], "/v1/cache/prune".into(), lost_response),
+        (
+            vec!["names-status", ROOT],
+            format!("/v1/names/{ROOT}"),
+            response(200, &serde_json::to_vec(&reflected_names).unwrap()),
+        ),
+        (
+            vec!["names-register", ROOT, "100", OTHER],
+            format!("/v1/names/{ROOT}/register?height=100&hash={OTHER}"),
+            lost_register,
+        ),
+        (
+            vec!["names-step", ROOT],
+            format!("/v1/names/{ROOT}/step"),
+            lost_step,
+        ),
     ] {
         let mock = Mock::new();
         let child = fixture.spawn(mock.address, &args);
         mock.respond(
-            if args[0] == "status" { "GET" } else { "POST" },
+            if matches!(args[0], "status" | "names-status") {
+                "GET"
+            } else {
+                "POST"
+            },
             &path,
             &raw,
         );
-        failure(&child.finish());
+        let output = child.finish();
+        failure(&output);
+        if raw
+            .windows(TOKEN.len())
+            .any(|bytes| bytes == TOKEN.as_bytes())
+        {
+            assert!(String::from_utf8_lossy(&output.stderr).contains("[redacted]"));
+        }
         mock.assert_no_connection();
     }
+    fixture.assert_only_owned_files();
 }
 
 #[test]
@@ -443,11 +605,56 @@ fn invalid_root_and_token_files_are_refused_before_any_http_connection() {
     let mock = Mock::new();
     let fixture = Fixture::new(TOKEN.as_bytes());
     for args in [
-        ["object", "bad-root"],
-        ["pin", "bad-root"],
-        ["unpin", "bad-root"],
+        vec!["object", "bad-root"],
+        vec!["pin", "bad-root"],
+        vec!["unpin", "bad-root"],
+        vec!["names-status", "bad-genesis"],
+        vec!["names-register", "bad-genesis", "100", OTHER],
+        vec!["names-step", "bad-genesis"],
+        vec!["names-resolve", "bad-genesis", "atelier"],
+        vec!["names-register", ROOT, "100", "bad-hash"],
+        vec!["names-status"],
+        vec!["names-register", ROOT],
+        vec!["names-register", ROOT, "100"],
+        vec!["names-step"],
+        vec!["names-resolve", ROOT],
     ] {
         failure(&fixture.spawn(mock.address, &args).finish());
+        mock.assert_no_connection();
+    }
+    for height in [
+        "-1",
+        "+1",
+        "one",
+        "1.5",
+        "",
+        "9223372036854775808",
+        "18446744073709551616",
+    ] {
+        failure(
+            &fixture
+                .spawn(mock.address, &["names-register", ROOT, height, OTHER])
+                .finish(),
+        );
+        mock.assert_no_connection();
+    }
+    let too_long = "a".repeat(64);
+    for name in [
+        "",
+        "Atelier",
+        "atelier/child",
+        "atelier%2fchild",
+        "-atelier",
+        "atelier-",
+        "ab--cd",
+        "café",
+        &too_long,
+    ] {
+        failure(
+            &fixture
+                .spawn(mock.address, &["names-resolve", ROOT, name])
+                .finish(),
+        );
         mock.assert_no_connection();
     }
     let absent = fixture.directory.path().join("absent-token");
@@ -477,6 +684,7 @@ fn invalid_root_and_token_files_are_refused_before_any_http_connection() {
     fs::set_permissions(&fixture.token, fs::Permissions::from_mode(0o644)).unwrap();
     failure(&fixture.spawn(mock.address, &["status"]).finish());
     mock.assert_no_connection();
+    fixture.assert_only_owned_files();
 }
 
 #[test]
