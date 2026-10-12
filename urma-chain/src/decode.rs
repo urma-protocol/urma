@@ -117,7 +117,9 @@ fn decode_block(
 ) -> Result<DecodedBlock, DecodeError> {
     bounded(raw)?;
     let block = match chain {
-        Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => bitcoin_decoded_block(raw)?,
+        Chain::BitcoinMainnet | Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => {
+            bitcoin_decoded_block(raw)?
+        }
         Chain::LitecoinMainnet | Chain::LitecoinTestnet => litecoin_block(raw, encoding)?,
     };
     validate_block_integrity(block.block(), expected_hash).map_err(DecodeError::Integrity)?;
@@ -152,7 +154,7 @@ pub fn bitcoin_block(raw: &[u8], expected_hash: BlockHash) -> Result<Block, Deco
 pub fn transaction(raw: &[u8], chain: Chain) -> Result<Transaction, DecodeError> {
     bounded(raw)?;
     match chain {
-        Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => {
+        Chain::BitcoinMainnet | Chain::BitcoinRegtest | Chain::BitcoinTestnet4 => {
             deserialize(raw).map_err(DecodeError::Bitcoin)
         }
         Chain::LitecoinMainnet | Chain::LitecoinTestnet => {

@@ -26,6 +26,7 @@ pub struct ChainParams {
 #[derive(Clone, Copy, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Chain {
+    BitcoinMainnet,
     BitcoinRegtest,
     BitcoinTestnet4,
     LitecoinMainnet,
@@ -85,13 +86,26 @@ impl Chain {
         match self {
             Self::LitecoinMainnet => "Litecoin mainnet",
             Self::LitecoinTestnet => "Litecoin testnet",
+            Self::BitcoinMainnet => "Bitcoin mainnet",
             Self::BitcoinRegtest => "Bitcoin regtest",
             Self::BitcoinTestnet4 => "Bitcoin testnet4",
         }
     }
 
+    /// Bech32 human-readable part of this chain's segwit addresses.
+    pub fn address_hrp(self) -> &'static str {
+        match self {
+            Self::BitcoinMainnet => "bc",
+            Self::BitcoinRegtest => "bcrt",
+            Self::BitcoinTestnet4 => "tb",
+            Self::LitecoinMainnet => "ltc",
+            Self::LitecoinTestnet => "tltc",
+        }
+    }
+
     pub fn params(self) -> &'static ChainParams {
         match self {
+            Self::BitcoinMainnet => &config::BITCOIN_MAINNET,
             Self::LitecoinMainnet => &config::LITECOIN_MAINNET,
             Self::LitecoinTestnet => &config::LITECOIN_TESTNET,
             Self::BitcoinRegtest => &config::BITCOIN_REGTEST,
@@ -101,6 +115,9 @@ impl Chain {
 
     pub fn genesis(self) -> Result<ChainId, bitcoin::hex::HexToArrayError> {
         let genesis = match self {
+            Self::BitcoinMainnet => {
+                bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Bitcoin).block_hash()
+            }
             Self::BitcoinRegtest => {
                 bitcoin::blockdata::constants::genesis_block(bitcoin::Network::Regtest).block_hash()
             }

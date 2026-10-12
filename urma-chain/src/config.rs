@@ -38,6 +38,28 @@ pub const LITECOIN_TESTNET: ChainParams = ChainParams {
     retargets: true,
 };
 
+pub const BITCOIN_MAINNET: ChainParams = ChainParams {
+    magic: [0xf9, 0xbe, 0xb4, 0xd9],
+    port: 8333,
+    dns_seeds: &[
+        "seed.bitcoin.sipa.be",
+        "dnsseed.bluematt.me",
+        "seed.bitcoin.jonasschnelli.ch",
+        "seed.btc.petertodd.net",
+        "seed.bitcoin.sprovoost.nl",
+        "dnsseed.emzy.de",
+        "seed.bitcoin.wiz.biz",
+    ],
+    pow: PowFunction::Sha256d,
+    pow_limit_bits: 0x1d00_ffff,
+    retarget_interval: 2016,
+    retarget_lookback: 2015,
+    target_timespan: 1_209_600,
+    target_spacing: 600,
+    allow_min_difficulty: false,
+    retargets: true,
+};
+
 pub const BITCOIN_REGTEST: ChainParams = ChainParams {
     magic: [0xfa, 0xbf, 0xb5, 0xda],
     port: 18444,
