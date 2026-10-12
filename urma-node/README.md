@@ -79,7 +79,8 @@ if this round's acquisition failed. Errors advance the cursor and are exposed
 separately as `last_names_error`; they do not register, rebind or reset a registry.
 Offline service mode leaves advancement manual. These limits bound inspected
 registrations and attempts, not SQL duration; cancellation cannot interrupt an
-entered state/SQL operation. Consumer adapters are not yet provided.
+entered state/SQL operation. Optional CLI and gateway consumers use the paged
+local-operator view described below; they do not register or step implicitly.
 
 Unpruned background rounds attempt a block scan, then at most one
 incomplete object. Previously verified cached objects can complete even when
@@ -93,8 +94,9 @@ source calls and SQL commits are not forcibly interrupted. Failed acquisitions
 remain incomplete and the local status reports the last retention error.
 Pruned mode does not automatically download complete objects.
 
-Background cache size limits, distributed peer discovery, the remaining
-application adapters and Linux service packaging are not yet delivered.
+Distributed peer discovery, historical dependency acquisition beyond available
+local evidence, remaining application adapters and Linux service packaging are
+not yet delivered. The soft multipart cache target is described below.
 This development stage targets Linux for implementation and testing. Windows
 I/O/ACL porting, an installer and Windows Service integration are deferred and
 are not acceptance requirements for this stage. This is not a release candidate.
