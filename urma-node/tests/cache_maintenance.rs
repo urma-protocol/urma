@@ -129,14 +129,20 @@ fn coverage(engine: &Engine, before: &ArchiveStatus) {
     assert_eq!(after.scan_rules_version, before.scan_rules_version);
 }
 fn count(db: &Connection, table: &str) -> u64 {
-    db.query_row(&format!("SELECT count(*) FROM {table}"), [], |r| r.get(0))
-        .unwrap()
+    let value = db
+        .query_row(&format!("SELECT count(*) FROM {table}"), [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
+    u64::try_from(value).unwrap()
 }
 fn cache_events(db: &Connection) -> u64 {
-    db.query_row("SELECT count(*) FROM events WHERE kind='cache'", [], |r| {
-        r.get(0)
-    })
-    .unwrap()
+    let value = db
+        .query_row("SELECT count(*) FROM events WHERE kind='cache'", [], |r| {
+            r.get::<_, i64>(0)
+        })
+        .unwrap();
+    u64::try_from(value).unwrap()
 }
 fn object_status(engine: &Engine, root: Txid) -> serde_json::Value {
     serde_json::to_value(engine.object_status(root).unwrap().unwrap()).unwrap()
