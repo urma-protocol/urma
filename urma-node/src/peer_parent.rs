@@ -19,8 +19,9 @@ pub(crate) enum Parent {
     Busy,
 }
 
-/// Tries up to PEERS_PER_FETCH configured peers from a rotating start. Bytes
-/// are bound to the TXID only for fairness across peers; Engine verifies.
+/// Tries up to PEERS_PER_FETCH configured peers from a rotating start.
+/// verify_parent binds bytes to the TXID; a peer whose bytes fail it only
+/// lets the next peer be tried. Engine verification remains final.
 pub struct OverlayCommitSource {
     chain: Chain,
     peers: Vec<PeerSource>,
@@ -45,8 +46,11 @@ impl CommitSource for OverlayCommitSource {
         self.chain
     }
 
-    /// Busy, local or remote, is no answer. Zero answers plus any other peer or
-    /// transport error is an error; otherwise absence. First valid parent wins.
+    /// Busy, local or remote, is no answer. Local Busy from request() also
+    /// covers deadline expiry and a stopped network, so timeouts are silent
+    /// (Ok(None), nothing in status); FETCH_DEADLINE bounds the whole round.
+    /// Zero answers plus any other peer or transport error is an error;
+    /// otherwise absence. First valid parent wins.
     fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
         check_cancelled(cancelled)?;
         let count = self.peers.len();
