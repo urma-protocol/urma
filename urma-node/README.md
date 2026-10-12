@@ -42,8 +42,18 @@ configuration identity is checked. The interim schema 2 can migrate when all
 member identities remain recoverable locally; otherwise it is refused without
 discarding old evidence.
 
-Automatic complete-object acquisition, background cache size limits, URMA peer
-transport, application adapters and service packaging are not yet delivered.
+Unpruned background rounds scan a block first, then attempt at most one
+incomplete object. A rotating root cursor lets later objects proceed when one
+is unavailable or exceeds configured limits. CLI defaults are 64 MiB payload,
+4,096 records and a cooperative 15-second acquisition budget per object; these
+are resource settings, not protocol limits. Use `--max-object-bytes`,
+`--max-object-nodes` and `--object-timeout-seconds` to configure them. In-flight
+source calls and SQL commits are not forcibly interrupted. Failed acquisitions
+remain incomplete and the local status reports the last retention error.
+Pruned mode does not automatically download complete objects.
+
+Background cache size limits, URMA peer transport, application adapters and
+service packaging are not yet delivered.
 Windows private-file ACL and existing runtime I/O
 porting are also outstanding. This is not a release candidate.
 
@@ -57,7 +67,8 @@ is no fabricated project-start default.
 `urma-node --data DIR --config CONFIG status` opens local state without
 connecting to any peer. `create-token PATH` creates a new private bearer token.
 `serve --token-file PATH` starts on loopback only, offline by default; `--p2p`
-opts into the Litecoin source. `GET /v1/status`, `GET /v1/records/TXID` and
+opts into the Litecoin source. `GET /v1/status`, `GET /v1/records/TXID`,
+`GET /v1/objects/TXID` and
 `POST /v1/shutdown` require
 `Authorization: Bearer TOKEN`. Clients do not open the service database for
 writing. The archive uses a process ownership lock and SQLite WAL/FULL on a

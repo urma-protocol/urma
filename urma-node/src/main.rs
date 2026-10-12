@@ -34,6 +34,13 @@ enum Command {
         /// Opt into the checkpoint-relative Litecoin source; offline by default.
         #[arg(long)]
         p2p: bool,
+        /// Maximum payload per background object attempt (not a protocol limit).
+        #[arg(long, default_value_t = 64 * 1024 * 1024)]
+        max_object_bytes: u64,
+        #[arg(long, default_value_t = 4096)]
+        max_object_nodes: u32,
+        #[arg(long, default_value_t = 15)]
+        object_timeout_seconds: u64,
     },
 }
 
@@ -69,10 +76,45 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     match args.command {
         Command::Status => println!("{}", serde_json::to_string_pretty(&engine.status()?)?),
         Command::Serve {
-            listen, token_file, ..
+            listen,
+            token_file,
+            max_object_bytes,
+            max_object_nodes,
+            object_timeout_seconds,
+            ..
         } => {
             let token = read_token(&token_file)?;
-            let service = Service::bind(listen, token, engine)?;
+            let retain =
+                synchronize && engine.status()?.retention == urma_node::model::Retention::Unpruned;
+            let mut service = Service::bind(listen, token, engine)?;
+            if retain {
+                let scratch = args.data.join("scratch");
+                let mut builder = std::fs::DirBuilder::new();
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::DirBuilderExt;
+                    builder.mode(0o700);
+                }
+                match builder.create(&scratch) {
+                    Ok(()) => (),
+                    Err(e)
+                        if e.kind() == std::io::ErrorKind::AlreadyExists
+                            && std::fs::symlink_metadata(&scratch)?.is_dir() =>
+                    {
+                        ()
+                    }
+                    Err(e) => return Err(e.into()),
+                }
+                service = service.with_retention(
+                    scratch,
+                    urma_runtime::multipart::RecoveryLimits {
+                        max_payload_bytes: max_object_bytes,
+                        max_nodes: max_object_nodes,
+                        attempts: 1,
+                        timeout: std::time::Duration::from_secs(object_timeout_seconds),
+                    },
+                )?;
+            }
             eprintln!(
                 "URMA Node listening at {} (authenticated loopback)",
                 service.address()?

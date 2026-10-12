@@ -6,6 +6,7 @@ use bitcoin::Txid;
 use std::{
     collections::BTreeMap,
     path::Path,
+    sync::atomic::{AtomicBool, Ordering},
     time::{Duration, Instant},
 };
 use urma_core::multipart::VerifiedRecord;
@@ -132,7 +133,15 @@ pub fn recover(
     limits: RecoveryLimits,
     scratch: &Path,
 ) -> Result<RecoveredObject, Error> {
-    recover_inner(engine, root, sources, limits, scratch, false)
+    recover_inner(
+        engine,
+        root,
+        sources,
+        limits,
+        scratch,
+        false,
+        &AtomicBool::new(false),
+    )
 }
 
 /// Recover and protect all exact members in the same completion transaction.
@@ -145,25 +154,39 @@ pub fn recover_and_pin(
     limits: RecoveryLimits,
     scratch: &Path,
 ) -> Result<RecoveredObject, Error> {
-    recover_inner(engine, root, sources, limits, scratch, true)
+    recover_inner(
+        engine,
+        root,
+        sources,
+        limits,
+        scratch,
+        true,
+        &AtomicBool::new(false),
+    )
 }
 
-fn recover_inner(
+pub(crate) fn recover_inner(
     engine: &Engine,
     root: Txid,
     sources: &[&dyn RecordSource],
     limits: RecoveryLimits,
     scratch: &Path,
     pin: bool,
+    cancelled: &AtomicBool,
 ) -> Result<RecoveredObject, Error> {
+    check_cancelled(cancelled)?;
     let generation = engine.status()?.generation;
     let began = Instant::now();
+    let deadline = began
+        .checked_add(limits.timeout)
+        .ok_or_else(|| Error::Invalid("object deadline overflow".into()))?;
     let fetch_limits = FetchLimits {
         sources: limits.attempts.max(1) as usize,
         timeout: limits.timeout,
     };
     let root = fetch_record(engine, root, sources, fetch_limits)?
         .ok_or_else(|| Error::Invalid("root is not available from the supplied sources".into()))?;
+    check_cancelled(cancelled)?;
     let mut remaining = limits;
     remaining.timeout = limits.timeout.saturating_sub(began.elapsed());
     let mut adapter = Adapter {
@@ -172,9 +195,11 @@ fn recover_inner(
         fetch_limits,
         began,
         members: BTreeMap::from([(root.txid(), crate::archive::ObjectMember::from(&root))]),
+        cancelled,
     };
     let object = urma_runtime::multipart::reconstruct(&root, &mut adapter, remaining, scratch)
         .map_err(|e| Error::Source(Box::new(e)))?;
+    check_cancelled(cancelled)?;
     // Completion atomically rechecks the epoch and retained identities. A
     // concurrent prune may refuse completion, never create false availability.
     engine.complete_object(
@@ -182,6 +207,8 @@ fn recover_inner(
         generation,
         &adapter.members.into_values().collect::<Vec<_>>(),
         pin,
+        deadline,
+        cancelled,
     )?;
     Ok(object)
 }
@@ -192,6 +219,7 @@ struct Adapter<'a> {
     fetch_limits: FetchLimits,
     began: Instant,
     members: BTreeMap<Txid, crate::archive::ObjectMember>,
+    cancelled: &'a AtomicBool,
 }
 impl MultipartSource for Adapter<'_> {
     fn fetch(
@@ -199,6 +227,11 @@ impl MultipartSource for Adapter<'_> {
         request: &RecordRequest,
         _rejected: &[String],
     ) -> Result<Candidate, FetchError> {
+        if self.cancelled.load(Ordering::Acquire) {
+            return Err(FetchError::Source(urma_runtime::error::Error::Io(
+                std::io::Error::other("object retention cancelled"),
+            )));
+        }
         // Source-level proof failures have already tried the bounded source list.
         // A fully authenticated wrong reference hash remains terminal in reconstruct.
         match fetch_record(
@@ -226,5 +259,13 @@ impl MultipartSource for Adapter<'_> {
                 std::io::Error::other(error.to_string()),
             ))),
         }
+    }
+}
+
+fn check_cancelled(cancelled: &AtomicBool) -> Result<(), Error> {
+    if cancelled.load(Ordering::Acquire) {
+        Err(Error::Busy("object retention cancelled".into()))
+    } else {
+        Ok(())
     }
 }

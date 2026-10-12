@@ -111,6 +111,33 @@ impl From<&VerifiedRecord> for ObjectMember {
 }
 
 impl Archive {
+    /// A bounded cursor page, including already completed roots. The scheduler
+    /// advances across these pages so one missing/oversized object cannot starve
+    /// all later roots. This query makes no completeness or retention assertion.
+    pub(crate) fn root_page(&self, after: Option<Txid>) -> Result<Vec<Txid>, Error> {
+        if self.config.retention != Retention::Unpruned {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self.db.prepare(
+            "SELECT DISTINCT t.txid FROM records r
+            JOIN selected s ON s.hash=r.block_hash JOIN transactions t ON t.wtxid=r.wtxid
+            WHERE substr(r.record,1,8)=?1 AND (?2 IS NULL OR t.txid>?2)
+            ORDER BY t.txid LIMIT 128",
+        )?;
+        let rows = stmt.query_map(
+            params![
+                RecordKind::RootManifest.prefix().as_slice(),
+                after.map(|id| id.to_string())
+            ],
+            |r| r.get::<_, String>(0),
+        )?;
+        rows.map(|row| {
+            row?.parse()
+                .map_err(|e| Error::Invalid(format!("stored root TXID: {e}")))
+        })
+        .collect()
+    }
+
     pub(crate) fn object_status(&self, root: Txid) -> Result<Option<ObjectStatus>, Error> {
         let row: Option<(u64, u64)> = self
             .db
@@ -161,7 +188,17 @@ impl Archive {
         payload_hash: [u8; 32],
         members: &[ObjectMember],
         pin: bool,
+        deadline: std::time::Instant,
+        cancelled: &std::sync::atomic::AtomicBool,
     ) -> Result<(), Error> {
+        let check_budget = || -> Result<(), Error> {
+            crate::engine::check_deadline(deadline)?;
+            if cancelled.load(std::sync::atomic::Ordering::Acquire) {
+                return Err(Error::Busy("object completion cancelled".into()));
+            }
+            Ok(())
+        };
+        check_budget()?;
         if generation(&self.db)? != epoch {
             return Err(Error::Stale);
         }
@@ -172,6 +209,7 @@ impl Archive {
         // author before binding the exact selected WTXID and placement.
         let mut locations = Vec::with_capacity(members.len());
         for member in members {
+            check_budget()?;
             let mut stmt = self.db.prepare(
                 "SELECT r.block_hash,r.position,r.wtxid,r.record,r.author FROM records r
                  JOIN selected s ON s.hash=r.block_hash JOIN transactions t ON t.wtxid=r.wtxid
@@ -232,6 +270,7 @@ impl Archive {
                 ));
             }
         }
+        check_budget()?;
         let tx = self.db.transaction()?;
         tx.execute("INSERT INTO objects VALUES(?1,?2,?3,?4) ON CONFLICT(root_txid) DO UPDATE SET
             verified_generation=excluded.verified_generation,payload_bytes=excluded.payload_bytes,payload_hash=excluded.payload_hash",

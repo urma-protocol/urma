@@ -7,7 +7,7 @@ use std::{
     fs::OpenOptions,
     io::{Read, Write},
     net::{SocketAddr, TcpListener, TcpStream},
-    path::Path,
+    path::{Path, PathBuf},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -21,6 +21,8 @@ pub struct Service {
     engine: Arc<Engine>,
     stop: Arc<AtomicBool>,
     sync_error: Arc<Mutex<Option<String>>>,
+    retention_error: Arc<Mutex<Option<String>>>,
+    retention: Option<(PathBuf, urma_runtime::multipart::RecoveryLimits)>,
 }
 
 impl Service {
@@ -41,11 +43,30 @@ impl Service {
             engine,
             stop: Arc::new(AtomicBool::new(false)),
             sync_error: Arc::new(Mutex::new(None)),
+            retention_error: Arc::new(Mutex::new(None)),
+            retention: None,
         })
     }
 
     pub fn address(&self) -> Result<SocketAddr, Error> {
         Ok(self.listener.local_addr()?)
+    }
+
+    /// Configure bounded background object acquisition. The caller supplies an
+    /// owned scratch directory and explicit limits. Only run(true) schedules it;
+    /// pruned archives perform no automatic content acquisition.
+    pub fn with_retention(
+        mut self,
+        scratch: PathBuf,
+        limits: urma_runtime::multipart::RecoveryLimits,
+    ) -> Result<Self, Error> {
+        if limits.max_payload_bytes == 0 || limits.max_nodes == 0 || limits.timeout.is_zero() {
+            return Err(Error::Invalid(
+                "object retention limits must be nonzero".into(),
+            ));
+        }
+        self.retention = Some((scratch, limits));
+        Ok(self)
     }
 
     /// Run foreground. Network acquisition is opt-in; status works offline.
@@ -66,6 +87,23 @@ impl Service {
                             });
                         if let Ok(mut error) = self.sync_error.lock() {
                             *error = result.err().map(|e| e.to_string());
+                        }
+                        // Full-block audit always gets its opportunity before
+                        // one object attempt. A sync failure does not suppress
+                        // independent recovery from the last selected view;
+                        // its error remains separately visible in status.
+                        if !self.stop.load(Ordering::Acquire) {
+                            if let Some((scratch, limits)) = &self.retention {
+                                let result = self.engine.retain_next_object(
+                                    &[],
+                                    *limits,
+                                    scratch,
+                                    &self.stop,
+                                );
+                                if let Ok(mut error) = self.retention_error.lock() {
+                                    *error = result.err().map(|e| e.to_string());
+                                }
+                            }
                         }
                         for _ in 0..20 {
                             if self.stop.load(Ordering::Acquire) {
@@ -198,10 +236,17 @@ impl Service {
                     .lock()
                     .map_err(|_| Error::Invalid("sync status poisoned".into()))?
                     .clone();
+                let retention_error = self
+                    .retention_error
+                    .lock()
+                    .map_err(|_| Error::Invalid("retention status poisoned".into()))?
+                    .clone();
                 respond(
                     stream,
                     200,
-                    json!({"archive":status,"last_sync_error":error,"capabilities":["status","header-sync","full-block-scan","record-read","object-status"]}),
+                    json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
+                        "retention_configured":self.retention.is_some(),
+                        "capabilities":["status","header-sync","full-block-scan","record-read","object-status"]}),
                 )
             }
             "POST /v1/shutdown HTTP/1.1" => {

@@ -15,6 +15,7 @@ pub struct Engine {
     archive: Mutex<Archive>,
     source: Option<Arc<dyn ChainSource>>,
     synchronizing: Mutex<()>,
+    retaining: Mutex<Option<bitcoin::Txid>>,
 }
 
 impl Engine {
@@ -47,6 +48,7 @@ impl Engine {
             archive: Mutex::new(Archive::open(path, config)?),
             source,
             synchronizing: Mutex::new(()),
+            retaining: Mutex::new(None),
         })
     }
 
@@ -81,12 +83,57 @@ impl Engine {
         self.archive()?.prune_cache()
     }
 
+    /// One fair, bounded unpruned maintenance step. Scan coverage is never
+    /// advanced by object recovery. Failures advance the cursor, so the next
+    /// round can attempt another root. Pruned mode performs no acquisition.
+    /// Cancellation is cooperative between record acquisitions; in-flight
+    /// source I/O may still finish and leave independently verified cache bytes.
+    pub fn retain_next_object(
+        &self,
+        sources: &[&dyn crate::retrieval::RecordSource],
+        limits: urma_runtime::multipart::RecoveryLimits,
+        scratch: &Path,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<ObjectStatus>, Error> {
+        if cancelled.load(Ordering::Acquire) {
+            return Err(Error::Busy("object retention cancelled".into()));
+        }
+        let mut cursor = self
+            .retaining
+            .try_lock()
+            .map_err(|_| Error::Busy("object retention already running".into()))?;
+        let mut roots = self.archive()?.root_page(*cursor)?;
+        if roots.is_empty() && cursor.is_some() {
+            *cursor = None;
+            roots = self.archive()?.root_page(None)?;
+        }
+        for root in roots {
+            if cancelled.load(Ordering::Acquire) {
+                return Err(Error::Busy("object retention cancelled".into()));
+            }
+            *cursor = Some(root);
+            if self
+                .object_status(root)?
+                .is_some_and(|status| status.selected_complete())
+            {
+                continue;
+            }
+            let _object = crate::retrieval::recover_inner(
+                self, root, sources, limits, scratch, false, cancelled,
+            )?;
+            return self.object_status(root);
+        }
+        Ok(None)
+    }
+
     pub(crate) fn complete_object(
         &self,
         object: &urma_runtime::multipart::RecoveredObject,
         generation: u64,
         members: &[crate::archive::ObjectMember],
         pin: bool,
+        deadline: Instant,
+        cancelled: &AtomicBool,
     ) -> Result<(), Error> {
         self.archive()?.complete_object(
             object.root(),
@@ -95,6 +142,8 @@ impl Engine {
             object.manifest().payload_hash,
             members,
             pin,
+            deadline,
+            cancelled,
         )
     }
 
