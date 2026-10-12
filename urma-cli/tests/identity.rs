@@ -17,7 +17,7 @@ use urma_wallet::{
 
 #[test]
 fn publication_verifies_same_author_and_funder_and_fee_bound() {
-    let phrase = IdentityPhrase::parse(&format!("{}art", "abandon ".repeat(23))).unwrap();
+    let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
     let keys = Keyring::recover(&phrase).unwrap();
     let signer = keys.active().unwrap();
     let prev = Transaction {

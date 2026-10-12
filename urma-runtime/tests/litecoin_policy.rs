@@ -76,7 +76,7 @@ fn litecoin_standard_full_record_and_dust() {
         );
         std::thread::sleep(Duration::from_millis(100));
     };
-    let phrase = IdentityPhrase::parse(&format!("{}art", "abandon ".repeat(23))).unwrap();
+    let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
     let signer = Keyring::create(&phrase, "public-test-vector")
         .unwrap()
         .active()
@@ -237,7 +237,7 @@ fn litecoin_standard_full_record_and_dust() {
 
 #[test]
 fn quote_uses_256k_geometry_and_chain_dust_budget() {
-    let phrase = IdentityPhrase::parse(&format!("{}art", "abandon ".repeat(23))).unwrap();
+    let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
     let signer = Keyring::create(&phrase, "public-test-vector")
         .unwrap()
         .active()

@@ -72,7 +72,7 @@ fn signed_publication_restart_reorg_and_recovery() {
             }
         }
     };
-    let phrase = IdentityPhrase::parse(&format!("{}art", "abandon ".repeat(23))).unwrap();
+    let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
     let signer = Keyring::create(&phrase, "public-test-vector")
         .unwrap()
         .active()
