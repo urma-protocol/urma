@@ -358,6 +358,40 @@ impl Archive {
         }))
     }
 
+    /// One distinct selected parent absent from every cached witness variant.
+    /// Cursor comparison uses persisted display hex, not Txid's byte ordering.
+    pub(crate) fn next_missing_dependency(
+        &self,
+        after: Option<bitcoin::Txid>,
+    ) -> Result<Option<(bitcoin::Txid, u64)>, Error> {
+        let id: Option<String> = self
+            .db
+            .query_row(
+                "SELECT DISTINCT d.commit_txid FROM dependencies d
+             JOIN selected s ON s.hash=d.block_hash
+             WHERE NOT EXISTS(SELECT 1 FROM transactions t WHERE t.txid=d.commit_txid)
+             AND (?1 IS NULL OR d.commit_txid>?1)
+             ORDER BY d.commit_txid LIMIT 1",
+                [after.map(|id| id.to_string())],
+                |row| row.get(0),
+            )
+            .optional()?;
+        id.map(|id| {
+            let id = id
+                .parse()
+                .map_err(|error| Error::Invalid(format!("stored parent TXID: {error}")))?;
+            Ok((id, generation(&self.db)?))
+        })
+        .transpose()
+    }
+
+    pub(crate) fn check_generation(&self, expected: u64) -> Result<(), Error> {
+        if generation(&self.db)? != expected {
+            return Err(Error::Stale);
+        }
+        Ok(())
+    }
+
     pub(crate) fn pending_for(
         &self,
         txid: bitcoin::Txid,

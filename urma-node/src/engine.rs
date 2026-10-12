@@ -1,4 +1,9 @@
-use crate::{Error, archive::Archive, model::*, source::ChainSource};
+use crate::{
+    Error,
+    archive::Archive,
+    model::*,
+    source::{ChainSource, CommitSource},
+};
 use std::{
     path::Path,
     sync::{
@@ -18,6 +23,7 @@ pub struct Engine {
     synchronizing: Mutex<()>,
     retaining: Mutex<Option<bitcoin::Txid>>,
     projecting_names: Mutex<Option<bitcoin::Txid>>,
+    resolving_dependencies: Mutex<Option<bitcoin::Txid>>,
 }
 
 impl Engine {
@@ -53,6 +59,7 @@ impl Engine {
             synchronizing: Mutex::new(()),
             retaining: Mutex::new(None),
             projecting_names: Mutex::new(None),
+            resolving_dependencies: Mutex::new(None),
         })
     }
 
@@ -403,19 +410,109 @@ impl Engine {
     /// Only existing dependencies from locally scanned blocks can be resolved.
     /// At most 128 references are processed per call; repeat for a shared parent.
     pub fn resolve_commit(&self, raw: &[u8]) -> Result<usize, Error> {
+        self.resolve_commit_inner(raw, None, &AtomicBool::new(false))
+    }
+
+    /// Try one distinct selected dependency whose parent is not cached. The
+    /// display-hex cursor is in memory only and advances before a source miss
+    /// or error, so one unavailable parent cannot starve later parents. No
+    /// source is called when none are missing. After 128 shared references,
+    /// retained raw can finish the remainder via resolve_cached_dependency.
+    ///
+    /// Fetch runs outside the archive mutex. Its own I/O bounds are the source's
+    /// responsibility; cancellation is checked between calls/proof work and
+    /// before atomic finalization, not a hard interrupt or global deadline.
+    /// The selected generation is captured before fetch and cannot be rebound
+    /// to a newer view even if the same parent remains needed after a reorg.
+    pub fn resolve_next_dependency(
+        &self,
+        source: &dyn CommitSource,
+        cancelled: &AtomicBool,
+    ) -> Result<usize, Error> {
+        check_dependency_cancelled(cancelled)?;
+        let mut cursor = self
+            .resolving_dependencies
+            .try_lock()
+            .map_err(|_| Error::Busy("dependency acquisition already running".into()))?;
+        check_dependency_cancelled(cancelled)?;
+        let chain = source.chain(); // Contract: local configuration, no I/O.
+        let selection = {
+            let archive = self.archive()?;
+            check_dependency_cancelled(cancelled)?;
+            if chain != archive.config().chain {
+                return Err(Error::Invalid(
+                    "commit source belongs to another chain".into(),
+                ));
+            }
+            let mut selection = archive.next_missing_dependency(*cursor)?;
+            if selection.is_none() && cursor.is_some() {
+                selection = archive.next_missing_dependency(None)?;
+            }
+            selection
+        };
+        check_dependency_cancelled(cancelled)?;
+        let Some((requested, generation)) = selection else {
+            *cursor = None;
+            return Ok(0);
+        };
+        *cursor = Some(requested);
+        let fetched = source.fetch(requested);
+        check_dependency_cancelled(cancelled)?;
+        {
+            let archive = self.archive()?;
+            check_dependency_cancelled(cancelled)?;
+            archive.check_generation(generation)?;
+        }
+        let Some(raw) = fetched? else {
+            return Ok(0);
+        };
+        self.resolve_commit_inner(&raw, Some((requested, generation)), cancelled)
+    }
+
+    fn resolve_commit_inner(
+        &self,
+        raw: &[u8],
+        expected: Option<(bitcoin::Txid, u64)>,
+        cancelled: &AtomicBool,
+    ) -> Result<usize, Error> {
+        check_dependency_cancelled(cancelled)?;
         let (chain, retention) = {
             let archive = self.archive()?;
+            check_dependency_cancelled(cancelled)?;
+            if let Some((_, generation)) = expected {
+                archive.check_generation(generation)?;
+            }
             (archive.config().chain, archive.config().retention)
         };
+        // The configured-chain decoder enforces its existing 8,000,000-byte
+        // bound and exact syntax before any dependency mutation.
         let commit = urma_chain::decode::transaction(raw, chain)
             .map_err(|e| Error::Invalid(format!("dependency commit: {e}")))?;
-        let pending = self.archive()?.pending_for(commit.compute_txid())?;
+        if expected.is_some_and(|(id, _)| id != commit.compute_txid()) {
+            return Err(Error::Invalid("commit source returned another TXID".into()));
+        }
+        check_dependency_cancelled(cancelled)?;
+        let pending = {
+            let archive = self.archive()?;
+            check_dependency_cancelled(cancelled)?;
+            if let Some((_, generation)) = expected {
+                archive.check_generation(generation)?;
+            }
+            archive.pending_for(commit.compute_txid())?
+        };
         let mut completed = Vec::new();
         for (ticket, position, proof) in pending {
-            let header = self
-                .archive()?
-                .header_at(ticket.point().height)?
-                .ok_or(Error::Stale)?;
+            check_dependency_cancelled(cancelled)?;
+            let header = {
+                let archive = self.archive()?;
+                check_dependency_cancelled(cancelled)?;
+                if let Some((_, generation)) = expected {
+                    archive.check_generation(generation)?;
+                }
+                archive
+                    .header_at(ticket.point().height)?
+                    .ok_or(Error::Stale)?
+            };
             if header.block_hash() != ticket.point().hash {
                 return Err(Error::Stale);
             }
@@ -425,6 +522,7 @@ impl Engine {
             if included.position() != position {
                 return Err(Error::Invalid("stored dependency position mismatch".into()));
             }
+            check_dependency_cancelled(cancelled)?;
             let reveal = included.transaction();
             // The exact parent TXID fixes the output values/script. Failure
             // here classifies this candidate, rather than trusting a peer's
@@ -459,9 +557,16 @@ impl Engine {
                 }
                 Err(_) => None,
             };
+            check_dependency_cancelled(cancelled)?;
             completed.push((ticket, position, record));
         }
-        self.archive()?.finish_dependencies(completed)
+        check_dependency_cancelled(cancelled)?;
+        let mut archive = self.archive()?;
+        check_dependency_cancelled(cancelled)?;
+        if let Some((_, generation)) = expected {
+            archive.check_generation(generation)?;
+        }
+        archive.finish_dependencies(completed)
     }
 
     /// Cache an explicitly requested record, including children in pruned mode.
@@ -691,6 +796,13 @@ impl Engine {
         archive.commit_scan(batch)?;
         archive.status()
     }
+}
+
+fn check_dependency_cancelled(cancelled: &AtomicBool) -> Result<(), Error> {
+    if cancelled.load(Ordering::Acquire) {
+        return Err(Error::Busy("dependency acquisition cancelled".into()));
+    }
+    Ok(())
 }
 
 struct Budget<'a> {

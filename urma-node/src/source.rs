@@ -1,5 +1,5 @@
 use crate::{Error, model::ChainPoint};
-use bitcoin::{BlockHash, block::Header};
+use bitcoin::{BlockHash, Txid, block::Header};
 use std::{net::SocketAddr, path::Path};
 use urma_chain::observation::Chain;
 use urma_runtime::p2p::{Anchor, HeaderBootstrap, P2pProvider};
@@ -14,6 +14,55 @@ pub trait ChainSource: Send + Sync {
     fn tip(&self) -> Result<ChainPoint, Error>;
     fn header(&self, height: u64) -> Result<Header, Error>;
     fn block(&self, height: u64) -> Result<Vec<u8>, Error>;
+}
+
+/// Untrusted auxiliary parent bytes, not a chain verifier. The chain getter
+/// reads local configuration without I/O. Each fetch must bound its own I/O;
+/// Engine cancellation is cooperative and cannot interrupt a running fetch.
+pub trait CommitSource {
+    fn chain(&self) -> Chain;
+    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error>;
+}
+
+/// Borrow an explicitly configured, owner-provided runtime Node. Constructing
+/// this wrapper or reading its chain creates no Node, connection or defaults.
+/// Only fetch calls the existing Node; no header/placement authority is added.
+pub struct RuntimeCommitSource<'a> {
+    pub node: &'a urma_runtime::node::Node,
+}
+
+impl CommitSource for RuntimeCommitSource<'_> {
+    fn chain(&self) -> Chain {
+        self.node.chain()
+    }
+
+    /// Preserve the original returned hex bytes, rather than reserializing a
+    /// normalized transaction. The 16M-character/8M-byte admission cap applies
+    /// after Node::call: its transport may allocate/decode first and owns its
+    /// timeouts. There is no global deadline or transport-allocation promise.
+    /// Only the runtime's explicit Missing result is absence; other errors,
+    /// including local RPC errors, retain their source without text matching.
+    fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
+        let result = match self.node.call(
+            "getrawtransaction",
+            &[serde_json::json!(txid), serde_json::json!(false)],
+        ) {
+            Ok(result) => result,
+            Err(urma_runtime::error::Error::Missing(_)) => return Ok(None),
+            Err(error) => return Err(source_error(error)),
+        };
+        let encoded = result
+            .as_str()
+            .ok_or_else(|| Error::Invalid("commit source must return transaction hex".into()))?;
+        if encoded.len() > 16_000_000 || encoded.len() % 2 != 0 {
+            return Err(Error::Invalid(
+                "commit source hex exceeds capacity or has odd length".into(),
+            ));
+        }
+        let raw = hex::decode(encoded)
+            .map_err(|error| Error::Invalid(format!("commit source hex: {error}")))?;
+        Ok(Some(raw))
+    }
 }
 
 /// Checkpoint-relative Litecoin light client. Does not validate scripts, UTXOs
