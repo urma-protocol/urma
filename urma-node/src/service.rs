@@ -1,6 +1,6 @@
 //! Small authenticated loopback control surface. The archive engine remains
 //! usable directly; HTTP is not a prerequisite for embedded applications.
-use crate::{Error, engine::Engine};
+use crate::{Error, engine::Engine, retrieval::RecordSource, source::CommitSource};
 use rand::RngCore;
 use serde_json::json;
 use std::{
@@ -47,7 +47,9 @@ pub struct Service {
     cache_status: Arc<Mutex<CacheStatus>>,
     cache_bytes: u64,
     retention: Option<(PathBuf, urma_runtime::multipart::RecoveryLimits)>,
-    sources: Vec<Arc<dyn crate::retrieval::RecordSource + Send + Sync>>,
+    sources: Vec<Arc<dyn RecordSource + Send + Sync>>,
+    commit_source: Option<(String, Box<dyn CommitSource + Send + Sync>)>,
+    dependency_error: Arc<Mutex<Option<String>>>,
 }
 
 impl Service {
@@ -74,6 +76,8 @@ impl Service {
             cache_bytes: crate::cache::DEFAULT_CACHE_BYTES,
             retention: None,
             sources: Vec::new(),
+            commit_source: None,
+            dependency_error: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -91,12 +95,31 @@ impl Service {
     /// configuring handles does not dial, fetch, change headers or scan coverage.
     pub fn with_record_sources(
         mut self,
-        sources: Vec<Arc<dyn crate::retrieval::RecordSource + Send + Sync>>,
+        sources: Vec<Arc<dyn RecordSource + Send + Sync>>,
     ) -> Result<Self, Error> {
         if sources.len() > 1024 {
             return Err(Error::Invalid("too many configured record sources".into()));
         }
         self.sources = sources;
+        Ok(self)
+    }
+
+    pub fn with_commit_source(
+        mut self,
+        source: Box<dyn CommitSource + Send + Sync>,
+        label: String,
+    ) -> Result<Self, Error> {
+        let genesis = source
+            .chain()
+            .genesis()
+            .map_err(|error| Error::Invalid(error.to_string()))?
+            .0;
+        if genesis != self.engine.status()?.chain_genesis {
+            return Err(Error::Invalid(
+                "commit source belongs to another chain".into(),
+            ));
+        }
+        self.commit_source = Some((label, source));
         Ok(self)
     }
 
@@ -134,65 +157,7 @@ impl Service {
             if synchronize {
                 scope.spawn(|| {
                     while !self.stop.load(Ordering::Acquire) {
-                        let result = self
-                            .engine
-                            .synchronize_headers_until(&self.stop)
-                            .and_then(|_| self.engine.scan_next_until(&self.stop))
-                            .and_then(|status| {
-                                if !self.stop.load(Ordering::Acquire) {
-                                    self.engine.resolve_cached_dependency()?;
-                                }
-                                Ok(status)
-                            });
-                        if let Ok(mut error) = self.sync_error.lock() {
-                            *error = result.err().map(|e| e.to_string());
-                        }
-                        // Registered projections can use already scanned data
-                        // even if this round's acquisition failed. They never
-                        // create registrations or acquire missing history.
-                        if !self.stop.load(Ordering::Acquire) {
-                            let result = self.engine.maintain_next_names(&self.stop);
-                            if let Ok(mut error) = self.names_error.lock() {
-                                *error = result.err().map(|e| e.to_string());
-                            }
-                        }
-                        // Full-block audit always gets its opportunity before
-                        // one object attempt. A sync failure does not suppress
-                        // independent recovery from the last selected view;
-                        // its error remains separately visible in status.
-                        if !self.stop.load(Ordering::Acquire) {
-                            if let Some((scratch, limits)) = &self.retention {
-                                let sources: Vec<&dyn crate::retrieval::RecordSource> = self
-                                    .sources
-                                    .iter()
-                                    .map(|source| {
-                                        source.as_ref() as &dyn crate::retrieval::RecordSource
-                                    })
-                                    .collect();
-                                let result = self
-                                    .engine
-                                    .retain_next_object(&sources, *limits, scratch, &self.stop);
-                                if let Ok(mut error) = self.retention_error.lock() {
-                                    *error = result.err().map(|e| e.to_string());
-                                }
-                            }
-                        }
-                        // Independent local maintenance also runs after failed
-                        // acquisition/projection/retention. It never opens a source.
-                        if !self.stop.load(Ordering::Acquire) {
-                            let result = self.engine.maintain_cache(self.cache_bytes, &self.stop);
-                            if let Ok(mut status) = self.cache_status.lock() {
-                                match result {
-                                    Ok(receipt) => {
-                                        status.receipt = Some(receipt);
-                                        status.error = None;
-                                    }
-                                    Err(cause) => {
-                                        status.error = Some(cause.to_string());
-                                    }
-                                }
-                            }
-                        }
+                        self.worker_round();
                         for _ in 0..20 {
                             if self.stop.load(Ordering::Acquire) {
                                 break;
@@ -206,6 +171,85 @@ impl Service {
             self.stop.store(true, Ordering::Release);
             outcome
         })
+    }
+
+    fn worker_round(&self) {
+        let result = self
+            .engine
+            .synchronize_headers_until(&self.stop)
+            .and_then(|_| self.engine.scan_next_until(&self.stop))
+            .and_then(|status| {
+                if !self.stop.load(Ordering::Acquire) {
+                    self.engine.resolve_cached_dependency()?;
+                }
+                Ok(status)
+            });
+        if let Ok(mut error) = self.sync_error.lock() {
+            *error = result.err().map(|e| e.to_string());
+        }
+        self.acquire_next_dependency();
+        // Registered projections can use already scanned data
+        // even if this round's acquisition failed. They never
+        // create registrations or acquire missing history.
+        if !self.stop.load(Ordering::Acquire) {
+            let result = self.engine.maintain_next_names(&self.stop);
+            if let Ok(mut error) = self.names_error.lock() {
+                *error = result.err().map(|e| e.to_string());
+            }
+        }
+        // Full-block audit always gets its opportunity before
+        // one object attempt. A sync failure does not suppress
+        // independent recovery from the last selected view;
+        // its error remains separately visible in status.
+        if !self.stop.load(Ordering::Acquire) {
+            if let Some((scratch, limits)) = &self.retention {
+                let sources: Vec<&dyn RecordSource> = self
+                    .sources
+                    .iter()
+                    .map(|source| -> &dyn RecordSource { source.as_ref() })
+                    .collect();
+                let result = self
+                    .engine
+                    .retain_next_object(&sources, *limits, scratch, &self.stop);
+                if let Ok(mut error) = self.retention_error.lock() {
+                    *error = result.err().map(|e| e.to_string());
+                }
+            }
+        }
+        // Independent local maintenance also runs after failed
+        // acquisition/projection/retention. It never opens a source.
+        if !self.stop.load(Ordering::Acquire) {
+            let result = self.engine.maintain_cache(self.cache_bytes, &self.stop);
+            if let Ok(mut status) = self.cache_status.lock() {
+                match result {
+                    Ok(receipt) => {
+                        status.receipt = Some(receipt);
+                        status.error = None;
+                    }
+                    Err(cause) => {
+                        status.error = Some(cause.to_string());
+                    }
+                }
+            }
+        }
+    }
+
+    fn acquire_next_dependency(&self) {
+        let Some((_, source)) = &self.commit_source else {
+            return;
+        };
+        if self.stop.load(Ordering::Acquire) {
+            return;
+        }
+        let result = self
+            .engine
+            .resolve_next_dependency(source.as_ref(), &self.stop);
+        if self.stop.load(Ordering::Acquire) {
+            return;
+        }
+        if let Ok(mut error) = self.dependency_error.lock() {
+            *error = result.err().map(|e| e.to_string());
+        }
     }
 
     fn accept_loop(&self) -> Result<(), Error> {
@@ -436,11 +480,20 @@ impl Service {
                     .lock()
                     .map_err(|_| Error::Invalid("cache status poisoned".into()))?
                     .clone();
+                let dependency_error = self
+                    .dependency_error
+                    .lock()
+                    .map_err(|poisoned| {
+                        Error::Invalid(format!("dependency status poisoned: {poisoned}"))
+                    })?
+                    .clone();
+                let commit_source = self.commit_source.as_ref().map(|configured| &configured.0);
                 respond(
                     stream,
                     200,
                     json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
                         "last_names_error":names_error,
+                        "commit_source":commit_source,"last_dependency_error":dependency_error,
                         "cache_limit_bytes":self.cache_bytes,"last_cache_error":cache_status.error,
                         "last_cache_maintenance":cache_status.receipt,
                         "retention_configured":self.retention.is_some(),

@@ -560,7 +560,9 @@ fn borrowed_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_imp
         (Chain::LitecoinTestnet, hogex, tx.compute_txid()),
     ] {
         let (node, queries) = owner_node(chain, Ok(json!(hex::encode_upper(&raw))));
-        let adapter = RuntimeCommitSource { node: &node };
+        let adapter = RuntimeCommitSource {
+            node: Arc::new(node),
+        };
         assert_eq!(
             adapter.chain().genesis().unwrap().0,
             chain.genesis().unwrap().0
@@ -585,7 +587,9 @@ fn borrowed_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_imp
         Chain::LitecoinTestnet,
         Ok(json!(hex::encode(&pair.raw_commit))),
     );
-    let adapter = RuntimeCommitSource { node: &node };
+    let adapter = RuntimeCommitSource {
+        node: Arc::new(node),
+    };
     assert!(matches!(
         engine.resolve_next_dependency(&adapter, &AtomicBool::new(false)),
         Err(Error::Invalid(_))
@@ -598,7 +602,9 @@ fn borrowed_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_imp
             urma_runtime::config::ABSENT_TRANSACTION.into(),
         )),
     );
-    let adapter = RuntimeCommitSource { node: &node };
+    let adapter = RuntimeCommitSource {
+        node: Arc::new(node),
+    };
     assert!(adapter.fetch(pair.commit.compute_txid()).unwrap().is_none());
     assert_eq!(queries.lock().unwrap().len(), 2);
     // Router may reject malformed/oversized values before the adapter sees
@@ -614,10 +620,12 @@ fn borrowed_runtime_node_preserves_original_bitcoin_and_litecoin_hex_without_imp
         )),
     ] {
         let (node, _) = owner_node(Chain::BitcoinRegtest, reply);
-        let adapter = RuntimeCommitSource { node: &node };
+        let adapter = RuntimeCommitSource {
+            node: Arc::new(node),
+        };
         let error = adapter.fetch(pair.commit.compute_txid()).unwrap_err();
         assert!(
-            matches!(error, Error::Source(_) | Error::Invalid(_)),
+            matches!(error, Error::CommitSource(_) | Error::Invalid(_)),
             "{error}"
         );
     }

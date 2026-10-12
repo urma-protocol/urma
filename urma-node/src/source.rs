@@ -1,8 +1,11 @@
 use crate::{Error, model::ChainPoint};
 use bitcoin::{BlockHash, Txid, block::Header};
-use std::{net::SocketAddr, path::Path};
+use std::{net::SocketAddr, path::Path, sync::Arc};
 use urma_chain::observation::Chain;
-use urma_runtime::p2p::{Anchor, HeaderBootstrap, P2pProvider};
+use urma_runtime::{
+    node::Node,
+    p2p::{Anchor, HeaderBootstrap, P2pProvider},
+};
 
 /// Port implemented by a chain verifier, not by an untrusted remote JSON API.
 /// The implementation owns header difficulty, PoW and branch selection. Bodies
@@ -24,14 +27,14 @@ pub trait CommitSource {
     fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error>;
 }
 
-/// Borrow an explicitly configured, owner-provided runtime Node. Constructing
+/// Share an explicitly configured, owner-provided runtime Node. Constructing
 /// this wrapper or reading its chain creates no Node, connection or defaults.
 /// Only fetch calls the existing Node; no header/placement authority is added.
-pub struct RuntimeCommitSource<'a> {
-    pub node: &'a urma_runtime::node::Node,
+pub struct RuntimeCommitSource {
+    pub node: Arc<Node>,
 }
 
-impl CommitSource for RuntimeCommitSource<'_> {
+impl CommitSource for RuntimeCommitSource {
     fn chain(&self) -> Chain {
         self.node.chain()
     }
@@ -40,8 +43,8 @@ impl CommitSource for RuntimeCommitSource<'_> {
     /// normalized transaction. The 16M-character/8M-byte admission cap applies
     /// after Node::call: its transport may allocate/decode first and owns its
     /// timeouts. There is no global deadline or transport-allocation promise.
-    /// Only the runtime's explicit Missing result is absence; other errors,
-    /// including local RPC errors, retain their source without text matching.
+    /// Only the runtime's explicit Missing result is absence; other runtime
+    /// errors, including local RPC errors, become CommitSource without text matching.
     fn fetch(&self, txid: Txid) -> Result<Option<Vec<u8>>, Error> {
         let result = match self.node.call(
             "getrawtransaction",
@@ -49,7 +52,7 @@ impl CommitSource for RuntimeCommitSource<'_> {
         ) {
             Ok(result) => result,
             Err(urma_runtime::error::Error::Missing(_)) => return Ok(None),
-            Err(error) => return Err(source_error(error)),
+            Err(error) => return Err(Error::CommitSource(error.to_string())),
         };
         let encoded = result
             .as_str()
