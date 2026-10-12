@@ -442,7 +442,11 @@ async fn run(
             command = commands.recv() => {
                 let command = match command {
                     Some(Command::Fetch(fetch)) => fetch,
-                    Some(Command::Disconnect(peer)) => { let _ = swarm.disconnect_peer_id(peer); continue; }
+                    // A Fetch queued for this peer since the rejection keeps its connection.
+                    Some(Command::Disconnect(peer)) => {
+                        if !pending.values().any(|p| p.peer == peer) { let _ = swarm.disconnect_peer_id(peer); }
+                        continue;
+                    }
                     None => break Ok(()),
                 };
                 if Instant::now() >= command.deadline || pending.len() >= MAX_PENDING
