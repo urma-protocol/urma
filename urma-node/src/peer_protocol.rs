@@ -5,16 +5,27 @@ use crate::model::RecordPackage;
 use bitcoin::{BlockHash, Txid};
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: &str = "/urma/node/record/1";
-pub const VERSION: u32 = 1;
-pub const REQUEST_LIMIT: usize = 256;
+pub const PROTOCOL: &str = "/urma/node/record/2";
+pub const VERSION: u32 = 2;
+pub const REQUEST_LIMIT: usize = 512;
 pub const RESPONSE_LIMIT: usize = 32 * 1024 * 1024;
+/// Raw parent bytes, matching the local RPC 16M-hex admission cap.
+pub const PARENT_LIMIT: usize = 8 * 1024 * 1024;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    Record,
+    /// Retained raw transaction by TXID; untrusted, never a placement claim.
+    Parent,
+}
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
     pub version: u32,
     pub chain_genesis: BlockHash,
+    pub kind: Kind,
     pub txid: Txid,
 }
 
@@ -36,6 +47,8 @@ pub struct Response {
 )]
 pub enum Reply {
     Record(Box<RecordPackage>),
+    /// Lowercase hex of at most PARENT_LIMIT raw bytes.
+    Parent(String),
     /// Unknown in this peer's selected retained snapshot, never global absence.
     Missing,
     WrongNetwork,

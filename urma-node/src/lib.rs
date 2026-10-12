@@ -12,6 +12,7 @@ pub mod names;
 pub mod peer;
 pub mod peer_codec;
 mod peer_limits;
+mod peer_parent;
 pub mod peer_protocol;
 pub mod peerbook;
 pub mod projection;

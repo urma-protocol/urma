@@ -1,12 +1,16 @@
 //! Explicitly started URMA peer transport. Noise authenticates the remote
 //! transport identity; packages still need independent Engine admission.
 //! There are no built-in seeds, DNS lookups, wallet keys or implicit listeners.
+pub use crate::peer_parent::OverlayCommitSource;
 use crate::{
     Error,
     engine::Engine,
     model::RecordPackage,
     peer_codec::Codec,
-    peer_protocol::{PROTOCOL, RESPONSE_LIMIT, Reply, Request, Response, VERSION},
+    peer_parent::Parent,
+    peer_protocol::{
+        Kind, PARENT_LIMIT, PROTOCOL, RESPONSE_LIMIT, Reply, Request, Response, VERSION,
+    },
     peerbook::PeerAddress,
     retrieval::RecordSource,
 };
@@ -33,6 +37,7 @@ use std::{
     time::{Duration, Instant},
 };
 use tokio::sync::mpsc as async_mpsc;
+use urma_chain::observation::Chain;
 
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const CALL_TIMEOUT: Duration = Duration::from_secs(10);
@@ -70,14 +75,51 @@ struct Command {
     address: PeerAddress,
     txid: Txid,
     deadline: Instant,
-    answer: mpsc::SyncSender<Result<Option<RecordPackage>, Error>>,
+    answer: Answer,
 }
 
 struct Pending {
     peer: PeerId,
     txid: Txid,
     deadline: Instant,
-    answer: mpsc::SyncSender<Result<Option<RecordPackage>, Error>>,
+    answer: Answer,
+}
+
+/// Reply channel typed by request kind; a cross-kind reply is a peer error.
+enum Answer {
+    Record(mpsc::SyncSender<Result<Option<RecordPackage>, Error>>),
+    Parent(mpsc::SyncSender<Result<Parent, Error>>),
+}
+
+impl Answer {
+    fn kind(&self) -> Kind {
+        match self {
+            Answer::Record(_) => Kind::Record,
+            Answer::Parent(_) => Kind::Parent,
+        }
+    }
+
+    fn fail(&self, error: Error) {
+        match self {
+            Answer::Record(sender) => {
+                let _ = sender.try_send(Err(error));
+            }
+            Answer::Parent(sender) => {
+                let _ = sender.try_send(Err(error));
+            }
+        }
+    }
+
+    fn deliver(&self, genesis: BlockHash, peer: PeerId, pending: &Pending, response: Response) {
+        match self {
+            Answer::Record(sender) => {
+                let _ = sender.try_send(validate_response(genesis, peer, pending, response));
+            }
+            Answer::Parent(sender) => {
+                let _ = sender.try_send(validate_parent(genesis, peer, pending, response));
+            }
+        }
+    }
 }
 
 type Startup = mpsc::SyncSender<Result<Option<Multiaddr>, Error>>;
@@ -156,6 +198,16 @@ impl PeerNetwork {
         }
     }
 
+    pub fn commit_source(&self, chain: Chain, peers: Vec<PeerAddress>) -> OverlayCommitSource {
+        OverlayCommitSource::new(
+            chain,
+            peers
+                .into_iter()
+                .map(|address| self.source(address))
+                .collect(),
+        )
+    }
+
     pub fn shutdown(mut self) -> Result<(), Error> {
         self.stop.store(true, Ordering::Release);
         match self.worker.take().expect("network owner has worker").join() {
@@ -174,24 +226,57 @@ impl Drop for PeerNetwork {
     }
 }
 
-impl RecordSource for PeerSource {
-    fn fetch(&self, txid: Txid) -> Result<Option<RecordPackage>, Error> {
+impl PeerSource {
+    fn request<T>(
+        &self,
+        txid: Txid,
+        answer: fn(mpsc::SyncSender<Result<T, Error>>) -> Answer,
+    ) -> Result<T, Error> {
         if self.stop.load(Ordering::Acquire) {
             return Err(Error::Busy("peer network stopped".into()));
         }
         let deadline = Instant::now() + CALL_TIMEOUT;
-        let (answer, receiver) = mpsc::sync_channel(1);
+        let (sender, receiver) = mpsc::sync_channel(1);
         self.commands
             .try_send(Command {
                 address: self.address.clone(),
                 txid,
                 deadline,
-                answer,
+                answer: answer(sender),
             })
             .map_err(|_| Error::Busy("peer command queue unavailable".into()))?;
         receiver
             .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| Error::Busy("peer record acquisition deadline or shutdown".into()))?
+            .map_err(|_| Error::Busy("peer acquisition deadline or shutdown".into()))?
+    }
+}
+
+impl PeerSource {
+    pub(crate) fn parent(&self, txid: Txid) -> Result<Parent, Error> {
+        self.request(txid, Answer::Parent)
+    }
+}
+
+impl RecordSource for PeerSource {
+    fn fetch(&self, txid: Txid) -> Result<Option<RecordPackage>, Error> {
+        self.request(txid, Answer::Record)
+    }
+}
+
+/// Local retained bytes only: never scans, fetches or asks another peer.
+fn lookup(engine: &Engine, request: &Request) -> Reply {
+    match request.kind {
+        Kind::Record => match engine.record(request.txid) {
+            Ok(Some(record)) => Reply::Record(Box::new(record.package)),
+            Ok(None) => Reply::Missing,
+            Err(_) => Reply::Busy,
+        },
+        Kind::Parent => match engine.raw_transaction(request.txid) {
+            Ok(Some(raw)) if raw.len() > PARENT_LIMIT => Reply::TooLarge,
+            Ok(Some(raw)) => Reply::Parent(hex::encode(raw)),
+            Ok(None) => Reply::Missing,
+            Err(_) => Reply::Busy,
+        },
     }
 }
 
@@ -280,11 +365,7 @@ async fn run(
                 if !job.channel.is_open() || Instant::now() >= job.deadline {
                     continue;
                 }
-                let result = match engine.record(job.request.txid) {
-                    Ok(Some(record)) => Reply::Record(Box::new(record.package)),
-                    Ok(None) => Reply::Missing,
-                    Err(_) => Reply::Busy,
-                };
+                let result = lookup(&engine, &job.request);
                 if serving_stop.load(Ordering::Acquire)
                     || !job.channel.is_open()
                     || Instant::now() >= job.deadline
@@ -337,7 +418,7 @@ async fn run(
                 // bounds its internal pending queue even if a caller times out.
                 for value in pending.values_mut() {
                     if Instant::now() >= value.deadline {
-                        let _ = value.answer.try_send(Err(Error::Busy("peer acquisition deadline".into())));
+                        value.answer.fail(Error::Busy("peer acquisition deadline".into()));
                         let _ = swarm.disconnect_peer_id(value.peer);
                     }
                 }
@@ -346,11 +427,11 @@ async fn run(
                 let Some(command) = command else { break Ok(()); };
                 if Instant::now() >= command.deadline || pending.len() >= MAX_PENDING
                     || pending.values().any(|p| p.peer == command.address.peer_id()) {
-                    let _ = command.answer.send(Err(Error::Busy("peer acquisition capacity or deadline".into())));
+                    command.answer.fail(Error::Busy("peer acquisition capacity or deadline".into()));
                     continue;
                 }
                 let peer = command.address.peer_id();
-                let request = Request { version: VERSION, chain_genesis: genesis, txid: command.txid };
+                let request = Request { version: VERSION, chain_genesis: genesis, kind: command.answer.kind(), txid: command.txid };
                 let id = swarm.behaviour_mut().records.send_request_with_addresses(
                     &peer, request, vec![command.address.address().clone()]);
                 pending.insert(id, Pending { peer, txid: command.txid, deadline: command.deadline, answer: command.answer });
@@ -392,13 +473,12 @@ async fn run(
                     }
                     request_response::Event::Message { peer, message: Message::Response { request_id, response }, .. } => {
                         if let Some(value) = pending.remove(&request_id) {
-                            let result = validate_response(genesis, peer, &value, response);
-                            let _ = value.answer.try_send(result);
+                            value.answer.deliver(genesis, peer, &value, response);
                         }
                     }
                     request_response::Event::OutboundFailure { request_id, error, .. } => {
                         if let Some(value) = pending.remove(&request_id) {
-                            let _ = value.answer.try_send(Err(Error::Invalid(format!("peer request: {error}"))));
+                            value.answer.fail(Error::Invalid(format!("peer request: {error}")));
                         }
                     }
                     request_response::Event::InboundFailure { peer, request_id, .. }
@@ -410,9 +490,9 @@ async fn run(
     };
     stop.store(true, Ordering::Release);
     for (_, value) in pending {
-        let _ = value
+        value
             .answer
-            .try_send(Err(Error::Busy("peer network stopped".into())));
+            .fail(Error::Busy("peer network stopped".into()));
     }
     // Drop channels before joining: the archive reader must not wait for a
     // consumer which is already shutting down. No socket belongs to that reader.
@@ -425,12 +505,12 @@ async fn run(
     result
 }
 
-fn validate_response(
+fn bind_response(
     genesis: BlockHash,
     peer: PeerId,
     pending: &Pending,
-    response: Response,
-) -> Result<Option<RecordPackage>, Error> {
+    response: &Response,
+) -> Result<(), Error> {
     if Instant::now() >= pending.deadline {
         return Err(Error::Busy("peer acquisition deadline".into()));
     }
@@ -443,6 +523,37 @@ fn validate_response(
             "peer response identity, network or version mismatch".into(),
         ));
     }
+    Ok(())
+}
+
+/// Busy is capacity, not an answer. Hex is length-checked before any decode.
+fn validate_parent(
+    genesis: BlockHash,
+    peer: PeerId,
+    pending: &Pending,
+    response: Response,
+) -> Result<Parent, Error> {
+    bind_response(genesis, peer, pending, &response)?;
+    match response.result {
+        Reply::Parent(hex) if hex.len() <= 2 * PARENT_LIMIT => Ok(Parent::Hex(hex)),
+        Reply::Parent(_) => Err(Error::Invalid("peer parent exceeds byte limit".into())),
+        Reply::Busy => Ok(Parent::Busy),
+        Reply::Missing | Reply::TooLarge | Reply::WrongNetwork | Reply::UnsupportedVersion => {
+            Ok(Parent::Absent)
+        }
+        Reply::Record(_) => Err(Error::Invalid(
+            "peer answered a parent request with a record".into(),
+        )),
+    }
+}
+
+fn validate_response(
+    genesis: BlockHash,
+    peer: PeerId,
+    pending: &Pending,
+    response: Response,
+) -> Result<Option<RecordPackage>, Error> {
+    bind_response(genesis, peer, pending, &response)?;
     match response.result {
         Reply::Record(package) if package.chain_genesis == genesis => Ok(Some(*package)),
         Reply::Missing => Ok(None),
@@ -549,7 +660,7 @@ mod tests {
             peer,
             txid,
             deadline: Instant::now() + CALL_TIMEOUT,
-            answer,
+            answer: Answer::Record(answer),
         };
         let response = Response {
             version: VERSION,

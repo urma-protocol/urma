@@ -16,7 +16,7 @@ use urma_chain::inclusion::{MerklePath, TransactionProof};
 use urma_node::{
     model::{ChainPoint, RecordPackage},
     peer_codec::Codec,
-    peer_protocol::{PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response},
+    peer_protocol::{Kind, PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response},
 };
 
 fn request() -> Request {
@@ -25,6 +25,7 @@ fn request() -> Request {
     Request {
         version: 99,
         chain_genesis: BlockHash::from_byte_array([1; 32]),
+        kind: Kind::Record,
         txid: Txid::from_byte_array([2; 32]),
     }
 }

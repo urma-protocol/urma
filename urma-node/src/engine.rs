@@ -77,6 +77,13 @@ impl Engine {
         self.archive()?.record(txid)
     }
 
+    /// Retained raw bytes by TXID: record commits/reveals and cached parents.
+    /// Ignores the selected view, so bytes kept from orphaned blocks can return;
+    /// acceptable because requesters bind them to the TXID and re-verify.
+    pub(crate) fn raw_transaction(&self, txid: bitcoin::Txid) -> Result<Option<Vec<u8>>, Error> {
+        self.archive()?.transaction(txid)
+    }
+
     /// Read a bounded Wire view without network or a second scan. All fields
     /// and coverage come from one archive critical section. Concurrent writes
     /// invalidate continuation tokens instead of silently mixing snapshots.
