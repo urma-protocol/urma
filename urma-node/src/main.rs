@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
+use libp2p::{Multiaddr, multiaddr::Protocol};
 use std::{
-    net::SocketAddr,
+    net::{IpAddr, SocketAddr},
     os::unix::fs::DirBuilderExt,
     path::{Path, PathBuf},
     sync::Arc,
@@ -9,8 +10,9 @@ use urma_chain::observation::Chain;
 use urma_node::{
     engine::Engine,
     model::ArchiveConfig,
-    peer::PeerNetwork,
+    peer::{OverlayCommitSource, PeerNetwork},
     peerbook::{Origin, PeerAddress, PeerBook},
+    retrieval::RecordSource,
     service::{Service, create_token},
     source::{CommitSources, LitecoinSource, PublicCommitSource, RuntimeCommitSource},
 };
@@ -165,51 +167,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             }
             // Control auth/configuration and archive ownership precede any
             // overlay startup. Without --peer-key this path does no key/book I/O.
-            let network = if let Some(path) = peer_key {
-                let identity = read_peer_key(&path)?;
-                let book_path = args.data.join("peers.json");
-                let mut book = PeerBook::load(&book_path, engine.status()?.chain_genesis)?;
-                let mut changed = false;
-                for address in urma_peer {
-                    let Some(libp2p::multiaddr::Protocol::P2p(peer)) = address.iter().last() else {
-                        return Err("URMA peer address requires a terminal peer identity".into());
-                    };
-                    changed |= book.insert(PeerAddress::new(peer, address)?, Origin::Manual)?;
-                }
-                if changed {
-                    book.save(&book_path)?;
-                }
-                let listener = urma_listen.map(|socket| {
-                    use libp2p::multiaddr::Protocol;
-                    let mut address = libp2p::Multiaddr::empty();
-                    address.push(match socket.ip() {
-                        std::net::IpAddr::V4(ip) => Protocol::Ip4(ip),
-                        std::net::IpAddr::V6(ip) => Protocol::Ip6(ip),
-                    });
-                    address.push(Protocol::Tcp(socket.port()));
-                    address
-                });
-                let network = PeerNetwork::start(engine.clone(), identity, listener)?;
-                let sources = book
-                    .entries()
-                    .into_iter()
-                    .map(|(address, _)| {
-                        Arc::new(network.source(address))
-                            as Arc<dyn urma_node::retrieval::RecordSource + Send + Sync>
-                    })
-                    .collect();
-                service = service.with_record_sources(sources)?;
-                eprintln!(
-                    "URMA peer identity {} listener {:?}",
-                    network.peer_id(),
-                    network.listen_address()
-                );
-                Some(network)
-            } else {
-                None
+            let overlay = OverlayOptions {
+                key: peer_key,
+                listen: urma_listen,
+                manual: urma_peer,
+                commit_parents: synchronize,
             };
+            let (service, network, overlay) =
+                attach_overlay(service, &args.data, &engine, chain, overlay)?;
             let public = (synchronize && !no_commit_public).then(|| args.data.join("providers"));
-            service = attach_commit_sources(service, chain, commit_source, public)?;
+            let service = attach_commit_sources(service, chain, commit_source, overlay, public)?;
             eprintln!(
                 "URMA Node listening at {} (authenticated loopback)",
                 service.address()?
@@ -259,15 +226,79 @@ fn bind_service(
     Ok(Service::bind(listen, token, engine)?.with_cache_limit(cache_bytes)?)
 }
 
+struct OverlayOptions {
+    key: Option<PathBuf>,
+    listen: Option<SocketAddr>,
+    manual: Vec<Multiaddr>,
+    commit_parents: bool,
+}
+
+type Overlay = (Service, Option<PeerNetwork>, Option<OverlayCommitSource>);
+
+fn attach_overlay(
+    service: Service,
+    data: &Path,
+    engine: &Arc<Engine>,
+    chain: Chain,
+    options: OverlayOptions,
+) -> Result<Overlay, Box<dyn std::error::Error>> {
+    let Some(path) = options.key else {
+        return Ok((service, None, None));
+    };
+    let identity = read_peer_key(&path)?;
+    let book_path = data.join("peers.json");
+    let mut book = PeerBook::load(&book_path, engine.status()?.chain_genesis)?;
+    let mut changed = false;
+    for address in options.manual {
+        let Some(Protocol::P2p(peer)) = address.iter().last() else {
+            return Err("URMA peer address requires a terminal peer identity".into());
+        };
+        changed |= book.insert(PeerAddress::new(peer, address)?, Origin::Manual)?;
+    }
+    if changed {
+        book.save(&book_path)?;
+    }
+    let listener = options.listen.map(|socket| {
+        let mut address = Multiaddr::empty();
+        address.push(match socket.ip() {
+            IpAddr::V4(ip) => Protocol::Ip4(ip),
+            IpAddr::V6(ip) => Protocol::Ip6(ip),
+        });
+        address.push(Protocol::Tcp(socket.port()));
+        address
+    });
+    let network = PeerNetwork::start(Arc::clone(engine), identity, listener)?;
+    let peers: Vec<PeerAddress> = book.entries().into_iter().map(|entry| entry.0).collect();
+    let sources = peers
+        .iter()
+        .cloned()
+        .map(|address| -> Arc<dyn RecordSource + Send + Sync> { Arc::new(network.source(address)) })
+        .collect();
+    let service = service.with_record_sources(sources)?;
+    eprintln!(
+        "URMA peer identity {} listener {:?}",
+        network.peer_id(),
+        network.listen_address()
+    );
+    let overlay = options
+        .commit_parents
+        .then(|| network.commit_source(chain, peers));
+    Ok((service, Some(network), overlay))
+}
+
 fn attach_commit_sources(
     service: Service,
     chain: Chain,
     local: Option<RuntimeCommitSource>,
+    overlay: Option<OverlayCommitSource>,
     public: Option<PathBuf>,
 ) -> Result<Service, Box<dyn std::error::Error>> {
     let mut sources = CommitSources::new(chain);
     if let Some(local) = local {
         sources.push("local-rpc".into(), Box::new(local));
+    }
+    if let Some(overlay) = overlay {
+        sources.push("overlay".into(), Box::new(overlay));
     }
     let has_public = !endpoints::defaults(chain).is_empty();
     if let Some(cache) = public.filter(|_cache| has_public) {
