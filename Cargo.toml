@@ -16,6 +16,7 @@ members = [
     "urma-names",
     "urma-web",
     "urma-node",
+    "urma-node-client",
 ]
 
 [workspace.package]

@@ -198,3 +198,10 @@ When running on Sprites, use the authenticated TCP proxy and retain the server's
 PeerId in the forwarded address. Its HTTP(S) URL is not a TCP/Noise endpoint.
 Such a run tests separate cloud processes through the proxy; it does not prove
 direct reachability, discovery, NAT traversal or relay support in URMA Node.
+
+Applications can depend on `urma-node-client` for the same bounded loopback HTTP
+client and API data types without linking the daemon, SQLite, Tokio or libp2p.
+It still depends on the URMA chain/proof and Wire data types. The Node `Client`
+wrapper preserves its error API and implements the Node-local record-source
+interface. Both clients treat index pages as local operator data; parsing is not
+independent verification of author signatures or chain inclusion.

@@ -1,0 +1,18 @@
+[package]
+name = "urma-node-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+publish = false
+description = "Optional local URMA service client without daemon or peer runtime"
+
+[dependencies]
+bitcoin = { version = "0.32", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+hex = "0.4"
+urma-chain = { path = "../urma-chain", version = "0.2.2" }
+urma-core = { path = "../urma-core", version = "0.2.2" }
+urma-wire = { path = "../urma-wire", version = "0.2.2" }

@@ -3702,7 +3702,21 @@ dependencies = [
  "urma-chain",
  "urma-core",
  "urma-io",
+ "urma-node-client",
  "urma-runtime",
+ "urma-wire",
+]
+
+[[package]]
+name = "urma-node-client"
+version = "0.2.2"
+dependencies = [
+ "bitcoin",
+ "hex",
+ "serde",
+ "serde_json",
+ "urma-chain",
+ "urma-core",
  "urma-wire",
 ]
 

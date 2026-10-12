@@ -50,3 +50,14 @@ impl From<serde_json::Error> for Error {
         Self::Json(e)
     }
 }
+
+impl From<urma_node_client::Error> for Error {
+    fn from(error: urma_node_client::Error) -> Self {
+        match error {
+            urma_node_client::Error::Io(error) => Self::Io(error),
+            urma_node_client::Error::Json(error) => Self::Json(error),
+            urma_node_client::Error::Invalid(message) => Self::Invalid(message),
+            urma_node_client::Error::Busy(message) => Self::Busy(message),
+        }
+    }
+}
