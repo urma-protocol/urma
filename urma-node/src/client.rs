@@ -8,6 +8,7 @@
 use crate::{
     Error,
     model::{ArchivedRecord, ObjectStatus, PinReceipt, PruneReceipt},
+    projection::{MAX_WIRE_PAGE, WireCursor, WirePage},
 };
 use bitcoin::Txid;
 use std::{
@@ -151,6 +152,46 @@ impl Client {
         Ok(receipt)
     }
 
+    /// Read one bounded page of Wire records from the configured local operator.
+    /// Entry parsing checks data consistency, not authorship or chain inclusion.
+    /// Selected records and scanned coverage remain separate; `next == None`
+    /// ends only the local result set and does not establish chain completeness.
+    /// A snapshot is opaque. HTTP 409 returns `Error::Busy`: discard the partial
+    /// traversal and explicitly restart. No paging, retry or readback is automatic.
+    pub fn wire_page(&self, cursor: Option<&WireCursor>, limit: u32) -> Result<WirePage, Error> {
+        let deadline = Instant::now() + OPERATION_TIMEOUT;
+        if !(1..=MAX_WIRE_PAGE).contains(&limit) {
+            return Err(invalid("local Wire limit must be 1..128"));
+        }
+        let mut path = format!("/v1/wire?limit={limit}");
+        if let Some(cursor) = cursor {
+            validate_instance(&cursor.snapshot.instance)?;
+            if cursor.height > i64::MAX as u64 {
+                return Err(invalid("local Wire cursor height is out of range"));
+            }
+            let encoded = serde_json::to_vec(cursor)?;
+            if encoded.len() > 512 {
+                return Err(invalid("local Wire cursor exceeds 1024 hex characters"));
+            }
+            path.push_str("&cursor=");
+            path.push_str(&hex::encode(encoded));
+        }
+        let (code, body) = self.request("GET", &path, deadline)?;
+        if code == 409 {
+            return Err(Error::Busy(
+                "local Wire snapshot changed; discard traversal and restart".into(),
+            ));
+        }
+        if code != 200 {
+            return Err(invalid(format!("local Wire HTTP {code}")));
+        }
+        let page: WirePage = serde_json::from_slice(&body)?;
+        remaining(deadline)?;
+        validate_wire_page(&page, cursor, limit, deadline)?;
+        remaining(deadline)?;
+        Ok(page)
+    }
+
     fn request(
         &self,
         method: &str,
@@ -212,6 +253,99 @@ impl crate::retrieval::RecordSource for Client {
 
 fn invalid(message: impl Into<String>) -> Error {
     Error::Invalid(message.into())
+}
+
+fn validate_instance(instance: &str) -> Result<(), Error> {
+    if instance.len() != 32 || !instance.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(invalid(
+            "local Wire snapshot instance must be 32 hex characters",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_wire_page(
+    page: &WirePage,
+    cursor: Option<&WireCursor>,
+    limit: u32,
+    deadline: Instant,
+) -> Result<(), Error> {
+    validate_instance(&page.snapshot.instance)?;
+    if page.archive.api_version != crate::model::API_VERSION || page.records.len() > limit as usize
+    {
+        return Err(invalid(
+            "local Wire page version or record count is invalid",
+        ));
+    }
+    if cursor.is_some_and(|cursor| cursor.snapshot != page.snapshot) {
+        return Err(invalid("local Wire page snapshot differs from cursor"));
+    }
+    let mut previous_coordinate = cursor.map(|cursor| (cursor.height, cursor.position));
+    let mut previous_block = None;
+    for record in &page.records {
+        remaining(deadline)?;
+        let entry = &record.entry;
+        let coordinate = (entry.height, entry.position);
+        if previous_coordinate.is_some_and(|previous| coordinate <= previous) {
+            return Err(invalid(
+                "local Wire entries are not strictly after the cursor/in order",
+            ));
+        }
+        let start = page.archive.application_start;
+        let tip = page
+            .archive
+            .selected_tip
+            .ok_or_else(|| invalid("local Wire records require a selected tip"))?;
+        if entry.height < start.height || entry.height > tip.height {
+            return Err(invalid(
+                "local Wire entry lies outside the application/selected range",
+            ));
+        }
+        if (entry.height == start.height && record.block_hash != start.hash)
+            || (entry.height == tip.height && record.block_hash != tip.hash)
+            || previous_block
+                .is_some_and(|(height, hash)| height == entry.height && hash != record.block_hash)
+        {
+            return Err(invalid(
+                "local Wire block hashes disagree at the same height",
+            ));
+        }
+        let txid = entry
+            .txid
+            .parse::<Txid>()
+            .map_err(|_| invalid("local Wire entry has an invalid TXID"))?;
+        let author = entry
+            .author
+            .parse::<bitcoin::XOnlyPublicKey>()
+            .map_err(|_| invalid("local Wire entry has an invalid author"))?;
+        if entry.record.len() > urma_core::format::Urma::MAX_PUBLIC_BYTES * 2 {
+            return Err(invalid("local Wire record exceeds the public byte bound"));
+        }
+        let raw = hex::decode(&entry.record)
+            .map_err(|_| invalid("local Wire entry has invalid record hex"))?;
+        let parsed =
+            urma_wire::index::entry_from_record(&raw, txid, author, entry.height, entry.position)
+                .map_err(|error| invalid(format!("invalid local Wire record: {error}")))?;
+        if parsed.is_none() {
+            return Err(invalid("local Wire entry is not a Wire record kind"));
+        }
+        previous_coordinate = Some(coordinate);
+        previous_block = Some((entry.height, record.block_hash));
+    }
+    if let Some(next) = &page.next {
+        let last = page
+            .records
+            .last()
+            .ok_or_else(|| invalid("empty local Wire page has a continuation"))?;
+        if next.snapshot != page.snapshot
+            || (next.height, next.position) != (last.entry.height, last.entry.position)
+        {
+            return Err(invalid(
+                "local Wire continuation differs from the last entry/snapshot",
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn remaining(deadline: Instant) -> Result<Duration, Error> {
