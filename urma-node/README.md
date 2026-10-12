@@ -355,6 +355,8 @@ The selected generation remains fixed across acquisition and verification;
 a reorg refuses the attempted completion instead of adopting a newer branch.
 At most 128 existing references are finalized atomically. When parent bytes were
 retained, `resolve_cached_dependency` can finish remaining references locally.
+Invalid candidates and omitted Pruned children do not retain the fetched parent;
+remaining references can require another explicit source call.
 
 `RuntimeCommitSource { node: &node }` borrows an explicitly configured runtime
 Node and preserves the original `getrawtransaction` hex bytes. It constructs

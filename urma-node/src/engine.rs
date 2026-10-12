@@ -416,8 +416,10 @@ impl Engine {
     /// Try one distinct selected dependency whose parent is not cached. The
     /// display-hex cursor is in memory only and advances before a source miss
     /// or error, so one unavailable parent cannot starve later parents. No
-    /// source is called when none are missing. After 128 shared references,
-    /// retained raw can finish the remainder via resolve_cached_dependency.
+    /// source is called when none are missing. If a retained record caches the
+    /// parent, resolve_cached_dependency can finish remaining shared references.
+    /// Invalid candidates or omitted Pruned children do not cache that parent;
+    /// remaining references can require another explicit source call.
     ///
     /// Fetch runs outside the archive mutex. Its own I/O bounds are the source's
     /// responsibility; cancellation is checked between calls/proof work and
