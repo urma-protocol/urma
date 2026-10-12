@@ -152,12 +152,24 @@ impl Prepared {
                 .root()
                 .join("tx")
                 .join(format!("{}.bin", transaction.compute_txid()));
-            match std::fs::symlink_metadata(path) {
-                Ok(metadata) => ensure!(metadata.is_file(), "stored transaction must be regular"),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            let bytes = bitcoin::consensus::serialize(transaction);
+            match std::fs::symlink_metadata(&path) {
+                Ok(metadata) => {
+                    ensure!(metadata.is_file(), "stored transaction must be regular");
+                    // No-follow bounded read also protects against replacement
+                    // after the metadata check. Reuse never rewrites a file.
+                    let existing = urma_io::read_regular(&path, Store::MAX_TRANSACTION_BYTES)?;
+                    ensure!(
+                        existing == bytes,
+                        "stored transaction disagrees with acquired bytes"
+                    );
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    // Exclusive create refuses a racing file or symlink.
+                    urma_io::write_new(&path, &bytes)?;
+                }
                 Err(error) => return Err(error.into()),
             }
-            web(store.put_transaction(transaction))?;
         }
         self.reader.remaining()?;
         web(store.put_pointer(&self.pointer))?;
