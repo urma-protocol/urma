@@ -191,12 +191,15 @@ struct Answers {
     genesis: String,
     parent: Txid,
     raw: Vec<u8>,
+    // Whole getindexinfo ["txindex"] result, as the node would report it.
+    txindex: Value,
 }
 
 impl Answers {
     fn answer(&self, method: &str, params: &Value) -> (Value, Value) {
         match method {
             "getblockhash" if *params == json!([0]) => (json!(self.genesis), Value::Null),
+            "getindexinfo" if *params == json!(["txindex"]) => (self.txindex.clone(), Value::Null),
             "getrawtransaction" if *params == json!([self.parent, false]) => {
                 (json!(hex::encode(&self.raw)), Value::Null)
             }
@@ -468,6 +471,36 @@ impl Fixture {
         self.cookie_path.to_str().unwrap()
     }
 
+    fn stub(&self, txindex: Value) -> Stub {
+        Stub::start(Answers {
+            authorization: format!("Basic {}", base64(COOKIE.as_bytes())),
+            genesis: Chain::LitecoinTestnet.genesis().unwrap().0.to_string(),
+            parent: self.pair.commit.compute_txid(),
+            raw: self.pair.raw_commit.clone(),
+            txindex,
+        })
+    }
+
+    fn serve_rpc(&self, authority: &str) -> OwnedChild {
+        let url = format!("http://{authority}/");
+        self.serve(&[
+            "--p2p",
+            "--commit-rpc-url",
+            &url,
+            "--commit-rpc-cookie",
+            self.cookie(),
+        ])
+    }
+
+    // Startup refusal: non-zero, never listening, archive untouched and released.
+    fn refused(&self, result: &Completed, before: &Snapshot) {
+        assert!(!result.status.success(), "{}", result.stderr);
+        assert!(!result.stderr.contains(LISTENING), "{}", result.stderr);
+        assert_eq!(&snapshot(&self.data), before, "no durable progress");
+        let engine = Engine::open(&self.data, self.config.clone(), None).unwrap();
+        assert_eq!(engine.status().unwrap().unresolved_dependencies, 2);
+    }
+
     fn serve(&self, commit: &[&str]) -> OwnedChild {
         let sequence = self.sequence.get();
         self.sequence.set(sequence + 1);
@@ -571,42 +604,40 @@ fn unreachable(control: &Path) {
         .local_addr()
         .unwrap()
         .port();
-    let url = format!("http://127.0.0.1:{port}/");
-    let result = fixture
-        .serve(&[
-            "--p2p",
-            "--commit-rpc-url",
-            &url,
-            "--commit-rpc-cookie",
-            fixture.cookie(),
-        ])
-        .finish();
-    assert!(!result.status.success(), "{}", result.stderr);
-    assert!(!result.stderr.contains(LISTENING), "{}", result.stderr);
-    assert_eq!(snapshot(&fixture.data), before, "no durable progress");
-    // Ownership was released and both parents are still pending.
-    let engine = Engine::open(&fixture.data, fixture.config.clone(), None).unwrap();
-    assert_eq!(engine.status().unwrap().unresolved_dependencies, 2);
+    let result = fixture.serve_rpc(&format!("127.0.0.1:{port}")).finish();
+    fixture.refused(&result, &before);
+}
+
+// The node answers network verification but cannot serve parents by txid.
+fn txindex_refused(control: &Path) {
+    let fixture = Fixture::new(control);
+    let before = fixture.seed();
+    for txindex in [
+        json!({}),
+        json!({"txindex": {"synced": false, "best_block_height": 50}}),
+    ] {
+        let stub = fixture.stub(txindex.clone());
+        let result = fixture.serve_rpc(&stub.address.to_string()).finish();
+        fixture.refused(&result, &before);
+        let (calls, rejected) = stub.finish();
+        assert_eq!(rejected, 0, "cookie authentication mismatch");
+        assert_eq!(calls, startup_calls(), "{txindex}");
+    }
+}
+
+fn startup_calls() -> Vec<(String, Value)> {
+    vec![
+        ("getblockhash".to_owned(), json!([0])),
+        ("getindexinfo".to_owned(), json!(["txindex"])),
+    ]
 }
 
 fn resolves(control: &Path) {
     let fixture = Fixture::new(control);
     fixture.seed();
     let parent = fixture.pair.commit.compute_txid();
-    let stub = Stub::start(Answers {
-        authorization: format!("Basic {}", base64(COOKIE.as_bytes())),
-        genesis: Chain::LitecoinTestnet.genesis().unwrap().0.to_string(),
-        parent,
-        raw: fixture.pair.raw_commit.clone(),
-    });
-    let url = format!("http://{}/", stub.address);
-    let mut child = fixture.serve(&[
-        "--p2p",
-        "--commit-rpc-url",
-        &url,
-        "--commit-rpc-cookie",
-        fixture.cookie(),
-    ]);
+    let stub = fixture.stub(json!({"txindex": {"synced": true, "best_block_height": 100}}));
+    let mut child = fixture.serve_rpc(&stub.address.to_string());
     let address = child.listening_address();
     let absent = fixture.absent.commit.compute_txid();
     // One parent per round: a second -5 fetch of the absent parent means the
@@ -620,7 +651,7 @@ fn resolves(control: &Path) {
     shutdown(child, address);
     let (calls, rejected) = stub.finish();
     assert_eq!(rejected, 0, "cookie authentication mismatch");
-    assert_eq!(calls[0], ("getblockhash".to_owned(), json!([0])));
+    assert_eq!(calls[..2], startup_calls()[..], "{calls:?}");
     let fetched = |txid: Txid| {
         let call = ("getrawtransaction".to_owned(), json!([txid, false]));
         calls.iter().filter(|&observed| *observed == call).count()
@@ -628,7 +659,7 @@ fn resolves(control: &Path) {
     assert_eq!(fetched(parent), 1, "{calls:?}");
     assert!(fetched(absent) >= 2, "{calls:?}");
     assert_eq!(
-        1 + fetched(parent) + fetched(absent),
+        2 + fetched(parent) + fetched(absent),
         calls.len(),
         "{calls:?}"
     );
@@ -652,6 +683,7 @@ fn commit_cli_host() {
     match case.as_str() {
         "flags" => flags(&control),
         "unreachable" => unreachable(&control),
+        "txindex" => txindex_refused(&control),
         "resolve" => resolves(&control),
         _ => panic!("unknown owned case"),
     }
@@ -725,6 +757,11 @@ fn commit_rpc_flags_require_each_other_and_p2p_before_touching_data() {
 #[test]
 fn unreachable_commit_rpc_exits_before_listening_without_progress() {
     run_host("unreachable");
+}
+
+#[test]
+fn absent_or_unsynced_txindex_exits_before_listening_without_progress() {
+    run_host("txindex");
 }
 
 #[test]
