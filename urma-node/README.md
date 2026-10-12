@@ -395,9 +395,10 @@ the daemon assembles, in this order:
    recovery. Peers serve only raw bytes they already retain and never fetch on
    behalf of others.
 3. `public`, unless `--no-commit-public`: the chain's default public providers
-   (a chain without defaults, such as regtest, gets no entry), with TLS pins under `DATA/providers` (mode 0700) and no light client. The
-   providers are first contacted lazily on the first missing parent, so an
-   offline start succeeds; a failed connection is not retried for 60 seconds.
+   (a chain without defaults, such as regtest, gets no entry), with TLS pins
+   under `DATA/providers` (mode 0700) and no light client. The providers are
+   first contacted lazily on the first missing parent, so an offline start
+   succeeds; a failed connection is not retried for 60 seconds.
 
 Under `--p2p` the daemon therefore sends missing-parent TXIDs to URMA peers
 and, unless `--no-commit-public`, to the chain's default public providers;

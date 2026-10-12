@@ -253,13 +253,13 @@ impl CommitSource for CommitSources {
                 .1
                 .fetch(txid, cancelled)
                 .and_then(|raw| self.verified(txid, raw));
+            check_cancelled(cancelled)?;
             match fetched {
                 Ok(Some(raw)) => {
                     self.record(index, None)?;
                     return Ok(Some(raw));
                 }
                 Ok(None) => self.record(index, None)?,
-                Err(error) if cancelled.load(Ordering::Acquire) => return Err(error),
                 Err(error) => {
                     self.record(index, Some(error.to_string()))?;
                     failures += 1;
