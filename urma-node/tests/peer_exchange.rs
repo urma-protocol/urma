@@ -543,6 +543,12 @@ fn echo_both_directions(pair: &Pair, deadline: Instant) {
 }
 
 fn assert_footprint_returns(baseline: &Footprint, global_timer: &mut Option<(String, String)>) {
+    if !cfg!(target_os = "linux") {
+        // /proc task/socket accounting is Linux-only. The portable checks for
+        // returned joins, Engine release, archive locks and ports still run.
+        assert_eq!(&footprint(), baseline);
+        return;
+    }
     let deadline = Instant::now() + CLEANUP_TIMEOUT;
     loop {
         let actual = footprint();

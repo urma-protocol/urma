@@ -148,3 +148,31 @@ accounting until a terminal transport event; late replies cannot become success.
 Shutdown joins owned workers. Already-running SQLite work and bounded codec CPU
 work are cooperative rather than forcibly interrupted. These limits are not a
 claim of a tested global memory ceiling or resistance to every denial of service.
+
+The transport's network and archive-reader workers are joined at shutdown.
+The pinned `futures-timer` dependency also maintains one process-global timer
+thread until process exit; it is shared across successive network instances.
+
+## Explicit peer probe
+
+`cargo build -p urma-node --example peer_probe --locked` builds a two-process
+probe with embedded public signed profile/post fixtures. Run the server with
+`peer_probe --data FRESH_SERVER_DIR serve --listen 127.0.0.1:4001`, then pass its
+printed IP/TCP/p2p address to
+`peer_probe --data FRESH_CLIENT_DIR client --peer ADDRESS`. Send `shutdown` on
+server stdin when finished. Its stdin wait is limited to 120 seconds; an
+external process supervisor should bound the entire run.
+
+The client checks exact commit/reveal bytes and package contents, independent
+admission with zero scan coverage, refusal with a wrong expected identity,
+reconnection using a fresh client identity, and an explicit full-block audit
+that discovers the second record. Both processes check archive lock release.
+Header selection is a synthetic fixture: this is not a live Litecoin consensus
+test, a completeness claim from selective data, or a reconnect rate-limit test.
+The wrong-identity request must fail, with successful controls before and after;
+the probe does not classify the underlying handshake error.
+
+When running on Sprites, use the authenticated TCP proxy and retain the server's
+PeerId in the forwarded address. Its HTTP(S) URL is not a TCP/Noise endpoint.
+Such a run tests separate cloud processes through the proxy; it does not prove
+direct reachability, discovery, NAT traversal or relay support in URMA Node.
