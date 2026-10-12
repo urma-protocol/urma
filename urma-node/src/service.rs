@@ -21,6 +21,7 @@ pub struct Service {
     engine: Arc<Engine>,
     stop: Arc<AtomicBool>,
     sync_error: Arc<Mutex<Option<String>>>,
+    names_error: Arc<Mutex<Option<String>>>,
     retention_error: Arc<Mutex<Option<String>>>,
     retention: Option<(PathBuf, urma_runtime::multipart::RecoveryLimits)>,
     sources: Vec<Arc<dyn crate::retrieval::RecordSource + Send + Sync>>,
@@ -44,6 +45,7 @@ impl Service {
             engine,
             stop: Arc::new(AtomicBool::new(false)),
             sync_error: Arc::new(Mutex::new(None)),
+            names_error: Arc::new(Mutex::new(None)),
             retention_error: Arc::new(Mutex::new(None)),
             retention: None,
             sources: Vec::new(),
@@ -102,6 +104,15 @@ impl Service {
                             });
                         if let Ok(mut error) = self.sync_error.lock() {
                             *error = result.err().map(|e| e.to_string());
+                        }
+                        // Registered projections can use already scanned data
+                        // even if this round's acquisition failed. They never
+                        // create registrations or acquire missing history.
+                        if !self.stop.load(Ordering::Acquire) {
+                            let result = self.engine.maintain_next_names(&self.stop);
+                            if let Ok(mut error) = self.names_error.lock() {
+                                *error = result.err().map(|e| e.to_string());
+                            }
                         }
                         // Full-block audit always gets its opportunity before
                         // one object attempt. A sync failure does not suppress
@@ -353,10 +364,16 @@ impl Service {
                     .lock()
                     .map_err(|_| Error::Invalid("retention status poisoned".into()))?
                     .clone();
+                let names_error = self
+                    .names_error
+                    .lock()
+                    .map_err(|_| Error::Invalid("Names status poisoned".into()))?
+                    .clone();
                 respond(
                     stream,
                     200,
                     json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
+                        "last_names_error":names_error,
                         "retention_configured":self.retention.is_some(),
                         "record_sources_configured":self.sources.len(),
                         "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune","wire-index","names-index"]}),

@@ -71,8 +71,15 @@ until a step reconciles them; an orphaned genesis is refused without rebinding.
 The archive retains 1,000 undo frames plus their floor checkpoint; deeper reorgs
 require an explicit rebuild. Resolution carries its projected block and separate
 completion status. Authenticated local Names endpoints expose the same explicit
-operations; reads never register or advance a registry. Background registry
-maintenance and consumer adapters are not yet provided.
+operations; reads never register or advance a registry. Synchronizing service
+rounds maintain already registered projections in both retention modes, after
+the scan/dependency round and before multipart recovery. A rotating cursor
+inspects at most 128 registrations and attempts one Names step per round, even
+if this round's acquisition failed. Errors advance the cursor and are exposed
+separately as `last_names_error`; they do not register, rebind or reset a registry.
+Offline service mode leaves advancement manual. These limits bound inspected
+registrations and attempts, not SQL duration; cancellation cannot interrupt an
+entered state/SQL operation. Consumer adapters are not yet provided.
 
 Unpruned background rounds attempt a block scan, then at most one
 incomplete object. Previously verified cached objects can complete even when

@@ -330,6 +330,18 @@ fn observations(
 }
 
 impl Archive {
+    pub(crate) fn names_page(&self, after: Option<Txid>) -> Result<Vec<Txid>, Error> {
+        let mut stmt = self.db.prepare(
+            "SELECT genesis FROM names_registries
+            WHERE (?1 IS NULL OR genesis>?1) ORDER BY genesis LIMIT 128",
+        )?;
+        stmt.query_map([after.map(|txid| txid.to_string())], |r| {
+            r.get::<_, String>(0)
+        })?
+        .map(|row| row?.parse().map_err(invalid))
+        .collect()
+    }
+
     pub(crate) fn register_names(
         &mut self,
         genesis: Txid,

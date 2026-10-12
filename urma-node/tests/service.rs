@@ -448,6 +448,7 @@ fn offline_status_requires_auth_and_rejects_duplicate_auth_and_request_bodies() 
     assert_eq!(observed["archive"]["scanned_blocks"], 0);
     assert_eq!(observed["last_sync_error"], Value::Null);
     assert_eq!(observed["last_retention_error"], Value::Null);
+    assert_eq!(observed["last_names_error"], Value::Null);
     assert_eq!(observed["retention_configured"], false);
     assert_eq!(
         observed["capabilities"],

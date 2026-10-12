@@ -17,6 +17,7 @@ pub struct Engine {
     source: Option<Arc<dyn ChainSource>>,
     synchronizing: Mutex<()>,
     retaining: Mutex<Option<bitcoin::Txid>>,
+    projecting_names: Mutex<Option<bitcoin::Txid>>,
 }
 
 impl Engine {
@@ -51,6 +52,7 @@ impl Engine {
             source,
             synchronizing: Mutex::new(()),
             retaining: Mutex::new(None),
+            projecting_names: Mutex::new(None),
         })
     }
 
@@ -117,6 +119,53 @@ impl Engine {
         name: &urma_names::name::Name,
     ) -> Result<crate::names::NamesResolution, Error> {
         self.archive()?.names_resolve(genesis, name)
+    }
+
+    /// Maintain explicitly registered Names projections without source calls.
+    /// Inspect at most 128 registrations and attempt at most one projection
+    /// step. The cursor advances before each attempt, including failures and
+    /// coverage gaps, so one unavailable registry cannot starve later entries.
+    /// Some reports an attempted step, which may have made no progress.
+    /// Both retention modes preserve individual Names records. Cancellation is
+    /// cooperative before a step; an entered SQL/state operation may finish.
+    pub fn maintain_next_names(
+        &self,
+        cancelled: &AtomicBool,
+    ) -> Result<Option<crate::names::NamesStep>, Error> {
+        let check_cancelled = || {
+            if cancelled.load(Ordering::Acquire) {
+                Err(Error::Busy("Names maintenance cancelled".into()))
+            } else {
+                Ok(())
+            }
+        };
+        check_cancelled()?;
+        let mut cursor = self
+            .projecting_names
+            .try_lock()
+            .map_err(|_| Error::Busy("Names maintenance already running".into()))?;
+        let mut registries = self.archive()?.names_page(*cursor)?;
+        if registries.is_empty() && cursor.is_some() {
+            *cursor = None;
+            registries = self.archive()?.names_page(None)?;
+        }
+        for genesis in registries {
+            check_cancelled()?;
+            *cursor = Some(genesis);
+            match self.names_status(genesis) {
+                Ok(Some(status)) if status.complete_to_tip => continue,
+                Ok(None) => continue,
+                // The existing step reconciles an orphaned checkpoint or
+                // explicitly refuses an orphaned genesis/insufficient undo.
+                Ok(Some(_)) | Err(Error::Stale) => (),
+                Err(error) => return Err(error),
+            }
+            let mut archive = self.archive()?;
+            // Recheck after waiting for the archive coordinator as well.
+            check_cancelled()?;
+            return archive.names_step(genesis).map(Some);
+        }
+        Ok(None)
     }
 
     /// Pin a previously reconstructed object only if all its evidence remains
