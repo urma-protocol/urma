@@ -13,6 +13,7 @@ pub(crate) enum ResolutionHealth {
         chain_tip: u64,
         scan: Scan,
         currency: Currency,
+        names_source: Value,
     },
 }
 
@@ -34,13 +35,19 @@ impl NetworkHealth<'_> {
                 chain_tip,
                 scan,
                 currency,
+                names_source,
             } => {
                 row["index_height"] = index_height.into();
                 row["chain_tip"] = chain_tip.into();
                 row["scan_age_seconds"] = match scan {
-                    Scan::Never => Value::Null,
+                    Scan::Never | Scan::ArchiveView(_) => Value::Null,
                     Scan::At(at) => at.elapsed().as_secs().into(),
                 };
+                row["view_age_seconds"] = match scan {
+                    Scan::ArchiveView(at) => at.elapsed().as_secs().into(),
+                    _ => Value::Null,
+                };
+                row["names_source"] = names_source;
                 row["state"] = match currency {
                     Currency::Current => "ready".into(),
                     Currency::Behind(reason) => {

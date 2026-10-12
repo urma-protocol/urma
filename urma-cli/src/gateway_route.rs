@@ -106,6 +106,8 @@ pub(crate) struct Freshness {
 pub(crate) enum Scan {
     Never,
     At(Instant),
+    /// A complete operator view was acquired, not independently rescanned.
+    ArchiveView(Instant),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -116,20 +118,28 @@ pub(crate) enum Currency {
 
 impl Freshness {
     pub(crate) fn judge(&self, height: u64, tip: u64, scan: Scan, now: Instant) -> Currency {
-        let Scan::At(scanned) = scan else {
-            return Currency::Behind("no rescan has succeeded since the portal started".into());
+        let (acquired, activity, tip_label) = match scan {
+            Scan::Never => {
+                return Currency::Behind("no rescan has succeeded since the portal started".into());
+            }
+            Scan::At(at) => (at, "rescan", "chain tip"),
+            Scan::ArchiveView(at) => (
+                at,
+                "operator view acquisition",
+                "operator-reported selected tip",
+            ),
         };
-        let age = now.duration_since(scanned);
+        let age = now.saturating_duration_since(acquired);
         if age >= self.max_age {
             return Currency::Behind(format!(
-                "the last successful rescan was {} s ago; the bound is {} s",
+                "the last successful {activity} was {} s ago; the bound is {} s",
                 age.as_secs(),
                 self.max_age.as_secs()
             ));
         }
         if tip > height && tip - height > self.max_lag {
             return Currency::Behind(format!(
-                "the index is at height {height}, {} blocks behind the chain tip {tip}; the bound is {}",
+                "the index is at height {height}, {} blocks behind the {tip_label} {tip}; the bound is {}",
                 tip - height,
                 self.max_lag
             ));

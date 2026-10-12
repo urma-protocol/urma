@@ -852,6 +852,19 @@ fn stale_indexes_answer_index_behind() -> Result<()> {
             "{height} {tip} {scan:?}"
         );
     }
+    // Archive freshness is acquisition age and lag against the operator's tip.
+    // A successful acquisition does not supply an autonomous scan timestamp.
+    let view = Scan::ArchiveView(scanned);
+    assert_eq!(policy.judge(98, 100, view, after(599)), Currency::Current);
+    let Currency::Behind(reason) = policy.judge(100, 100, view, after(600)) else {
+        anyhow::bail!("an expired view acquisition must refuse serving");
+    };
+    assert!(reason.contains("operator view acquisition"));
+    assert!(!reason.contains("rescan"));
+    let Currency::Behind(reason) = policy.judge(97, 100, view, after(1)) else {
+        anyhow::bail!("a view more than two blocks behind must refuse serving");
+    };
+    assert!(reason.contains("operator-reported selected tip"));
     let Currency::Behind(reason) = policy.judge(90, 100, at, after(1)) else {
         anyhow::bail!("an index 10 blocks behind is not current");
     };
@@ -1308,6 +1321,13 @@ fn readiness_fixtures_reuse_freshness_without_site_fetching() -> Result<()> {
         (Scan::At(now), 103, "index-behind"),
         (Scan::At(now - freshness.max_age), 100, "index-behind"),
         (Scan::Never, 100, "index-behind"),
+        (Scan::ArchiveView(now), 102, "ready"),
+        (Scan::ArchiveView(now), 103, "index-behind"),
+        (
+            Scan::ArchiveView(now - freshness.max_age),
+            100,
+            "index-behind",
+        ),
     ] {
         let reply = readiness_reply(
             std::iter::once(NetworkHealth {
@@ -1319,12 +1339,24 @@ fn readiness_fixtures_reuse_freshness_without_site_fetching() -> Result<()> {
                     chain_tip: tip,
                     scan,
                     currency: freshness.judge(100, tip, scan, now),
+                    names_source: json!({"kind": if matches!(scan, Scan::ArchiveView(_)) {
+                        "local-node-operator"
+                    } else { "autonomous-local" }}),
                 },
             }),
             freshness.retry,
         )?;
         let document: Value = serde_json::from_slice(&reply.body)?;
         assert_eq!(document["networks"][0]["state"], expected);
+        let row = &document["networks"][0];
+        if matches!(scan, Scan::ArchiveView(_)) {
+            assert!(row["scan_age_seconds"].is_null());
+            assert!(row["view_age_seconds"].is_u64());
+            assert_eq!(row["names_source"]["kind"], "local-node-operator");
+        } else {
+            assert!(row["view_age_seconds"].is_null());
+            assert_eq!(row["names_source"]["kind"], "autonomous-local");
+        }
         assert_eq!(document["ready"], expected == "ready");
         assert_eq!(reply.status, if expected == "ready" { 200 } else { 503 });
         assert!(

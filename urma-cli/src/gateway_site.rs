@@ -6,7 +6,6 @@ use crate::{
     gateway_proof::{RootEvidence, evidence, with_root},
     gateway_route::{Currency, Route, route, split_target},
     gateway_state::{Availability, Gateway, Network, Snapshot},
-    names_cli::resolution,
     web_cli::web_error,
 };
 use bitcoin::{Txid, consensus::encode::serialize_hex};
@@ -146,6 +145,8 @@ fn name_reply(
     subject.registry = Some(network.genesis.to_string());
     let snapshot = gateway.snapshot(network)?;
     subject.index = Some(snapshot.point());
+    subject.names_source = Some(snapshot.source_kind());
+    subject.complete_to_tip = Some(snapshot.complete_to_tip());
     if split_target(&request.target).0 == WellKnown::PROOF {
         return proof(gateway, site, network, &snapshot, subject);
     }
@@ -249,11 +250,12 @@ fn proof(
     snapshot: &Snapshot,
     subject: &Subject,
 ) -> Result<Reply, Refusal> {
-    let document = evidence(
+    let mut document = evidence(
         &gateway.portal,
-        resolution(&snapshot.index, &site.name)?,
+        snapshot.resolution(&network.name, &site.name)?,
         &snapshot.tip_point(),
     );
+    document["resolver"]["source"] = snapshot.source();
     let root = match gateway.servable(site, network, snapshot) {
         Ok(root) => root,
         Err(refusal) => {
@@ -327,8 +329,8 @@ fn listing_state(gateway: &Gateway, network: &Network, snapshot: &Snapshot) -> L
 
 fn bound_names(portal: &Portal, network: &Network, snapshot: &Snapshot) -> Vec<ListedName> {
     let mut names = Vec::new();
-    for name in snapshot.index.registry.names().keys() {
-        let Resolution::Bound(bound) = snapshot.index.registry.resolve(name) else {
+    for name in snapshot.names().keys() {
+        let Resolution::Bound(bound) = snapshot.resolve(name) else {
             continue;
         };
         let Target::Publication(root) = bound.target else {

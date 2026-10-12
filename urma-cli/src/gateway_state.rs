@@ -1,15 +1,17 @@
 use crate::{
-    config::{self, GatewaySettings},
+    config::{self, ArchiveSettings, GatewaySettings},
     gateway_host::{Portal, SiteHost, Suffix},
     gateway_http::{Refusal, Reply, State},
     gateway_pages::IndexPoint,
     gateway_readiness::{NetworkHealth, ResolutionHealth, readiness_reply},
     gateway_route::{Currency, Scan, standing},
-    names_cli::{load_index, sync_index},
+    names_archive::{self, View},
+    names_cli::{load_index, resolution, sync_index},
     node_cli::{chain_name, connect},
     web_cli::{store_publication, web_error},
 };
 use bitcoin::Txid;
+use serde_json::{Value, json};
 use std::{
     collections::{BTreeMap, HashMap, VecDeque},
     path::{Path, PathBuf},
@@ -20,12 +22,21 @@ use std::{
     time::Instant,
 };
 use urma_chain::observation::Chain;
-use urma_names::index::NamesIndex;
+use urma_names::{
+    index::NamesIndex,
+    name::Name,
+    state::{NameState, Resolution},
+};
 use urma_runtime::error::{Error, ensure};
 use urma_web::store::{Store, StoredPublication, Verified};
 
+enum Projection {
+    Local(NamesIndex),
+    Archive(View),
+}
+
 pub(crate) struct Snapshot {
-    pub(crate) index: NamesIndex,
+    projection: Projection,
     pub(crate) tip: u64,
     pub(crate) tip_hash: String,
     pub(crate) scan: Scan,
@@ -33,9 +44,15 @@ pub(crate) struct Snapshot {
 
 impl Snapshot {
     pub(crate) fn point(&self) -> IndexPoint {
-        IndexPoint {
-            height: self.index.registry.height(),
-            block_hash: self.index.tip_hash(),
+        match &self.projection {
+            Projection::Local(index) => IndexPoint {
+                height: index.registry.height(),
+                block_hash: index.tip_hash(),
+            },
+            Projection::Archive(view) => IndexPoint {
+                height: view.status().projected.height,
+                block_hash: view.status().projected.hash.to_string(),
+            },
         }
     }
 
@@ -44,6 +61,67 @@ impl Snapshot {
             height: self.tip,
             block_hash: self.tip_hash.clone(),
         }
+    }
+
+    pub(crate) fn resolve(&self, name: &Name) -> Resolution {
+        match &self.projection {
+            Projection::Local(index) => index.registry.resolve(name),
+            Projection::Archive(view) => view.resolution(name),
+        }
+    }
+
+    pub(crate) fn names(&self) -> &BTreeMap<Name, NameState> {
+        match &self.projection {
+            Projection::Local(index) => index.registry.names(),
+            Projection::Archive(view) => view.names(),
+        }
+    }
+
+    pub(crate) fn resolution(&self, network: &str, name: &Name) -> Result<Value, Error> {
+        match &self.projection {
+            Projection::Local(index) => resolution(index, name),
+            Projection::Archive(view) => Ok(view.resolve(network, name)),
+        }
+    }
+
+    pub(crate) fn source_kind(&self) -> &'static str {
+        match &self.projection {
+            Projection::Local(_) => "autonomous-local",
+            Projection::Archive(_) => "local-node-operator",
+        }
+    }
+
+    pub(crate) fn complete_to_tip(&self) -> bool {
+        match &self.projection {
+            Projection::Local(_) => self.point().height == self.tip,
+            Projection::Archive(view) => view.status().complete_to_tip,
+        }
+    }
+
+    /// Source-specific readiness: operator age is acquisition age only. No
+    /// observation timestamp for the operator's actual scan or global tip exists.
+    pub(crate) fn source(&self) -> Value {
+        let (scan_age, view_age) = match self.scan {
+            Scan::Never => (None, None),
+            Scan::At(at) => (Some(at.elapsed().as_secs()), None),
+            Scan::ArchiveView(at) => (None, Some(at.elapsed().as_secs())),
+        };
+        let point = self.point();
+        let mut value = json!({"kind":self.source_kind(),
+            "scan_age_seconds":scan_age,"view_age_seconds":view_age,
+            "projected":{"height":point.height,"hash":point.block_hash},
+            "selected_tip":{"height":self.tip,"hash":self.tip_hash},
+            "complete_to_tip":self.complete_to_tip()});
+        if let Projection::Archive(view) = &self.projection {
+            value["tip_basis"] = "operator-reported".into();
+            value["generation"] = view.status().generation.into();
+            value["snapshot"] = json!(view.snapshot());
+            value["trust"] =
+                "local operator projection; not portable chain or ownership evidence".into();
+        } else {
+            value["tip_basis"] = "autonomous-chain-source".into();
+        }
+        value
     }
 }
 
@@ -73,7 +151,7 @@ fn loaded(network: &str, genesis: Txid, path: &Path) -> Result<Snapshot, Error> 
     let tip = index.registry.height();
     let tip_hash = index.tip_hash();
     Ok(Snapshot {
-        index,
+        projection: Projection::Local(index),
         tip,
         tip_hash,
         scan: Scan::Never,
@@ -110,13 +188,39 @@ impl Network {
         Ok(state.clone())
     }
 
-    fn refresh(&self, blocks: u64) -> Result<Arc<Snapshot>, Error> {
+    fn refresh(
+        &self,
+        blocks: u64,
+        archive: Option<&ArchiveSettings>,
+    ) -> Result<Arc<Snapshot>, Error> {
+        if let Some(settings) = archive {
+            match names_archive::read(settings, &self.name, self.genesis) {
+                Ok(view) => {
+                    let tip = view
+                        .status()
+                        .selected_tip
+                        .ok_or_else(|| Error::Invalid("Names view has no selected tip".into()))?;
+                    return self.publish(Snapshot {
+                        tip: tip.height,
+                        tip_hash: tip.hash.to_string(),
+                        projection: Projection::Archive(view),
+                        scan: Scan::ArchiveView(Instant::now()),
+                    });
+                }
+                Err(_) => tracing::warn!(target: "urma_gateway", network = %self.name,
+                    "optional Names archive unavailable; attempting autonomous registry refresh"),
+            }
+        }
         let node = connect(self.chain)?;
         let report = sync_index(&node, self.genesis, &self.index, blocks)?;
         let mut snapshot = loaded(&self.name, self.genesis, &self.index)?;
         snapshot.tip = report.tip;
         snapshot.tip_hash = node.block_hash(report.tip)?.to_string();
         snapshot.scan = Scan::At(Instant::now());
+        self.publish(snapshot)
+    }
+
+    fn publish(&self, snapshot: Snapshot) -> Result<Arc<Snapshot>, Error> {
         let snapshot = Arc::new(snapshot);
         let mut state = self
             .state
@@ -268,10 +372,11 @@ impl Gateway {
                         ResolutionHealth::Unavailable
                     }
                     Availability::Ready(snapshot) => ResolutionHealth::Loaded {
-                        index_height: snapshot.index.registry.height(),
+                        index_height: snapshot.point().height,
                         chain_tip: snapshot.tip,
                         scan: snapshot.scan,
                         currency: self.currency(snapshot),
+                        names_source: snapshot.source(),
                     },
                 },
                 Err(cause) => {
@@ -287,7 +392,7 @@ impl Gateway {
 
     pub(crate) fn currency(&self, snapshot: &Snapshot) -> Currency {
         self.settings.freshness.judge(
-            snapshot.index.registry.height(),
+            snapshot.point().height,
             snapshot.tip,
             snapshot.scan,
             Instant::now(),
@@ -313,7 +418,7 @@ impl Gateway {
         standing(
             &format!("{}.{}", site.name, site.suffix.label()),
             network.genesis,
-            snapshot.index.registry.resolve(&site.name),
+            snapshot.resolve(&site.name),
             snapshot.tip,
         )
     }
@@ -549,9 +654,9 @@ impl Gateway {
     pub(crate) fn rescan_loop(&self) {
         loop {
             for network in self.networks.values() {
-                match network.refresh(self.settings.scan_blocks) {
+                match network.refresh(self.settings.scan_blocks, self.settings.archive.as_ref()) {
                     Ok(snapshot) => {
-                        tracing::info!(target: "urma_gateway", network = %network.name, height = snapshot.index.registry.height(), tip = snapshot.tip, "registry index refreshed")
+                        tracing::info!(target: "urma_gateway", network = %network.name, height = snapshot.point().height, tip = snapshot.tip, "registry index refreshed")
                     }
                     Err(cause) => {
                         tracing::warn!(target: "urma_gateway", network = %network.name, error = %cause, "registry rescan failed; serving the previous index until it is no longer current")

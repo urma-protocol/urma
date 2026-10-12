@@ -20,6 +20,8 @@ pub(crate) struct Subject {
     pub(crate) network: Option<String>,
     pub(crate) registry: Option<String>,
     pub(crate) index: Option<IndexPoint>,
+    pub(crate) names_source: Option<&'static str>,
+    pub(crate) complete_to_tip: Option<bool>,
 }
 
 impl Subject {
@@ -30,6 +32,8 @@ impl Subject {
             network: None,
             registry: None,
             index: None,
+            names_source: None,
+            complete_to_tip: None,
         }
     }
 
@@ -48,6 +52,12 @@ impl Subject {
         headers.push(("URMA-Name", self.name.clone()));
         for index in self.index.iter() {
             headers.push(("URMA-Index", index.to_string()));
+        }
+        if let Some(source) = self.names_source {
+            headers.push(("URMA-Names-Source", source.to_owned()));
+        }
+        if let Some(complete) = self.complete_to_tip {
+            headers.push(("URMA-Names-Complete-To-Tip", complete.to_string()));
         }
         headers
     }
@@ -75,6 +85,12 @@ impl Subject {
                 "<span>Index height</span><span>{} (block <code>{}</code>)</span>",
                 index.height,
                 escape(&index.block_hash)
+            ));
+        }
+        if let Some(source) = self.names_source {
+            facts.push_str(&format!(
+                "<span>Names source</span><code>{}</code>",
+                escape(source)
             ));
         }
         facts

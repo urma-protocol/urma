@@ -165,3 +165,30 @@ The command line composes the [URMA Rust libraries](https://github.com/urma-prot
 ## License
 
 [0BSD](https://github.com/urma-protocol/urma/blob/master/LICENSE). Maintained by Cristian Zmole as part of [URMA](https://urma.rosint.org). [Project contact](mailto:urma@rosint.org).
+
+
+The native gateway also honors the optional `archive` setting for each explicitly
+configured registry. A successful, fully traversed Names view supplies resolution,
+listing and pending metadata without creating a local `NamesIndex`, registering a
+registry, stepping it, or scanning blocks. A refused view falls back to the existing
+autonomous refresh. If both paths fail, the previously published snapshot and its
+acquisition/scan time remain unchanged. Publication retrieval and root verification
+continue through the existing store and chain source.
+
+Gateway readiness is source-specific. `autonomous-local` retains the existing
+successful-rescan age and two-block lag policy. `local-node-operator` means a view
+was acquired less than 600 seconds ago and its projection is at most two blocks
+behind the **operator-reported** selected tip. It does not establish when the
+operator last scanned or observed the chain, or whether that tip is the current
+global tip. Repeated acquisition of unchanged operator state refreshes acquisition
+age only. A fully traversed view can remain `complete_to_tip=false` within the
+allowed lag. Unbound resolution is relative to that projection.
+
+Readiness includes `names_source`, `scan_age_seconds` (null for operator views) and
+`view_age_seconds`. Proof resolver metadata includes the same source distinction,
+projected/selected points, completion, and, for operator views, the archive
+generation and opaque snapshot identifier. These appear even when no root can be
+served. Site responses with a resolved snapshot also include `URMA-Names-Source`
+and `URMA-Names-Complete-To-Tip`; these are provenance labels, not ownership or
+chain proofs. Existing root evidence verification is unchanged. Gateway startup
+still requires explicit network registries and does not start a Node daemon.

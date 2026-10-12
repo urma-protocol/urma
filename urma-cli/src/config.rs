@@ -133,6 +133,7 @@ pub(crate) struct GatewayChoice {
 }
 
 pub(crate) struct GatewaySettings {
+    pub(crate) archive: Option<ArchiveSettings>,
     pub(crate) bind: SocketAddr,
     pub(crate) scheme: LinkScheme,
     pub(crate) public_port: PublicPort,
@@ -175,6 +176,7 @@ pub(crate) fn gateway(choice: GatewayChoice) -> Result<GatewaySettings, Error> {
         GatewaySettings::MAX_SCAN_AGE.as_secs()
     );
     Ok(GatewaySettings {
+        archive: load()?.archive,
         bind: match choice.bind {
             Some(address) => address,
             None => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080)),
