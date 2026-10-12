@@ -1,4 +1,4 @@
-//! Names schema3->4 and retained undo-floor boundaries in owned TEMP archives.
+//! Names schema3->5 and retained undo-floor boundaries in owned TEMP archives.
 //! Schema3 construction/DDL faults occur only after Engine release. Inspections
 //! use READONLY connections; these are not live writers or crash simulations.
 //! Real signatures/inclusion and mock-selected integrity-valid blocks establish
@@ -52,6 +52,7 @@ const NAMES_TABLES: [&str; 5] = [
     "names_blocks",
     "names_outcomes",
 ];
+const PEER_TABLES: [&str; 2] = ["peer_coverage", "peer_omissions"];
 
 // Same public genesis corpus and genuine Taproot/BIP340 construction as the
 // Names projection tests; no VerifiedRecord/scan mark/undo frame is fabricated.
@@ -204,7 +205,7 @@ fn empty_names(snapshot: &Snapshot) {
 }
 fn assert_additive(old: &Snapshot, new: &Snapshot) {
     assert_eq!(old.version, 3);
-    assert_eq!(new.version, 4);
+    assert_eq!(new.version, 5);
     for (table, rows) in &old.tables {
         assert_eq!(&new.tables[table], rows, "migration changed {table}");
     }
@@ -220,7 +221,8 @@ fn assert_additive(old: &Snapshot, new: &Snapshot) {
         .filter(|name| !old.tables.contains_key(*name))
         .map(String::as_str)
         .collect();
-    assert_eq!(added_tables, BTreeSet::from(NAMES_TABLES));
+    let expected_tables: BTreeSet<_> = NAMES_TABLES.into_iter().chain(PEER_TABLES).collect();
+    assert_eq!(added_tables, expected_tables);
     let added_ddl: BTreeSet<_> = new
         .schema
         .iter()
@@ -239,7 +241,11 @@ fn assert_additive(old: &Snapshot, new: &Snapshot) {
             "sqlite_autoindex_names_states_1",
             "sqlite_autoindex_names_pending_1",
             "sqlite_autoindex_names_blocks_1",
-            "sqlite_autoindex_names_outcomes_1"
+            "sqlite_autoindex_names_outcomes_1",
+            "peer_coverage",
+            "peer_omissions",
+            "sqlite_autoindex_peer_coverage_1",
+            "sqlite_autoindex_peer_omissions_1"
         ])
     );
     empty_names(new);
@@ -295,7 +301,7 @@ fn legacy_schema3(directory: &Path) -> Legacy {
     assert!(engine.names_status(genesis).unwrap().is_none());
     drop(engine);
     let current = snapshot(directory);
-    assert_eq!(current.version, 4);
+    assert_eq!(current.version, 5);
     empty_names(&current);
     // Recreate the exact predecessor layout in this disposable fixture only:
     // object schema3 identity columns and every authenticated row remain intact.
@@ -304,14 +310,18 @@ fn legacy_schema3(directory: &Path) -> Legacy {
     let tx = db.transaction().unwrap();
     tx.execute_batch(
         "DROP TABLE names_outcomes; DROP TABLE names_blocks; DROP TABLE names_pending;
-        DROP TABLE names_states; DROP TABLE names_registries; PRAGMA user_version=3;",
+        DROP TABLE names_states; DROP TABLE names_registries;
+        DROP TABLE peer_omissions; DROP TABLE peer_coverage; PRAGMA user_version=3;",
     )
     .unwrap();
     tx.commit().unwrap();
     drop(db);
     let old = snapshot(directory);
     assert_eq!(old.version, 3);
-    assert_eq!(old.tables.len() + NAMES_TABLES.len(), current.tables.len());
+    assert_eq!(
+        old.tables.len() + NAMES_TABLES.len() + PEER_TABLES.len(),
+        current.tables.len()
+    );
     for (table, rows) in &old.tables {
         assert_eq!(
             rows, &current.tables[table],

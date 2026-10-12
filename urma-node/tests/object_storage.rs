@@ -202,7 +202,7 @@ fn populated_schema1(directory: &Path) -> (ArchiveConfig, ArchiveStatus) {
     tx.commit().unwrap();
     let old = snapshot(&db);
     assert_eq!(old.version, 1);
-    assert_eq!(old.tables.len() + 7, evidence.tables.len());
+    assert_eq!(old.tables.len() + 9, evidence.tables.len());
     for (name, rows) in &old.tables {
         assert_eq!(rows, &evidence.tables[name], "schema1 seed {name}");
     }
@@ -251,11 +251,11 @@ fn schema1_configuration_mismatch_cannot_migrate_or_reset_evidence() {
 
 fn assert_migration_only(old: &Snapshot, migrated: &Snapshot) {
     assert_eq!(old.version, 1);
-    assert_eq!(migrated.version, 4);
+    assert_eq!(migrated.version, 5);
     for (name, rows) in &old.tables {
         assert_eq!(&migrated.tables[name], rows, "migration changed {name}");
     }
-    assert_eq!(migrated.tables.len(), old.tables.len() + 7);
+    assert_eq!(migrated.tables.len(), old.tables.len() + 9);
     assert!(migrated.tables["objects"].is_empty());
     assert!(migrated.tables["object_members"].is_empty());
     for entry in &old.schema {
@@ -287,7 +287,11 @@ fn assert_migration_only(old: &Snapshot, migrated: &Snapshot) {
             "sqlite_autoindex_names_states_1",
             "sqlite_autoindex_names_pending_1",
             "sqlite_autoindex_names_blocks_1",
-            "sqlite_autoindex_names_outcomes_1"
+            "sqlite_autoindex_names_outcomes_1",
+            "peer_coverage",
+            "peer_omissions",
+            "sqlite_autoindex_peer_coverage_1",
+            "sqlite_autoindex_peer_omissions_1"
         ])
     );
 }
@@ -821,7 +825,7 @@ fn schema1_legacy_pin_without_object_can_be_unpinned_once_and_after_restart() {
         }
     }
     assert_eq!(unpinned.schema, migrated.schema);
-    assert_eq!(unpinned.version, 4);
+    assert_eq!(unpinned.version, 5);
     drop(db);
     let restarted = Engine::open(directory.path(), config, None).unwrap();
     restarted.set_pin(root, false).unwrap();
@@ -878,12 +882,13 @@ fn schema2_object_fixture(
         CREATE INDEX object_member_record ON object_members(block_hash,position,wtxid);
         DROP TABLE names_outcomes; DROP TABLE names_blocks; DROP TABLE names_pending;
         DROP TABLE names_states; DROP TABLE names_registries;
+        DROP TABLE peer_omissions; DROP TABLE peer_coverage;
         PRAGMA user_version=2;").unwrap();
     tx.commit().unwrap();
     let interim = snapshot(&db);
     assert_eq!(interim.version, 2);
     for (table, rows) in &before_projection.tables {
-        if table.starts_with("names_") {
+        if table.starts_with("names_") || table.starts_with("peer_") {
             assert!(rows.is_empty());
             continue;
         }
@@ -921,7 +926,7 @@ fn retained_schema2_members_migrate_to4_with_exact_record_identity_hashes() {
     drop(engine);
     let db = readonly_archive(directory.path());
     let migrated = snapshot(&db);
-    assert_eq!(migrated.version, 4);
+    assert_eq!(migrated.version, 5);
     let hashes: BTreeMap<_, _> = graph
         .pairs
         .iter()
@@ -953,7 +958,7 @@ fn retained_schema2_members_migrate_to4_with_exact_record_identity_hashes() {
             );
         }
     }
-    assert_eq!(migrated.tables.len(), interim.tables.len() + 5);
+    assert_eq!(migrated.tables.len(), interim.tables.len() + 7);
     for entry in &interim.schema {
         if entry.2 != "object_members" {
             assert!(

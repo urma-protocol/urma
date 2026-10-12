@@ -1014,7 +1014,7 @@ fn sqlite_abort_rolls_back_undo_new_delta_outcomes_checkpoint_and_event() {
             "Stale",
         );
         let original = snapshot(&directory);
-        assert_eq!(original.version, 4);
+        assert_eq!(original.version, 5);
         let db = Connection::open(directory.path().join("archive.sqlite3")).unwrap();
         // Every interpolated value is a locally computed fixed hash/height;
         // this writer only injects a fault into its own disposable archive.
