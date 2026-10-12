@@ -20,12 +20,14 @@ CREATE TABLE peer_omissions (
 PRAGMA user_version=5;";
 
 impl Archive {
-    /// Merges with the peer's adjacent or overlapping ranges in this generation.
+    /// Merges with the peer's adjacent or overlapping ranges. `observed` is the
+    /// generation seen before fetching the inventory; any reorg since is Stale.
     pub(crate) fn record_peer_coverage(
         &mut self,
         peer: &str,
         from: u64,
         to: u64,
+        observed: u64,
     ) -> Result<(), Error> {
         let tip = self
             .status()?
@@ -42,7 +44,11 @@ impl Archive {
             ));
         }
         let tx = self.db.transaction()?;
-        let epoch = sql_integer(generation(&tx)?)?;
+        let current = generation(&tx)?;
+        if current != observed {
+            return Err(Error::Stale);
+        }
+        let epoch = sql_integer(current)?;
         let mut low = from;
         let mut high = to;
         let mut rows = Vec::new();
@@ -186,6 +192,8 @@ pub(super) fn omission_count(db: &Connection) -> Result<u64, Error> {
 
 /// Placements found by a full scan that no earlier admission supplied are
 /// omissions of every peer whose current coverage claims this height.
+/// "Held" means any records row at that placement, whatever its source, so an
+/// empty omitting_peers is not proof that a peer listed everything.
 /// LeafManifest and DataPart records are exempt: a pruned peer may omit them
 /// while scanning. Roots, individual records and dependencies stay checked.
 pub(super) fn record_omissions(db: &Connection, batch: &ScanBatch) -> Result<(), Error> {
@@ -243,24 +251,23 @@ pub(super) fn record_omissions(db: &Connection, batch: &ScanBatch) -> Result<(),
 }
 
 /// Called inside the reorg transaction after deselection and the generation
-/// bump: coverage reaching the fork and omissions in deselected blocks are
-/// dropped, and the surviving rows move to the new generation.
+/// bump: coverage is truncated below the fork and re-stamped with the new
+/// generation; omissions in deselected blocks are dropped, the rest keep
+/// their detection generation.
 pub(super) fn reorg(db: &Connection, first_deselected: u64) -> Result<(), Error> {
+    let fork = sql_integer(first_deselected)?;
     db.execute(
-        "DELETE FROM peer_coverage WHERE to_height>=?1",
-        [sql_integer(first_deselected)?],
+        "UPDATE peer_coverage SET to_height=?1-1 WHERE from_height<?1 AND to_height>=?1",
+        [fork],
     )?;
+    db.execute("DELETE FROM peer_coverage WHERE from_height>=?1", [fork])?;
     db.execute(
         "DELETE FROM peer_omissions WHERE block_hash NOT IN (SELECT hash FROM selected)",
         [],
     )?;
-    for table in ["peer_coverage", "peer_omissions"] {
-        db.execute(
-            &format!(
-                "UPDATE {table} SET generation=(SELECT generation FROM state WHERE singleton=1)"
-            ),
-            [],
-        )?;
-    }
+    db.execute(
+        "UPDATE peer_coverage SET generation=(SELECT generation FROM state WHERE singleton=1)",
+        [],
+    )?;
     Ok(())
 }

@@ -7,12 +7,20 @@ use crate::{
 };
 
 impl Engine {
-    /// Record that `peer` listed every placement in selected [from, to] and
-    /// each one was admitted or already held, in the current generation.
+    /// Record that `peer` (its PeerId string) listed every placement in
+    /// selected [from, to] and each one was admitted or already held.
+    /// `generation` is the one observed before fetching; a reorg since is Stale.
     /// admit_record keeps multipart children even in Pruned mode, so synced
     /// components stay until cache maintenance evicts them.
-    pub fn record_peer_coverage(&self, peer: &str, from: u64, to: u64) -> Result<(), Error> {
-        self.archive()?.record_peer_coverage(peer, from, to)
+    pub fn record_peer_coverage(
+        &self,
+        peer: &str,
+        from: u64,
+        to: u64,
+        generation: u64,
+    ) -> Result<(), Error> {
+        self.archive()?
+            .record_peer_coverage(peer, from, to, generation)
     }
 
     /// First height after the peer's contiguous coverage from app start.
