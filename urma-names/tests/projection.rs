@@ -19,6 +19,7 @@ use urma_names::{
     error::NamesError,
     observation_from_verified,
     payload::Payload,
+    projection::observation_from_record,
     state::{Commit, Observation},
 };
 
@@ -144,6 +145,26 @@ fn signed_corpus_matches_the_previous_observation_construction() {
         let record = proof.verified();
         assert_eq!(record.record_bytes(), raw);
         let result = observation_from_verified(&record, &proof.reveal, 42, 7, proof.location());
+        let primitive = observation_from_record(
+            &raw,
+            record.txid(),
+            record.author(),
+            42,
+            7,
+            proof.location(),
+        );
+        match (&result, &primitive) {
+            (Ok(wrapper), Ok(parsed)) => assert_eq!(wrapper, parsed, "{}", case["name"]),
+            (Err(wrapper), Err(parsed)) => {
+                assert!(
+                    matches!(parsed, NamesError::Protocol(_)),
+                    "{}",
+                    case["name"]
+                );
+                assert_eq!(wrapper.to_string(), parsed.to_string(), "{}", case["name"]);
+            }
+            _ => panic!("primitive/wrapper disagreement: {}", case["name"]),
+        }
         match case["outcome"].as_str().unwrap() {
             "valid" => {
                 let parsed = envelope::verify_reveal(&proof.reveal, &proof.commit).unwrap();
@@ -194,8 +215,21 @@ fn non_names_kinds_and_other_profiles_are_omitted() {
         RecordKind::WireReply,
     ] {
         let proof = Proof::signed(&kind.prefix());
+        let record = proof.verified();
         assert!(
-            observation_from_verified(&proof.verified(), &proof.reveal, 42, 7, proof.location())
+            observation_from_record(
+                &kind.prefix(),
+                record.txid(),
+                record.author(),
+                42,
+                7,
+                proof.location()
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            observation_from_verified(&record, &proof.reveal, 42, 7, proof.location())
                 .unwrap()
                 .is_none()
         );
@@ -208,8 +242,21 @@ fn non_names_kinds_and_other_profiles_are_omitted() {
         .encode()
         .unwrap();
         let proof = Proof::signed(&raw);
+        let record = proof.verified();
         assert!(
-            observation_from_verified(&proof.verified(), &proof.reveal, 42, 7, proof.location())
+            observation_from_record(
+                &raw,
+                record.txid(),
+                record.author(),
+                42,
+                7,
+                proof.location()
+            )
+            .unwrap()
+            .is_none()
+        );
+        assert!(
+            observation_from_verified(&record, &proof.reveal, 42, 7, proof.location())
                 .unwrap()
                 .is_none()
         );
@@ -225,6 +272,17 @@ fn signed_truncated_or_oversized_profile_records_are_errors() {
         let proof = Proof::signed(&raw);
         let record = proof.verified();
         assert!(matches!(
+            observation_from_record(
+                &raw,
+                record.txid(),
+                record.author(),
+                42,
+                7,
+                proof.location()
+            ),
+            Err(NamesError::Protocol(_))
+        ));
+        assert!(matches!(
             observation_from_verified(&record, &proof.reveal, 42, 7, proof.location()),
             Err(NamesError::Protocol(_))
         ));
@@ -236,6 +294,13 @@ fn mismatched_reveal_or_commit_outpoint_is_rejected_before_classification() {
     for raw in [
         claim_bytes(),
         PublicRecord::Post("other kind".into()).encode().unwrap(),
+        PublicRecord::ProfileRecord {
+            profile: *b"PROFILE1",
+            payload: vec![0xff],
+        }
+        .encode()
+        .unwrap(),
+        RecordKind::ProfileRecord.prefix().to_vec(),
     ] {
         let proof = Proof::signed(&raw);
         let record = proof.verified();
@@ -306,4 +371,93 @@ fn location_metadata_is_preserved_without_claiming_inclusion_or_window_validity(
     assert_eq!(observation.author, record.author());
     assert_eq!(observation.record_sha256, record.reference().record_hash);
     assert_eq!(observation.txid, record.txid());
+}
+
+#[test]
+fn primitive_preserves_arbitrary_metadata_without_authenticating_it() {
+    let raw = claim_bytes();
+    let proof = Proof::signed(&raw);
+    let verified = proof.verified();
+    let other = Proof::signed_by(&raw, 5).verified();
+    let txid = Txid::from_byte_array([0x91; 32]);
+    let author = other.author();
+    let commit = Commit {
+        txid: Txid::from_byte_array([0x92; 32]),
+        vout: u32::MAX,
+        height: u64::MAX,
+        position: u32::MAX,
+    };
+    assert_ne!(txid, verified.txid());
+    assert_ne!(author, verified.author());
+    assert_ne!(commit.txid, proof.commit.compute_txid());
+    for height in [0, u64::MAX] {
+        let parsed = observation_from_record(&raw, txid, author, height, u32::MAX, commit)
+            .unwrap()
+            .unwrap();
+        assert_eq!(parsed.txid, txid);
+        assert_eq!(parsed.author, author);
+        assert_eq!((parsed.height, parsed.position), (height, u32::MAX));
+        assert_eq!(parsed.commit, commit);
+        assert_eq!(
+            parsed.payload,
+            Payload::from_record(&PublicRecord::decode(&raw).unwrap()).unwrap()
+        );
+        assert_eq!(parsed.record_sha256, verified.reference().record_hash);
+    }
+    // This acceptance is only parsing: the authenticated wrapper still rejects
+    // the exact same unrelated commit, without delegating/classifying first.
+    let error =
+        observation_from_verified(&verified, &proof.reveal, 0, u32::MAX, commit).unwrap_err();
+    assert!(error.to_string().contains("commit outpoint"));
+}
+
+#[test]
+fn primitive_digest_covers_exact_record_bytes_including_header() {
+    let mut hashes = Vec::new();
+    for name in ["claim.record", "renew.record"] {
+        let raw = fs::read(vectors().join(name)).unwrap();
+        let proof = Proof::signed(&raw);
+        let record = proof.verified();
+        let parsed = observation_from_record(
+            &raw,
+            record.txid(),
+            record.author(),
+            42,
+            7,
+            proof.location(),
+        )
+        .unwrap()
+        .unwrap();
+        let digest: [u8; 32] = Sha256::digest(&raw).into();
+        let payload_digest: [u8; 32] = Sha256::digest(&raw[Urma::PREFIX_BYTES + 8..]).into();
+        assert_eq!(parsed.record_sha256, digest);
+        assert_eq!(parsed.record_sha256, record.reference().record_hash);
+        assert_ne!(parsed.record_sha256, payload_digest);
+        hashes.push(parsed.record_sha256);
+    }
+    assert_ne!(hashes[0], hashes[1]);
+}
+
+#[test]
+fn primitive_rejects_invalid_record_headers_before_kind_filtering() {
+    let proof = Proof::signed(&claim_bytes());
+    let record = proof.verified();
+    let mut marker = RecordKind::Post.prefix();
+    marker[0] ^= 1;
+    let mut version = RecordKind::Post.prefix();
+    version[4] = 1;
+    let mut flags = RecordKind::Post.prefix();
+    flags[7] = 1;
+    for raw in [
+        &[][..],
+        &marker[..],
+        &version[..],
+        &flags[..],
+        b"URMA\0\xff\0\0".as_slice(),
+    ] {
+        assert!(matches!(
+            observation_from_record(raw, record.txid(), record.author(), 42, 7, proof.location()),
+            Err(NamesError::Protocol(_))
+        ));
+    }
 }
