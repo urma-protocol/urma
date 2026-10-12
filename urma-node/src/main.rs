@@ -123,6 +123,11 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 synchronize && engine.status()?.retention == urma_node::model::Retention::Unpruned;
             let mut service =
                 Service::bind(listen, token, engine.clone())?.with_cache_limit(cache_bytes)?;
+            // Only the standalone binary owns process signals. The callback
+            // requests the same cooperative stop as authenticated HTTP shutdown;
+            // worker and overlay joins still happen on this foreground path.
+            let shutdown = service.shutdown_handle();
+            ctrlc::try_set_handler(move || shutdown.request())?;
             if retain {
                 let scratch = args.data.join("scratch");
                 let mut builder = std::fs::DirBuilder::new();
@@ -200,10 +205,13 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 "URMA Node listening at {} (authenticated loopback)",
                 service.address()?
             );
-            service.run(synchronize)?;
-            if let Some(network) = network {
-                network.shutdown()?;
-            }
+            let outcome = service.run(synchronize);
+            let network_outcome = match network {
+                Some(network) => network.shutdown(),
+                None => Ok(()),
+            };
+            outcome?;
+            network_outcome?;
         }
         Command::CreateToken { .. } | Command::CreatePeerKey { .. } => unreachable!(),
     }

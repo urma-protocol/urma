@@ -22,6 +22,7 @@ urma-names = { path = "../urma-names", version = "0.2.2" }
 urma-node-client = { path = "../urma-node-client", version = "0.2.2" }
 hex = "0.4"
 clap = { version = "4", features = ["derive"] }
+ctrlc = { version = "3", features = ["termination"] }
 rand = "0.8"
 libp2p = { version = "=0.56.0", default-features = false, features = ["tokio", "tcp", "noise", "yamux", "request-response", "macros", "ed25519"] }
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }

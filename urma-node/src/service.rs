@@ -21,6 +21,21 @@ struct CacheStatus {
     error: Option<String>,
 }
 
+/// Cooperative stop request shared with the owner of a running service.
+/// Requesting shutdown does not wait for completion or interrupt entered I/O
+/// or SQL. The owner must wait for `Service::run` to return before reopening
+/// its archive. Embedded services do not install process signal handlers.
+#[derive(Clone)]
+pub struct ShutdownHandle {
+    stop: Arc<AtomicBool>,
+}
+
+impl ShutdownHandle {
+    pub fn request(&self) {
+        self.stop.store(true, Ordering::Release);
+    }
+}
+
 pub struct Service {
     listener: TcpListener,
     token: String,
@@ -64,6 +79,12 @@ impl Service {
 
     pub fn address(&self) -> Result<SocketAddr, Error> {
         Ok(self.listener.local_addr()?)
+    }
+
+    pub fn shutdown_handle(&self) -> ShutdownHandle {
+        ShutdownHandle {
+            stop: Arc::clone(&self.stop),
+        }
     }
 
     /// Explicit optional candidates for background object recovery. Merely

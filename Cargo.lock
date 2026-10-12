@@ -3693,6 +3693,7 @@ dependencies = [
  "async-trait",
  "bitcoin",
  "clap",
+ "ctrlc",
  "hex",
  "libp2p",
  "rand 0.8.8",
