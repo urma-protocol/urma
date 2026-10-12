@@ -80,7 +80,7 @@ struct Slot {
 #[derive(Clone, Copy)]
 struct Health {
     failures: Saturating<u32>,
-    blocked_until: Instant,
+    blocked_until: Option<Instant>,
 }
 
 impl Slot {
@@ -104,10 +104,10 @@ impl Slot {
         }
     }
 
-    fn succeeded(&self, now: Instant) {
+    fn succeeded(&self) {
         self.update(|health| {
             health.failures = Saturating(0);
-            health.blocked_until = now;
+            health.blocked_until = None;
         });
     }
 
@@ -115,7 +115,7 @@ impl Slot {
         self.update(|health| {
             health.failures += Saturating(1);
             if health.failures.0 >= config::PROVIDER_BREAKER_FAILURES {
-                health.blocked_until = now + config::PROVIDER_BREAKER_WINDOW;
+                health.blocked_until = Some(now + config::PROVIDER_BREAKER_WINDOW);
                 tracing::warn!(provider = %self.provider.label(), failures = health.failures.0, "provider circuit opened");
             }
         });
@@ -123,7 +123,7 @@ impl Slot {
 
     fn cooled(&self, now: Instant, wait: Duration) {
         self.update(|health| {
-            health.blocked_until = now + wait.min(config::PROVIDER_RETRY_MAX);
+            health.blocked_until = Some(now + wait.min(config::PROVIDER_RETRY_MAX));
         });
     }
 }
@@ -135,14 +135,13 @@ impl Router {
             "public transport requires between one and {} providers",
             config::MAX_PROVIDERS
         );
-        let now = Instant::now();
         let mut slots = Vec::new();
         for provider in providers {
             slots.push(Slot {
                 provider,
                 health: Mutex::new(Health {
                     failures: Saturating(0),
-                    blocked_until: now,
+                    blocked_until: None,
                 }),
             });
         }
@@ -182,11 +181,10 @@ impl Router {
                     label: slot.provider.label(),
                     evidence: slot.provider.evidence(),
                     failures: health.failures.0,
-                    blocked_for: if health.blocked_until > now {
-                        health.blocked_until - now
-                    } else {
-                        Duration::ZERO
-                    },
+                    blocked_for: health
+                        .blocked_until
+                        .and_then(|deadline| deadline.checked_duration_since(now))
+                        .unwrap_or(Duration::ZERO),
                 }
             })
             .collect()
@@ -302,7 +300,7 @@ impl Router {
                 continue;
             }
             let health = slot.health();
-            if health.blocked_until > now {
+            if health.blocked_until.is_some_and(|deadline| deadline > now) {
                 continue;
             }
             ranked.push((slot.provider.evidence(), health.failures.0, index));
@@ -326,7 +324,7 @@ impl Router {
             .and_then(|value| validate_result(encoding, chain, method, args, value));
         match result {
             Ok(value) => {
-                slot.succeeded(Instant::now());
+                slot.succeeded();
                 Outcome::Answered(Answer {
                     value,
                     label,
@@ -335,7 +333,7 @@ impl Router {
                 })
             }
             Err(Error::Missing(message)) if absent_record(&message) => {
-                slot.succeeded(Instant::now());
+                slot.succeeded();
                 tracing::warn!(provider = %label, %message, "record absent from one provider");
                 Outcome::Absent(message)
             }
@@ -389,4 +387,63 @@ impl Router {
 
 fn absent_record(message: &str) -> bool {
     message == config::ABSENT_TRANSACTION || message == config::ABSENT_RECORD
+}
+
+#[cfg(test)]
+mod health_tests {
+    use super::*;
+    use serde_json::json;
+
+    struct Ready;
+    impl Provider for Ready {
+        fn label(&self) -> String {
+            "ready fixture".into()
+        }
+        fn evidence(&self) -> Evidence {
+            Evidence::PublicProviderObservation
+        }
+        fn block_encoding(&self) -> BlockEncoding {
+            BlockEncoding::Core
+        }
+        fn supports(&self, method: &str) -> bool {
+            method == "getblockhash"
+        }
+        fn call(&self, _: Chain, _: &str, _: &[Value]) -> Result<Value, Error> {
+            Ok(json!("00".repeat(32)))
+        }
+    }
+
+    #[test]
+    fn success_after_candidate_clock_sample_does_not_cool_healthy_provider() {
+        let router = Router::new(vec![Box::new(Ready)]).unwrap();
+        // A concurrent caller can succeed after this query samples its clock,
+        // before it reads provider health (supports itself may also wait).
+        let query_started = Instant::now();
+        router
+            .call(Chain::BitcoinRegtest, "getblockhash", &[json!(1)])
+            .unwrap();
+        assert_eq!(
+            router.candidates("getblockhash", query_started).unwrap(),
+            vec![0]
+        );
+    }
+
+    #[test]
+    fn real_cooldown_still_blocks_until_deadline_and_success_clears_it() {
+        let router = Router::new(vec![Box::new(Ready)]).unwrap();
+        let now = Instant::now();
+        router.slots[0].cooled(now, Duration::from_secs(5));
+        assert!(router.candidates("getblockhash", now).unwrap().is_empty());
+        assert_eq!(
+            router
+                .candidates("getblockhash", now + Duration::from_secs(5))
+                .unwrap(),
+            vec![0]
+        );
+        router.slots[0].succeeded();
+        assert_eq!(
+            router.candidates("getblockhash", Instant::now()).unwrap(),
+            vec![0]
+        );
+    }
 }
