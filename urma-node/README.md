@@ -142,8 +142,10 @@ Names uses the same bearer authentication and bodyless request rules:
   projected block, with separate selected tip and completion status. NAME must
   already be canonical Names V0 ASCII; it is not normalized by the service.
 
-Names mutations return typed JSON only on HTTP 200. Invalid syntax returns 400,
-unavailable context or stale selection 409, and rejected operations 422. Internal
+Names mutations return typed JSON only on HTTP 200. Malformed fields on supported
+routes return 400; unsupported paths or methods return 404 (including a register
+path without its query). Unavailable context or stale selection returns 409,
+and rejected operations 422. Internal
 failures return a generic 500. A transport failure can follow a committed step;
 do not automatically repeat mutations. These local operator results are not
 portable chain proofs, and a partial projection is not a complete registry view.
