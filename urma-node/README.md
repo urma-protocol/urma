@@ -93,10 +93,11 @@ source calls and SQL commits are not forcibly interrupted. Failed acquisitions
 remain incomplete and the local status reports the last retention error.
 Pruned mode does not automatically download complete objects.
 
-Background cache size limits, distributed peer discovery, application adapters and
-service packaging are not yet delivered.
-Windows private-file ACL and existing runtime I/O
-porting are also outstanding. This is not a release candidate.
+Background cache size limits, distributed peer discovery, the remaining
+application adapters and Linux service packaging are not yet delivered.
+This development stage targets Linux for implementation and testing. Windows
+I/O/ACL porting, an installer and Windows Service integration are deferred and
+are not acceptance requirements for this stage. This is not a release candidate.
 
 ## Local development
 
