@@ -40,7 +40,15 @@ const BLOCKS: u64 = 8;
 const FILLER: u32 = 2000;
 const WAL_WRITE: u64 = 64 * 1024;
 const ATTEMPTS: usize = 12;
-const STEP_TIMEOUT: Duration = Duration::from_secs(60);
+const STEP_TIMEOUT: Duration = Duration::from_secs(20);
+// libtest may print its own unterminated text before the host's first line,
+// so protocol lines are found by this tag anywhere in a line.
+const BEGIN: &str = "crash-step begin ";
+const DONE: &str = "crash-step done ";
+
+fn tagged<'a>(line: &'a str, tag: &str) -> Option<&'a str> {
+    line.split_once(tag).map(|(_, label)| label)
+}
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 struct Fixture {
@@ -325,13 +333,13 @@ fn reference(fixture: &Fixture) -> Reference {
 
 fn host_step(label: &str, step: impl FnOnce()) {
     let mut out = std::io::stdout();
-    writeln!(out, "begin {label}").unwrap();
+    writeln!(out, "{BEGIN}{label}").unwrap();
     out.flush().unwrap();
     let mut ack = String::new();
     std::io::stdin().read_line(&mut ack).unwrap();
     assert_eq!(ack, "go\n", "parent acknowledgement");
     step();
-    writeln!(out, "done {label}").unwrap();
+    writeln!(out, "{DONE}{label}").unwrap();
     out.flush().unwrap();
 }
 
@@ -442,7 +450,7 @@ impl Host {
                 .unwrap_or_else(|| panic!("host step exceeded bound: {}", self.stderr()));
             match self.lines.recv_timeout(left) {
                 Ok(line) => {
-                    if let Some(label) = line.strip_prefix("begin ") {
+                    if let Some(label) = tagged(&line, BEGIN) {
                         return Some(label.to_owned());
                     }
                 }
@@ -508,13 +516,12 @@ enum Kill {
 // True when the step's own writes armed the kill before it reported done.
 fn wait_for_writes(host: &Host, base: u64, threshold: u64, label: &str) -> bool {
     let deadline = Instant::now() + STEP_TIMEOUT;
-    let done = format!("done {label}");
     while Instant::now() < deadline {
         if written(host.pid).checked_sub(base).unwrap() >= threshold {
             return true;
         }
         match host.lines.try_recv() {
-            Ok(line) if line == done => return false,
+            Ok(line) if tagged(&line, DONE) == Some(label) => return false,
             Ok(_) | Err(TryRecvError::Empty) => (),
             Err(TryRecvError::Disconnected) => panic!("host exited inside {label}"),
         }
@@ -588,9 +595,18 @@ fn run_until(label: &str, kill: &Kill, wanted: (bool, usize)) {
     let fixture = fixture();
     let reference = reference(&fixture);
     let mut outcomes = Vec::new();
-    for _ in 0..ATTEMPTS {
+    for attempt in 1..=ATTEMPTS {
         let outcome = crash_and_resume(&fixture, &reference, label, kill);
         if outcome == wanted {
+            // Captured stderr is hidden on success; keep the count readable.
+            let report = format!("{label} {kill:?}: {attempt} attempt(s) {outcomes:?}\n");
+            let path = Path::new(env!("CARGO_TARGET_TMPDIR")).join("crash_durability_attempts");
+            let mut file = std::fs::OpenOptions::new()
+                .create(true)
+                .append(true)
+                .open(path)
+                .unwrap();
+            file.write_all(report.as_bytes()).unwrap();
             return;
         }
         outcomes.push(outcome);
