@@ -214,6 +214,39 @@ impl Service {
             return respond(stream, 401, json!({"error":"authentication required"}));
         }
         match first {
+            "POST /v1/cache/prune HTTP/1.1" => match self.engine.prune_cache() {
+                Ok(records_removed) => respond(
+                    stream,
+                    200,
+                    serde_json::to_value(crate::model::PruneReceipt { records_removed })?,
+                ),
+                Err(error) => control_error(stream, error),
+            },
+            line if line.starts_with("POST /v1/objects/") && line.ends_with(" HTTP/1.1") => {
+                let path = &line["POST /v1/objects/".len()..line.len() - " HTTP/1.1".len()];
+                let (id, pin) = match path.rsplit_once('/') {
+                    Some((id, "pin")) => (id, true),
+                    Some((id, "unpin")) => (id, false),
+                    _ => return respond(stream, 404, json!({"error":"unknown endpoint"})),
+                };
+                if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+                    return respond(stream, 400, json!({"error":"invalid root transaction ID"}));
+                }
+                let root = id
+                    .parse()
+                    .map_err(|e| Error::Invalid(format!("TXID: {e}")))?;
+                // Engine serializes validation and mutation with pruning/reorg.
+                // The acknowledgement describes this operation's commit point;
+                // a lost response must not be treated as proof of no mutation.
+                match self.engine.set_pin(root, pin) {
+                    Ok(()) => respond(
+                        stream,
+                        200,
+                        serde_json::to_value(crate::model::PinReceipt { root, pinned: pin })?,
+                    ),
+                    Err(error) => control_error(stream, error),
+                }
+            }
             line if line.starts_with("GET /v1/objects/") && line.ends_with(" HTTP/1.1") => {
                 let id = &line["GET /v1/objects/".len()..line.len() - " HTTP/1.1".len()];
                 if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
@@ -266,7 +299,7 @@ impl Service {
                     json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
                         "retention_configured":self.retention.is_some(),
                         "record_sources_configured":self.sources.len(),
-                        "capabilities":["status","header-sync","full-block-scan","record-read","object-status"]}),
+                        "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune"]}),
                 )
             }
             "POST /v1/shutdown HTTP/1.1" => {
@@ -276,6 +309,21 @@ impl Service {
             }
             _ => respond(stream, 404, json!({"error":"unknown endpoint"})),
         }
+    }
+}
+
+fn control_error(stream: &mut TcpStream, error: Error) -> Result<(), Error> {
+    match error {
+        Error::Invalid(message) => respond(stream, 422, json!({"error":message})),
+        error @ (Error::Busy(_) | Error::Stale) => {
+            respond(stream, 409, json!({"error":error.to_string()}))
+        }
+        // Do not expose database internals or local filesystem paths over HTTP.
+        _ => respond(
+            stream,
+            500,
+            json!({"error":"local archive operation failed"}),
+        ),
     }
 }
 
@@ -302,7 +350,10 @@ fn respond(stream: &mut TcpStream, code: u16, body: serde_json::Value) -> Result
         200 => "OK",
         400 => "Bad Request",
         401 => "Unauthorized",
+        409 => "Conflict",
         413 => "Content Too Large",
+        422 => "Unprocessable Content",
+        500 => "Internal Server Error",
         _ => "Not Found",
     };
     write!(
