@@ -433,6 +433,45 @@ fn partial_or_changed_operator_traversal_falls_back_atomically_without_retry_or_
             original
         );
     }
+    // A distinct, valid prefix makes accidental merge with the fallback visible.
+    // The successful control first proves that this prefix changes resolution.
+    f.config(None, &f.temp.path().join("token"));
+    let (ok, fallback, _) = f.invoke("resolve", Some("atelier"), Some(id(1)));
+    assert!(ok);
+    let mut changed = f.entries[..2].to_vec();
+    let NamesEntry::Name { state, .. } = &mut changed[1] else {
+        panic!("name fixture");
+    };
+    let Binding::Bound(bound) = &mut state.binding else {
+        panic!("bound fixture");
+    };
+    bound.target = Target::Publication(id(42));
+    let mut pages = f.pages();
+    pages[0] = (200, json!(f.page(changed, true)));
+    let control = Server::new(pages.clone());
+    f.config(Some(control.addr), &f.temp.path().join("token"));
+    let (ok, result, err) = f.invoke("resolve", Some("atelier"), Some(id(1)));
+    assert!(ok, "{err}");
+    assert_ne!(result["resolution"], fallback["resolution"]);
+    assert_eq!(
+        result["resolution"]["Bound"]["target"]["Publication"],
+        id(42).to_string()
+    );
+    assert_eq!(control.finish().len(), 3);
+    pages[1] = (409, json!({"error":"changed"}));
+    let failed = Server::new(pages);
+    f.config(Some(failed.addr), &f.temp.path().join("token"));
+    let (ok, result, err) = f.invoke("resolve", Some("atelier"), Some(id(1)));
+    assert!(ok, "{err}");
+    assert_eq!(
+        result, fallback,
+        "failed prefix must not contaminate fallback"
+    );
+    assert_eq!(failed.finish().len(), 2);
+    assert_eq!(
+        fs::read(f.temp.path().join("index.json")).unwrap(),
+        original
+    );
 }
 
 #[test]
