@@ -439,7 +439,15 @@ impl Engine {
         let selection = {
             let archive = self.archive()?;
             check_dependency_cancelled(cancelled)?;
-            if chain != archive.config().chain {
+            if chain
+                .genesis()
+                .map_err(|error| Error::Invalid(error.to_string()))?
+                != archive
+                    .config()
+                    .chain
+                    .genesis()
+                    .map_err(|error| Error::Invalid(error.to_string()))?
+            {
                 return Err(Error::Invalid(
                     "commit source belongs to another chain".into(),
                 ));
