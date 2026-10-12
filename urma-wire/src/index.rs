@@ -1,7 +1,7 @@
 use crate::cached::decode_cached;
 use crate::config::FETCH_WORKERS;
 use crate::{Error, SyncError, ensure, reader::Reader};
-use bitcoin::{Block, BlockHash, Transaction};
+use bitcoin::{Block, BlockHash, Transaction, Txid, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -38,17 +38,43 @@ pub fn entry_from_verified(
     height: u64,
     position: u32,
 ) -> Result<Option<Entry>, Error> {
-    let bytes = record.record_bytes();
-    if !is_wire_kind(RecordKind::parse(bytes)?) {
+    entry_from_record(
+        record.record_bytes(),
+        record.txid(),
+        record.author(),
+        height,
+        position,
+    )
+}
+
+/// Parses and projects record bytes into a Wire entry without I/O.
+///
+/// Only Post, Reply, Profile, Avatar, WirePost and WireReply are included.
+/// Other URMA kinds return `None`. Wire payloads are decoded strictly; legacy
+/// cache exceptions do not apply. The original record bytes are preserved.
+///
+/// This function does not authenticate the author or TXID, verify a record
+/// proof, or establish block inclusion, confirmation or active-chain membership.
+/// All identity and location metadata is supplied by the caller. The caller must
+/// obtain the bytes and identity from independent verification or from a local
+/// index that the caller explicitly trusts.
+pub fn entry_from_record(
+    record: &[u8],
+    txid: Txid,
+    author: XOnlyPublicKey,
+    height: u64,
+    position: u32,
+) -> Result<Option<Entry>, Error> {
+    if !is_wire_kind(RecordKind::parse(record)?) {
         return Ok(None);
     }
-    PublicRecord::decode(bytes)?;
+    PublicRecord::decode(record)?;
     Ok(Some(Entry {
         height,
         position,
-        txid: record.txid().to_string(),
-        author: record.author().to_string(),
-        record: hex::encode(bytes),
+        txid: txid.to_string(),
+        author: author.to_string(),
+        record: hex::encode(record),
     }))
 }
 
