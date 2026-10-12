@@ -120,6 +120,15 @@ The separate `urma-node-control` client accepts an explicit `--endpoint`
 loopback address and `--token-file`, followed by `status`, `object TXID`,
 `pin TXID`, `unpin TXID` or `prune`. It does not open an archive or start a
 daemon. Commands print JSON; failures use stderr and a nonzero exit status.
+Names commands use that same explicit connection and token:
+`names-status GENESIS`, `names-register GENESIS HEIGHT HASH`,
+`names-step GENESIS`, and `names-resolve GENESIS NAME`. Registration supplies
+the actual genesis block placement; resolution requires an already canonical
+Names V0 name. These commands call the local API once without automatic scans,
+registration, stepping or retries beyond the operation explicitly requested.
+Unregistered status prints JSON `null`; unavailable or stale state is an error,
+not an unbound name. Resolution includes the projected block and completion
+status, which callers must distinguish from the selected tip.
 Pinning requires an already verified, fully local object; it does not download
 missing content. Pruning reports child records removed, not bytes. Control
 POST requests have an empty body and are never automatically retried: a lost
