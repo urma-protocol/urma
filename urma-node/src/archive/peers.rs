@@ -194,8 +194,9 @@ pub(super) fn omission_count(db: &Connection) -> Result<u64, Error> {
 /// omissions of every peer whose current coverage claims this height.
 /// "Held" means any records row at that placement, whatever its source, so an
 /// empty omitting_peers is not proof that a peer listed everything.
-/// LeafManifest and DataPart records are exempt: a pruned peer may omit them
-/// while scanning. Roots, individual records and dependencies stay checked.
+/// Only complete records are checked, matching inventories that list records
+/// rows only: pending dependencies are never omissions. LeafManifest and
+/// DataPart records are exempt, since a pruned peer may omit them while scanning.
 pub(super) fn record_omissions(db: &Connection, batch: &ScanBatch) -> Result<(), Error> {
     let block = batch.ticket.point();
     let hash = block.hash.to_string();
@@ -218,12 +219,6 @@ pub(super) fn record_omissions(db: &Connection, batch: &ScanBatch) -> Result<(),
             positions.push(record.position);
         }
     }
-    positions.extend(
-        batch
-            .dependencies
-            .iter()
-            .map(|dependency| dependency.position),
-    );
     for position in positions {
         let held = db.query_row(
             "SELECT count(*) FROM records WHERE block_hash=?1 AND position=?2",
