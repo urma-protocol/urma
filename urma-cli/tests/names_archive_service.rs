@@ -1187,7 +1187,7 @@ fn surf_scenario(control: &Path) {
     assert_eq!(
         invoke_surf_bridge(control, fixture.genesis, rpc_addr, 1).trim_end(),
         format!(
-            "resolved=0 txid= err=alpha.rbtc is Unbound in registry {:.12}",
+            "resolved=0 txid= err=alpha.rbtc is Unbound in registry {:.12}…",
             fixture.genesis.to_string()
         )
     );
