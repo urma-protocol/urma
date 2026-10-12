@@ -9,7 +9,6 @@ use crate::{
     model::RecordReceipt,
     peer::PeerSource,
     peer_protocol::{InventoryPage, Placement},
-    retrieval::RecordSource,
 };
 use libp2p::PeerId;
 use serde_json::{Value, json};
@@ -46,6 +45,7 @@ struct Range {
     next: usize,
     more: bool,
     scanned_through: u64,
+    generation: u64,
 }
 
 struct Peer {
@@ -76,7 +76,6 @@ struct Round<'a> {
     deadline: Instant,
     fetched: usize,
     requested_page: bool,
-    generation: u64,
 }
 
 impl Round<'_> {
@@ -159,7 +158,6 @@ impl Scheduler {
             deadline: Instant::now() + Self::ROUND_TIME,
             fetched: 0,
             requested_page: false,
-            generation: engine.status()?.generation,
         };
         let outcome = self.advance(peer, engine, &mut round);
         if stop.load(Ordering::Acquire) {
@@ -219,7 +217,7 @@ impl Scheduler {
                     }
                     round.fetched += 1;
                     pace(peer, round)?;
-                    self.acquire(peer, engine, entry)?;
+                    self.acquire(peer, engine, entry, round.deadline)?;
                 }
                 range.next += 1;
             } else if range.more {
@@ -228,12 +226,12 @@ impl Scheduler {
                 }
                 round.requested_page = true;
                 pace(peer, round)?;
-                let Some(page) = peer.source.inventory(
-                    range.from,
-                    range.to,
+                let Some(page) = peer.source.inventory_until(
+                    (range.from, range.to),
                     range.after,
                     Self::PAGE_ENTRIES,
                     round.stop,
+                    round.deadline,
                 )?
                 else {
                     return Err(Pause::Done);
@@ -243,22 +241,30 @@ impl Scheduler {
                 }
             } else {
                 let through = range.to.min(range.scanned_through);
-                engine.record_peer_coverage(&peer.id, range.from, through, round.generation)?;
+                engine.record_peer_coverage(&peer.id, range.from, through, range.generation)?;
                 *slot = None;
             }
         }
         Ok(())
     }
 
-    /// Fetch one advertised record from the advertising peer and admit it.
-    fn acquire(&self, peer: &Peer, engine: &Engine, entry: &Placement) -> Result<(), Pause> {
-        let Some(package) = peer.source.fetch(entry.txid)? else {
-            return Err(Pause::Done);
+    /// Fetch one advertised record from the advertising peer and admit it. A
+    /// peer that answers Missing leaves the entry listed-only: it neither blocks
+    /// coverage nor is retried within this range.
+    fn acquire(
+        &self,
+        peer: &Peer,
+        engine: &Engine,
+        entry: &Placement,
+        deadline: Instant,
+    ) -> Result<(), Pause> {
+        let Some(package) = peer.source.fetch_until(entry.txid, deadline)? else {
+            return Ok(());
         };
         let receipt = match engine.admit_record(package) {
             Ok(receipt) => receipt,
             Err(error) => {
-                if !matches!(error, Error::Busy(_)) {
+                if !matches!(error, Error::Busy(_) | Error::Stale) {
                     self.rejected.fetch_add(1, Ordering::Relaxed);
                 }
                 return Err(Pause::Error(error));
@@ -310,8 +316,11 @@ fn pace(peer: &Peer, round: &Round) -> Result<(), Pause> {
 }
 
 /// The next unclaimed range for this peer, bounded by the local selected tip.
+/// The range keeps the generation observed here for its whole lifetime, so a
+/// reorg between rounds makes its coverage claim Stale instead of mislabelled.
 fn open(peer: &Peer, engine: &Engine) -> Result<Option<Range>, Error> {
-    let Some(tip) = engine.status()?.selected_tip else {
+    let status = engine.status()?;
+    let Some(tip) = status.selected_tip else {
         return Ok(None);
     };
     let from = engine.peer_cursor(&peer.id)?;
@@ -329,12 +338,15 @@ fn open(peer: &Peer, engine: &Engine) -> Result<Option<Range>, Error> {
         next: 0,
         more: true,
         scanned_through: 0,
+        generation: status.generation,
     }))
 }
 
 /// Install a page. Returns false when the peer has not scanned this range yet.
-/// Entries must be strictly ordered after the page cursor, inside the range
-/// and inside the peer's own scanned prefix; anything else is a peer error.
+/// Entries must be strictly ordered after the page cursor and inside the
+/// requested range; anything else is a peer error. Entries above the peer's
+/// own scanned prefix (blocks still waiting on a dependency) are dropped
+/// without blame: they are outside what the page can claim.
 fn accept(range: &mut Range, page: InventoryPage) -> Result<bool, Error> {
     let Some(scanned_through) = page.scanned_through.filter(|height| *height >= range.from) else {
         return Ok(false);
@@ -344,11 +356,10 @@ fn accept(range: &mut Range, page: InventoryPage) -> Result<bool, Error> {
     if page.entries.len() > limit || (page.more && page.entries.is_empty()) {
         return Err(Error::Invalid("peer inventory page size is invalid".into()));
     }
-    let ceiling = range.to.min(scanned_through);
     let mut previous = range.after;
     for entry in &page.entries {
         if entry.height < range.from
-            || entry.height > ceiling
+            || entry.height > range.to
             || previous
                 .is_some_and(|last| (entry.height, entry.position) <= (last.height, last.position))
         {
@@ -359,7 +370,11 @@ fn accept(range: &mut Range, page: InventoryPage) -> Result<bool, Error> {
         previous = Some(*entry);
     }
     range.after = previous;
-    range.entries = page.entries;
+    range.entries = page
+        .entries
+        .into_iter()
+        .filter(|entry| entry.height <= scanned_through)
+        .collect();
     range.next = 0;
     range.more = page.more;
     range.scanned_through = scanned_through;

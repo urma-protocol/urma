@@ -550,8 +550,16 @@ impl Service {
                 }
             }
             "GET /v1/status HTTP/1.1" => respond(stream, 200, self.status_json()?),
+            // Ascending by height; only the newest (highest) 1024 rows are returned.
             "GET /v1/overlay/omissions HTTP/1.1" => match self.engine.peer_omissions() {
-                Ok(omissions) => respond(stream, 200, serde_json::to_value(omissions)?),
+                Ok(mut omissions) => {
+                    let newest = omissions.len().max(1024) - 1024;
+                    respond(
+                        stream,
+                        200,
+                        serde_json::to_value(omissions.split_off(newest))?,
+                    )
+                }
                 Err(error) => control_error(stream, error),
             },
             "POST /v1/shutdown HTTP/1.1" => {

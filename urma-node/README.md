@@ -298,17 +298,24 @@ It covers at most 4096 heights from that peer's persisted cursor, never past the
 selected tip, through inventory pages of up to 512 entries. Records not already
 present are fetched from the same peer and admitted; a placement that disagrees
 with the proven record, a refused admission or an out-of-order page abandons the
-range and is reported as that peer's `last_error`. Coverage is recorded only
-when a range ends with every listed record present, up to the lower of the range
-end and the peer's own scanned height. When the full-block scan later finds a
+range and is reported as that peer's `last_error`. Pages list only blocks at or
+below the serving node's `indexed_through`, which pages report as
+`scanned_through`; a scanned block still waiting on a dependency is not listed
+yet, and a client drops any listed entry above that ceiling without blaming the
+peer. A listed record the peer then answers Missing for stays listed-only: it
+does not block coverage and is not retried within that range. Coverage is
+recorded only when a range ends with every other listed record present, up to
+the lower of the range end and the peer's own scanned height, and only for the
+archive generation observed when the range was opened; a reorg in between makes
+that claim stale and the range restarts. When the full-block scan later finds a
 record inside a peer-covered range that the peer never listed, the omission is
-recorded and that peer is no longer asked. `GET /v1/overlay/omissions` lists
-these omissions.
+recorded and that peer is no longer asked. `GET /v1/overlay/omissions` returns
+the newest (highest) 1024 omissions.
 
 Per round and peer: one inventory page, at most 16 package fetches, at least
 250 ms between requests to the peer (its serving bucket is four per second),
 and a 20-second step deadline, with cancellation checked between requests. A
-`Busy` or empty reply ends the step and the same range continues on the peer's
+`Busy` reply or an empty inventory reply ends the step and the same range continues on the peer's
 next turn. A listed block that differs from the local selected header at that
 height, or a reorg during the step, drops the range quietly: no peer error and
 no coverage.

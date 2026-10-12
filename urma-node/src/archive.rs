@@ -323,8 +323,10 @@ impl Archive {
 
     /// Placements of records this node holds in fully scanned selected blocks
     /// within [from, to], strictly after `after` as (height, position),
-    /// ascending; `limit` rows at most. Pending reveals appear once their
-    /// parent resolves. Evicted records drop out; only LeafManifest/DataPart
+    /// ascending; `limit` rows at most. Rows never exceed `scanned_through`,
+    /// this node's contiguous indexed prefix: a scanned block still waiting on
+    /// a dependency sits above that ceiling and is not listed until it joins
+    /// the prefix. Pending reveals appear once their parent resolves. Evicted records drop out; only LeafManifest/DataPart
     /// are ever evicted, and those are exempt from omission detection.
     pub(crate) fn inventory_page(
         &self,
@@ -333,6 +335,13 @@ impl Archive {
         after: Option<(u64, u32)>,
         limit: u32,
     ) -> Result<InventoryRows, Error> {
+        let Some(ceiling) = self.indexed_through()? else {
+            return Ok(InventoryRows {
+                scanned_through: None,
+                entries: Vec::new(),
+                more: false,
+            });
+        };
         let (after_height, after_position) = match after {
             Some((height, position)) => (sql_integer(height)?, i64::from(position)),
             None => (-1, -1),
@@ -342,7 +351,7 @@ impl Archive {
              JOIN locators l ON l.block_hash=p.block_hash AND l.position=p.position
              JOIN selected s ON s.hash=p.block_hash
              JOIN scans c ON c.block_hash=p.block_hash AND c.rules=?5
-             WHERE s.height>=?1 AND s.height<=?2
+             WHERE s.height>=?1 AND s.height<=?2 AND s.height<=?7
                AND (s.height>?3 OR (s.height=?3 AND l.position>?4))
              ORDER BY s.height,l.position LIMIT ?6",
         )?;
@@ -353,7 +362,8 @@ impl Archive {
             after_height,
             after_position,
             SCAN_RULES_VERSION,
-            i64::from(limit) + 1
+            i64::from(limit) + 1,
+            sql_integer(ceiling.height)?
         ];
         let mut entries = Vec::new();
         for row in statement.query_map(bound, |row| {
@@ -379,7 +389,7 @@ impl Archive {
         let more = entries.len() > wanted;
         entries.truncate(wanted);
         Ok(InventoryRows {
-            scanned_through: self.indexed_through()?.map(|point| point.height),
+            scanned_through: Some(ceiling.height),
             entries,
             more,
         })

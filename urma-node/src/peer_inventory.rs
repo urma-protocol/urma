@@ -3,6 +3,7 @@
 use crate::{
     Error,
     engine::Engine,
+    model::RecordPackage,
     peer::{Answer, CALL_TIMEOUT, PeerSource, Pending, bind_response},
     peer_protocol::{
         INVENTORY_ENTRIES, INVENTORY_LIMIT, INVENTORY_SPAN, InventoryPage, Kind, PARENT_LIMIT,
@@ -10,7 +11,7 @@ use crate::{
     },
     source::check_cancelled,
 };
-use bitcoin::BlockHash;
+use bitcoin::{BlockHash, Txid};
 use libp2p::PeerId;
 use std::{sync::atomic::AtomicBool, time::Instant};
 
@@ -137,6 +138,29 @@ impl PeerSource {
         limit: u32,
         cancelled: &AtomicBool,
     ) -> Result<Option<InventoryPage>, Error> {
+        let range = (from_height, to_height);
+        let deadline = Instant::now() + CALL_TIMEOUT;
+        self.inventory_until(range, after, limit, cancelled, deadline)
+    }
+
+    /// One record request bounded by CALL_TIMEOUT and the caller's `deadline`.
+    pub(crate) fn fetch_until(
+        &self,
+        txid: Txid,
+        deadline: Instant,
+    ) -> Result<Option<RecordPackage>, Error> {
+        self.request(Kind::Record { txid }, deadline, Answer::Record)
+    }
+
+    /// As `inventory`, also bounded by the caller's own `deadline`.
+    pub(crate) fn inventory_until(
+        &self,
+        (from_height, to_height): (u64, u64),
+        after: Option<Placement>,
+        limit: u32,
+        cancelled: &AtomicBool,
+        deadline: Instant,
+    ) -> Result<Option<InventoryPage>, Error> {
         check_cancelled(cancelled)?;
         let kind = Kind::Inventory {
             from_height,
@@ -144,7 +168,7 @@ impl PeerSource {
             after,
             limit,
         };
-        match self.request(kind, Instant::now() + CALL_TIMEOUT, Answer::Inventory) {
+        match self.request(kind, deadline, Answer::Inventory) {
             Err(Error::Busy(_)) => Ok(None),
             other => other,
         }
