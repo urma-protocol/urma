@@ -133,7 +133,7 @@ background object attempts. These do not impose a hard deadline on entered
 I/O or SQL. The config's retention policy and existing CLI validation remain
 unchanged.
 
-## Deferred static verification
+## Static verification
 
 A separately authorized check can copy this template into an owned temporary
 directory as `urma-node.service`, substitute all paths with owned fixtures and
@@ -142,7 +142,7 @@ and set the endpoint to an owned loopback example such as `127.0.0.1:28331`.
 The data, config and token placeholders would reference only owned fixture paths,
 without using real credentials or an archive. Create owned temporary home/XDG
 directories (runtime directory mode `0700`) and restrict `SYSTEMD_UNIT_PATH` to
-the fixture and vendor unit directories, excluding real user units. The proposed
+the fixture and vendor unit directories, excluding real user units. The
 command, with all paths substituted, is:
 
 ```sh
@@ -152,6 +152,12 @@ env -i HOME="/REPLACE/OWNED-TEMP/home" XDG_CONFIG_HOME="/REPLACE/OWNED-TEMP/conf
 Adjust vendor and executable locations to the host; do not enable unit generators.
 Verification parses and checks the unit without starting the executable. Bound
 the verifier process and capture its exit status and diagnostics; do not load the
-fixture into a real user manager. This would check unit syntax only, not URMA
-arguments, authentication, signal behavior or graceful shutdown. That procedure
-has not been run as part of this static handoff.
+fixture into a real user manager. This checks unit syntax only, not URMA
+arguments, authentication, signal behavior or graceful shutdown.
+
+This procedure was run with systemd 262 against template revision
+`362d00a03af3bd7d78804c44520d4a3238be179c` and returned exit status 0 with no
+template diagnostics. It was not warning-free: the long temporary runtime path
+exceeded Unix-socket address limits in vendor units, producing address and
+dependency diagnostics. Use a short owned runtime-directory path when repeating
+the check. No executable was started and no unit was installed in a user manager.
