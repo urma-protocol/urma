@@ -206,16 +206,29 @@ impl Drop for OwnedChild {
     }
 }
 
+// Local routes default to the destination itself as source address. Pin the
+// source of traffic to PUBLIC[1..] on PUBLIC[0], so peers there observe the
+// same address for a node on PUBLIC[0], as distinct hosts would.
+fn namespace_setup() -> String {
+    let mut script = String::from("ip link set lo up");
+    for ip in PUBLIC {
+        script.push_str(&format!(" && ip addr add {ip}/32 dev lo"));
+    }
+    for ip in &PUBLIC[1..] {
+        script.push_str(&format!(
+            " && ip route replace local {ip} dev lo table local proto kernel scope host src {}",
+            PUBLIC[0]
+        ));
+    }
+    script
+}
+
 // unshare execs the shell, which execs the test binary: the child PID is
 // the host itself, so kill reaches it directly.
 fn spawn(host: &str, scenario: &str, path: &Path) -> Child {
-    let addresses: String = PUBLIC
-        .iter()
-        .map(|ip| format!(" && ip addr add {ip}/32 dev lo"))
-        .collect();
     Command::new("unshare")
         .args(["--user", "--map-root-user", "--net", "--", "sh", "-c"])
-        .arg(format!("ip link set lo up{addresses} && exec \"$@\""))
+        .arg(format!("{} && exec \"$@\"", namespace_setup()))
         .arg("discovery-netns")
         .arg(std::env::current_exe().unwrap())
         .args(["--ignored", "--exact", host])
