@@ -68,7 +68,12 @@ fn identify_carries_announced_public_addresses_but_not_private_listeners() {
         network_a.drain_identified().is_empty(),
         "draining empties the queue"
     );
-    for rejected in ["/dns4/me.example.org/tcp/1", "/ip4/8.8.8.8/udp/1"] {
+    for rejected in [
+        "/dns4/me.example.org/tcp/1",
+        "/ip4/8.8.8.8/udp/1",
+        "/ip4/127.0.0.1/tcp/1",
+        "/ip4/10.0.0.1/tcp/1",
+    ] {
         assert!(
             announcing(root.path(), "c", 3, &[rejected]).is_err(),
             "{rejected}"

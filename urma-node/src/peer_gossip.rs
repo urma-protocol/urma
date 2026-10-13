@@ -298,11 +298,14 @@ pub fn validate_gossip_address(address: &Multiaddr) -> Result<Option<PeerId>, Er
     }
 }
 
-/// An operator announce address: an IP literal with TCP, without a /p2p of
-/// another node. Returned without /p2p, as identify advertises it.
+/// An operator announce address: a public IP literal with TCP, without a /p2p
+/// of another node. Returned without /p2p, as identify advertises it.
 pub fn validate_announce(address: &Multiaddr, local: PeerId) -> Result<Multiaddr, Error> {
     if validate_gossip_address(address)?.is_some_and(|named| named != local) {
         return Err(Error::Invalid("announce address names another peer".into()));
+    }
+    if !is_public(address) {
+        return Err(Error::Invalid("announce address must be public".into()));
     }
     Ok(address
         .iter()
