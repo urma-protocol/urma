@@ -1,6 +1,5 @@
 use crate::config::{
-    P2P_FETCH_ATTEMPTS, P2P_IDLE_POLL_MILLIS, P2P_MAX_HEADERS_PER_MESSAGE, P2P_MIN_PEERS,
-    P2P_PREFETCH_BLOCKS,
+    P2P_FETCH_ATTEMPTS, P2P_IDLE_POLL_MILLIS, P2P_MAX_HEADERS_PER_MESSAGE, P2P_PREFETCH_BLOCKS,
 };
 use crate::error::Error;
 use crate::p2p::blocks::{BlockCache, Held};
@@ -86,7 +85,7 @@ pub(super) fn run(shared: Arc<Shared>, commands: Receiver<Command>) {
 
 fn maintain_peers(shared: &Shared, peers: &mut Peers) {
     peers.absorb_gossip();
-    if peers.count() < P2P_MIN_PEERS {
+    if peers.count() < peers.target() {
         let height = locked(&shared.headers, "headers").tip_height();
         let started = Instant::now();
         peers.discover();

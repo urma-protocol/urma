@@ -145,16 +145,31 @@ impl Peers {
         for peer in &mut self.connected {
             learned.append(&mut peer.learned);
         }
+        self.admit_gossip(learned);
+    }
+
+    fn admit_gossip(&mut self, mut learned: Vec<SocketAddr>) {
+        if !self.pinned.is_empty() {
+            tracing::trace!(count = learned.len(), "gossip ignored: peers are pinned");
+            return;
+        }
         learned.shuffle(&mut rand::thread_rng());
         for address in learned {
             self.discovery.offer_gossip(address);
         }
     }
 
+    pub(super) fn target(&self) -> usize {
+        match self.pinned.is_empty() {
+            true => P2P_MIN_PEERS,
+            false => self.pinned.len(),
+        }
+    }
+
     pub(super) fn top_up(&mut self, our_height: u64) {
         let started = Instant::now();
         let mut attempts = 0;
-        while self.connected.len() < P2P_MIN_PEERS
+        while self.connected.len() < self.target()
             && attempts < P2P_CONNECT_ATTEMPTS_PER_ROUND
             && started.elapsed() < Duration::from_secs(P2P_TOP_UP_BUDGET_SECS)
         {
@@ -213,5 +228,27 @@ impl Peers {
             full.append(&mut limited);
         }
         full
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pinned_peers_ignore_gossip_and_set_the_connection_target() {
+        let learned: Vec<SocketAddr> = vec![
+            "203.0.113.7:19335".parse().unwrap(),
+            "198.51.100.9:19335".parse().unwrap(),
+        ];
+        let pinned = vec!["127.0.0.1:19335".parse().unwrap()];
+        let mut peers = Peers::new(Chain::LitecoinTestnet, pinned);
+        peers.admit_gossip(learned.clone());
+        assert_eq!(peers.pool_size(), 0);
+        assert_eq!(peers.target(), 1);
+        let mut open = Peers::new(Chain::LitecoinTestnet, Vec::new());
+        open.admit_gossip(learned);
+        assert_eq!(open.pool_size(), 2);
+        assert_eq!(open.target(), P2P_MIN_PEERS);
     }
 }

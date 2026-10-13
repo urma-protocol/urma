@@ -39,7 +39,8 @@ The node then runs `serve` in the foreground:
 in `p2p` mode. The built-in seed of the chain is used too.
 
 `--chain-peer IP:PORT` (repeatable, `p2p` only) picks the Litecoin peers for
-headers and blocks. Pinned peers replace DNS discovery entirely:
+headers and blocks. Pinned peers replace peer discovery entirely: no DNS
+seeds, no gossiped addresses.
 
 ```sh
 local-node.sh ~/urma-tltc p2p --start-height H --start-hash X --chain-peer 127.0.0.1:19335
