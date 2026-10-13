@@ -16,8 +16,11 @@ use std::{
 };
 use urma_chain::observation::Chain;
 use urma_core::multipart::{DataPart, Geometry, MultipartRecord};
-use urma_identity::{identity::IdentitySigner, keyring::Keyring, phrase::IdentityPhrase};
+use urma_identity::{
+    identity::IdentitySigner, keyring::Keyring, phrase::IdentityPhrase, root::Root,
+};
 use urma_wallet::{
+    account::{Account, KeyPath},
     funding::Funding,
     wallet::{FeeBudget, FeeRate, SpendRequest},
 };
@@ -81,10 +84,17 @@ fn litecoin_standard_full_record_and_dust() {
         .unwrap()
         .active()
         .unwrap();
+    let root = Root::from_phrase(&phrase).unwrap();
+    let funder = Account::new(
+        Chain::LitecoinTestnet,
+        root.account(Chain::LitecoinTestnet).unwrap(),
+    )
+    .unwrap();
+    let expected = funder.receive_script().unwrap();
     let descriptor: Value = rpc
         .call(
             "getdescriptorinfo",
-            &[json!(format!("wpkh({})", signer.public_key()))],
+            &[json!(format!("raw({})", hex::encode(expected.as_bytes())))],
         )
         .unwrap();
     let addresses: Value = rpc
@@ -104,7 +114,6 @@ fn litecoin_standard_full_record_and_dust() {
         )
         .unwrap();
     let previous: Transaction = deserialize(&hex::decode(&raw).unwrap()).unwrap();
-    let expected = urma_wallet::signing::script(&signer).unwrap();
     let vout = previous
         .output
         .iter()
@@ -112,7 +121,7 @@ fn litecoin_standard_full_record_and_dust() {
         .unwrap();
     let funding = Funding {
         raw_transaction: raw,
-        vout: vout as u32,
+        vout: u32::try_from(vout).unwrap(),
     };
     let record = MultipartRecord::Data(DataPart {
         index: 0,
@@ -124,25 +133,27 @@ fn litecoin_standard_full_record_and_dust() {
             payload: vec![],
         }),
         &signer,
-        funding.clone(),
+        vec![funding.clone()],
+        &expected,
         Chain::LitecoinTestnet,
         1,
     )
     .unwrap();
     let small_commit: Transaction = deserialize(&hex::decode(&small.commit).unwrap()).unwrap();
-    let small_signed = urma_wallet::signing::sign(
-        &signer,
-        &SpendRequest {
-            transaction: &small_commit,
-            prevouts: std::slice::from_ref(&previous.output[vout]),
-            budget: FeeBudget {
-                chain: Chain::LitecoinTestnet.genesis().unwrap(),
-                rate: FeeRate(std::num::NonZeroU64::new(1).unwrap()),
-                maximum_base_units: 500_000,
+    let small_signed = funder
+        .sign(
+            &SpendRequest {
+                transaction: &small_commit,
+                prevouts: std::slice::from_ref(&previous.output[vout]),
+                budget: FeeBudget {
+                    chain: Chain::LitecoinTestnet.genesis().unwrap(),
+                    rate: FeeRate(std::num::NonZeroU64::new(1).unwrap()),
+                    maximum_base_units: 500_000,
+                },
             },
-        },
-    )
-    .unwrap();
+            &[KeyPath::RECEIVE],
+        )
+        .unwrap();
     let small_accept: Value = rpc
         .call(
             "testmempoolaccept",
@@ -153,25 +164,27 @@ fn litecoin_standard_full_record_and_dust() {
     let pair = urma_runtime::publication::prepare_multipart(
         &record,
         &signer,
-        funding,
+        vec![funding],
+        &expected,
         Chain::LitecoinTestnet,
         1,
     )
     .unwrap();
     let commit: Transaction = deserialize(&hex::decode(&pair.commit).unwrap()).unwrap();
-    let signed = urma_wallet::signing::sign(
-        &signer,
-        &SpendRequest {
-            transaction: &commit,
-            prevouts: std::slice::from_ref(&previous.output[vout]),
-            budget: FeeBudget {
-                chain: Chain::LitecoinTestnet.genesis().unwrap(),
-                rate: FeeRate(std::num::NonZeroU64::new(1).unwrap()),
-                maximum_base_units: 500_000,
+    let signed = funder
+        .sign(
+            &SpendRequest {
+                transaction: &commit,
+                prevouts: std::slice::from_ref(&previous.output[vout]),
+                budget: FeeBudget {
+                    chain: Chain::LitecoinTestnet.genesis().unwrap(),
+                    rate: FeeRate(std::num::NonZeroU64::new(1).unwrap()),
+                    maximum_base_units: 500_000,
+                },
             },
-        },
-    )
-    .unwrap();
+            &[KeyPath::RECEIVE],
+        )
+        .unwrap();
     let accepted: Value = rpc
         .call(
             "testmempoolaccept",
@@ -245,8 +258,15 @@ fn quote_uses_256k_geometry_and_chain_dust_budget() {
     let quote = urma_runtime::quote::multipart(
         480 * Geometry::DATA_BYTES as u64,
         &signer,
+        &Account::new(
+            Chain::LitecoinTestnet,
+            Root::from_phrase(&phrase)
+                .unwrap()
+                .account(Chain::LitecoinTestnet)
+                .unwrap(),
+        )
+        .unwrap(),
         1,
-        Chain::LitecoinTestnet,
     )
     .unwrap();
     assert_eq!(quote.parts, 480);

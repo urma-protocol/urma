@@ -11,6 +11,7 @@ use urma_core::{
     multipart::{DataPart, Geometry, LeafManifest, MultipartRecord, RootManifest},
 };
 use urma_identity::identity::IdentitySigner;
+use urma_wallet::account::Account;
 
 #[derive(Clone, Copy, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -26,6 +27,7 @@ pub struct PublicationPlan {
     pub version: u8,
     pub chain: Chain,
     pub author: String,
+    pub return_script: String,
     pub root_txid: String,
     pub total_fee: u64,
     pub maximum_fee: u64,
@@ -64,22 +66,24 @@ impl PublicationPlan {
 
 pub fn prepare_atomic(
     node: &Node,
-    signer: &impl IdentitySigner,
+    author: &impl IdentitySigner,
+    funder: &Account,
     record: &PublicRecord,
     limits: PlanLimits,
 ) -> Result<PublicationPlan, Error> {
-    let mut planner = Planner::new(node, signer, limits, 1)?;
+    let mut planner = Planner::new(node, author, funder, limits, 1)?;
     planner.append(&record.encode()?)?;
     planner.finish()
 }
 
 pub fn prepare_private_records(
     node: &Node,
-    signer: &impl IdentitySigner,
+    author: &impl IdentitySigner,
+    funder: &Account,
     records: &[Vec<u8>],
     limits: PlanLimits,
 ) -> Result<PublicationPlan, Error> {
-    let mut planner = Planner::new(node, signer, limits, u32::try_from(records.len())?)?;
+    let mut planner = Planner::new(node, author, funder, limits, u32::try_from(records.len())?)?;
     for record in records {
         urma_core::container::inspect_header(record)?;
         planner.append(record)?;
@@ -89,13 +93,14 @@ pub fn prepare_private_records(
 
 pub fn prepare_multipart(
     node: &Node,
-    signer: &impl IdentitySigner,
+    author: &impl IdentitySigner,
+    funder: &Account,
     payload: &[u8],
     profile: [u8; 8],
     limits: PlanLimits,
 ) -> Result<PublicationPlan, Error> {
     let geometry = Geometry::new(u64::try_from(payload.len())?)?;
-    let mut planner = Planner::new(node, signer, limits, geometry.nodes())?;
+    let mut planner = Planner::new(node, author, funder, limits, geometry.nodes())?;
     let mut parts = Vec::new();
     for index in 0..geometry.parts() {
         let start = usize::try_from(index)? * Geometry::DATA_BYTES;

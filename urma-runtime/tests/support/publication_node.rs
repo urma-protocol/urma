@@ -17,7 +17,15 @@ use std::{
     thread,
 };
 use urma_chain::observation::Chain;
+use urma_identity::{phrase::IdentityPhrase, root::Root};
 use urma_runtime::node::{Node, NodeConfig};
+use urma_wallet::account::Account;
+
+pub fn funder(chain: Chain) -> Account {
+    let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
+    let root = Root::from_phrase(&phrase).unwrap();
+    Account::new(chain, root.account(chain).unwrap()).unwrap()
+}
 
 #[derive(Default)]
 pub struct State {
@@ -42,6 +50,7 @@ pub struct Mock {
     stopped: Arc<AtomicBool>,
     thread: Option<thread::JoinHandle<()>>,
     pub signer: Keypair,
+    pub funder: Account,
 }
 
 impl Mock {
@@ -50,13 +59,14 @@ impl Mock {
         let address = listener.local_addr().unwrap();
         let signer =
             Keypair::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[7; 32]).unwrap());
+        let funder = funder(Chain::BitcoinRegtest);
         let funding = Transaction {
             version: Version::TWO,
             lock_time: absolute::LockTime::ZERO,
             input: vec![TxIn::default()],
             output: vec![TxOut {
                 value: Amount::from_sat(100_000_000),
-                script_pubkey: urma_wallet::signing::script(&signer).unwrap(),
+                script_pubkey: funder.receive_script().unwrap(),
             }],
         };
         let state = Arc::new(Mutex::new(State::default()));
@@ -113,6 +123,7 @@ impl Mock {
             stopped,
             thread: Some(thread),
             signer,
+            funder,
         }
     }
 
@@ -166,7 +177,7 @@ fn respond(
         "getblockheader" => Ok(json!({"height":100})),
         "getindexinfo" => Ok(json!({"txindex":{"synced":true}})),
         "scantxoutset" => Ok(
-            json!({"success":true,"unspents":[{"txid":funding.compute_txid(),"vout":0,"amount":1,"height":1}]}),
+            json!({"success":true,"unspents":[{"txid":funding.compute_txid(),"vout":0,"amount":1,"height":1,"scriptPubKey":hex::encode(funding.output[0].script_pubkey.as_bytes())}]}),
         ),
         "gettxout" => Ok(
             json!({"value":1,"confirmations":100,"scriptPubKey":{"hex":hex::encode(funding.output[0].script_pubkey.as_bytes())}}),
@@ -179,10 +190,12 @@ fn respond(
                 .map(|(id, _)| id)
                 .collect::<Vec<_>>()
         )),
-        "getrawtransaction" if args[0] == json!(funding.compute_txid()) => Ok(match args[1] == true {
-            true => json!({"confirmations":100,"blockhash":hash}),
-            false => json!(hex::encode(serialize(funding))),
-        }),
+        "getrawtransaction" if args[0] == json!(funding.compute_txid()) => {
+            Ok(match args[1] == true {
+                true => json!({"confirmations":100,"blockhash":hash}),
+                false => json!(hex::encode(serialize(funding))),
+            })
+        }
         "getrawtransaction" => {
             if state.unavailable {
                 return Err((-28, "fixture source unavailable".into()));
@@ -206,7 +219,9 @@ fn respond(
             let lagging = state.preflight_lags_parents && parent_unconfirmed(state, raw);
             Ok(match (&state.preflight, lagging) {
                 (Some(reason), _) => json!([{"txid":id,"allowed":false,"reject-reason":reason}]),
-                (None, true) => json!([{"txid":id,"allowed":false,"reject-reason":"missing-inputs"}]),
+                (None, true) => {
+                    json!([{"txid":id,"allowed":false,"reject-reason":"missing-inputs"}])
+                }
                 (None, false) => json!([{"txid":id,"allowed":true}]),
             })
         }

@@ -5,7 +5,6 @@ use bitcoin::{
     consensus::{deserialize, serialize},
     hashes::Hash,
     pow::CompactTarget,
-    secp256k1::{Keypair, Secp256k1, SecretKey},
     transaction::Version as TxVersion,
 };
 use serde_json::{Value, json};
@@ -19,6 +18,7 @@ use std::{
     thread,
 };
 use urma_chain::observation::Chain;
+use urma_identity::{phrase::IdentityPhrase, root::Root};
 use urma_runtime::{
     electrum::Electrum,
     endpoints::PublicEndpoint,
@@ -27,21 +27,29 @@ use urma_runtime::{
     pinning::Pins,
     transport::{Evidence, Provider},
 };
+use urma_wallet::account::Account;
 
 const MEMPOOL_TXID: &str = "4444444444444444444444444444444444444444444444444444444444444444";
 
 struct Fixture {
     funding: Transaction,
     header: Header,
-    signer: Keypair,
+    funder: Account,
     flood: AtomicBool,
     close_after: AtomicUsize,
 }
 
 impl Fixture {
     fn new() -> Self {
-        let signer =
-            Keypair::from_secret_key(&Secp256k1::new(), &SecretKey::from_slice(&[9; 32]).unwrap());
+        let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
+        let funder = Account::new(
+            Chain::BitcoinRegtest,
+            Root::from_phrase(&phrase)
+                .unwrap()
+                .account(Chain::BitcoinRegtest)
+                .unwrap(),
+        )
+        .unwrap();
         let funding = Transaction {
             version: TxVersion::TWO,
             lock_time: absolute::LockTime::ZERO,
@@ -55,15 +63,15 @@ impl Fixture {
             output: vec![
                 TxOut {
                     value: Amount::from_sat(100_000_000),
-                    script_pubkey: urma_wallet::signing::script(&signer).unwrap(),
+                    script_pubkey: funder.receive_script().unwrap(),
                 },
                 TxOut {
                     value: Amount::from_sat(5_000),
-                    script_pubkey: urma_wallet::signing::script(&signer).unwrap(),
+                    script_pubkey: funder.receive_script().unwrap(),
                 },
                 TxOut {
                     value: Amount::from_sat(1_000),
-                    script_pubkey: urma_wallet::signing::script(&signer).unwrap(),
+                    script_pubkey: funder.receive_script().unwrap(),
                 },
             ],
         };
@@ -80,7 +88,7 @@ impl Fixture {
         Self {
             funding,
             header,
-            signer,
+            funder,
             flood: AtomicBool::new(false),
             close_after: AtomicUsize::new(0),
         }
@@ -458,44 +466,76 @@ fn a_gettxout_sequence_over_one_script_costs_one_listunspent() {
 }
 
 #[test]
-fn funding_selection_verifies_outputs_lazily_in_value_order() {
+fn coin_selection_is_largest_first_and_combines_inputs() {
     let fixture = Arc::new(Fixture::new());
     let mock = Mock::start(fixture.clone());
     let node =
         Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
-    let funding = node.select_funding(&fixture.signer, 1_000).unwrap();
-    assert_eq!(funding.vout, 1);
-    assert_eq!(funding.prevout().unwrap().1.value.to_sat(), 5_000);
-    let methods = mock.methods();
-    assert_eq!(count(&methods, "blockchain.scripthash.listunspent"), 1);
-    assert_eq!(count(&methods, "blockchain.transaction.get"), 2);
-    let large = node.select_funding(&fixture.signer, 10_000).unwrap();
-    assert_eq!(large.vout, 0);
-    assert!(node.select_funding(&fixture.signer, 200_000_000).is_err());
+    let single = node.select_coins(&fixture.funder, 1_000, 0).unwrap();
+    assert_eq!(single.inputs.len(), 1);
+    assert_eq!(single.inputs[0].funding.vout, 0);
+    assert_eq!(single.total, 100_000_000);
+    assert_eq!(single.next_change, 0);
+    let both = node.select_coins(&fixture.funder, 100_000_000, 1).unwrap();
+    assert_eq!(both.inputs.len(), 2);
+    assert_eq!(both.total, 100_005_000);
+    assert!(node.select_coins(&fixture.funder, 200_000_000, 0).is_err());
 }
 
 #[test]
-fn spendable_summary_is_verified_per_output_only_within_the_bound() {
+fn transfer_change_goes_internal_or_folds_dust_into_the_fee() {
+    use urma_runtime::transfer::{TransferRequest, prepare};
+    use urma_wallet::account::{Branch, KeyPath};
     let fixture = Arc::new(Fixture::new());
     let mock = Mock::start(fixture.clone());
     let node =
         Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
-    let small = node.spendable(&fixture.signer).unwrap();
+    let request = |amount, max_fee| TransferRequest {
+        destination: fixture
+            .funder
+            .script(KeyPath::new(Branch::External, 5))
+            .unwrap(),
+        amount,
+        rate: std::num::NonZeroU64::MIN,
+        max_fee,
+    };
+    let paid = prepare(&node, &fixture.funder, &request(1_000_000, 10_000)).unwrap();
+    let change = paid.change.unwrap();
+    assert_eq!(change.path, KeyPath::new(Branch::Internal, 0));
+    assert_eq!(change.value, 100_000_000 - 1_000_000 - paid.fee);
+    assert_eq!(
+        paid.transaction.output[1].script_pubkey,
+        fixture.funder.script(change.path).unwrap()
+    );
+    let folded = prepare(&node, &fixture.funder, &request(99_999_000, 10_000)).unwrap();
+    assert!(folded.change.is_none());
+    assert_eq!(folded.fee, 1_000);
+    assert_eq!(folded.transaction.output.len(), 1);
+    assert!(prepare(&node, &fixture.funder, &request(99_999_000, 999)).is_err());
+}
+
+#[test]
+fn wallet_view_is_verified_per_output_only_within_the_bound() {
+    let fixture = Arc::new(Fixture::new());
+    let mock = Mock::start(fixture.clone());
+    let node =
+        Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
+    let small = node.wallet(&fixture.funder).unwrap();
     assert!(small.verified);
     assert_eq!(small.reported, 2);
-    assert_eq!(small.outputs.len(), 2);
+    assert_eq!(small.coins.len(), 2);
+    assert_eq!(small.coins[0].value, 100_000_000);
     assert_eq!(count(&mock.methods(), "blockchain.transaction.get"), 2);
     drop(node);
     fixture.flood.store(true, Ordering::Release);
     let node =
         Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
     let before = count(&mock.methods(), "blockchain.transaction.get");
-    let large = node.spendable(&fixture.signer).unwrap();
+    let large = node.wallet(&fixture.funder).unwrap();
     assert!(!large.verified);
     assert_eq!(large.reported, 65);
-    assert_eq!(large.outputs.len(), 65);
+    assert_eq!(large.coins.len(), 65);
     assert_eq!(count(&mock.methods(), "blockchain.transaction.get"), before);
-    assert_eq!(node.available_utxos(&fixture.signer).unwrap().len(), 65);
 }
 
 #[test]

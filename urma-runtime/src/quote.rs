@@ -6,6 +6,7 @@ use urma_core::multipart::{
     ChildReference, DataPart, Geometry, LeafManifest, MultipartRecord, RootManifest,
 };
 use urma_identity::identity::IdentitySigner;
+use urma_wallet::account::Account;
 
 pub struct Quote {
     pub records: u32,
@@ -19,13 +20,14 @@ pub struct Quote {
 
 pub fn multipart(
     length: u64,
-    signer: &impl IdentitySigner,
+    author: &impl IdentitySigner,
+    funder: &Account,
     rate: u64,
-    chain: urma_chain::observation::Chain,
 ) -> Result<Quote, Error> {
+    let chain = funder.chain();
     let geometry = Geometry::new(length)?;
-    let public = signer.public_key().inner.x_only_public_key().0;
-    let script = urma_wallet::signing::script(signer)?;
+    let public = author.public_key().inner.x_only_public_key().0;
+    let script = funder.receive_script()?;
     let mut fees = std::collections::BTreeMap::new();
     let mut total = 0u64;
     for index in 0..geometry.nodes() {

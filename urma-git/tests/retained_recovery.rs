@@ -137,9 +137,10 @@ fn signed(
     let plan = publication::prepare_multipart(
         record,
         &author,
-        serde_json::from_value(
+        vec![serde_json::from_value(
             json!({"raw_transaction":hex::encode(serialize(&funding)),"vout":0}),
-        )?,
+        )?],
+        &funding.output[0].script_pubkey,
         Chain::BitcoinRegtest,
         1,
     )?;

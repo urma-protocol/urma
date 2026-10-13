@@ -17,11 +17,13 @@ use std::{
     path::{Path, PathBuf},
 };
 use urma_identity::identity::IdentitySigner;
+use urma_runtime::error::Error as RuntimeError;
 use urma_runtime::multipart::RecoveryLimits;
 use urma_runtime::publication_progress::Progress;
 use urma_runtime::{
     disk_plan::DiskPlan, disk_publish, node::Node, plan::PlanLimits, publish, recovery,
 };
+use urma_wallet::{account::Account, funding::Funding};
 
 #[derive(Serialize)]
 pub struct PreparedReport {
@@ -38,7 +40,8 @@ pub struct PreparedReport {
 
 pub fn prepare(
     node: &Node,
-    signer: &impl IdentitySigner,
+    author: &impl IdentitySigner,
+    funder: &Account,
     repo: &Path,
     directory: &Path,
     limits: &Limits,
@@ -46,7 +49,8 @@ pub fn prepare(
 ) -> Result<PreparedReport, Error> {
     prepare_named(
         node,
-        signer,
+        author,
+        funder,
         repo,
         directory,
         limits,
@@ -57,7 +61,8 @@ pub fn prepare(
 
 pub fn prepare_named(
     node: &Node,
-    signer: &impl IdentitySigner,
+    author: &impl IdentitySigner,
+    funder: &Account,
     repo: &Path,
     directory: &Path,
     limits: &Limits,
@@ -66,14 +71,15 @@ pub fn prepare_named(
 ) -> Result<PreparedReport, Error> {
     let guard = workspace::lock(directory)?;
     workspace::snapshot(repo, directory, limits, name)?;
-    let result = prepare_snapshot(node, signer, directory, limits, budget);
+    let result = prepare_snapshot(node, author, funder, directory, limits, budget);
     drop(guard);
     result
 }
 
 pub fn prepare_snapshot(
     node: &Node,
-    signer: &impl IdentitySigner,
+    author: &impl IdentitySigner,
+    funder: &Account,
     directory: &Path,
     limits: &Limits,
     budget: PlanLimits,
@@ -82,22 +88,19 @@ pub fn prepare_snapshot(
     if directory.join("plan.json").try_exists()? {
         let (_, _, existing) = GitPlan::load_with_publication(directory)?;
         let first = existing.record(0)?;
-        let (outpoint, _) = first.funding.prevout()?;
-        if existing
-            .chain
-            .genesis()
-            .map_err(urma_runtime::error::Error::from)?
-            == node
-                .chain()
-                .genesis()
-                .map_err(urma_runtime::error::Error::from)?
-            && existing.author == signer.public_key().inner.x_only_public_key().0.to_string()
+        if existing.chain.genesis().map_err(RuntimeError::from)?
+            == node.chain().genesis().map_err(RuntimeError::from)?
+            && existing.author == author.public_key().inner.x_only_public_key().0.to_string()
+            && existing.return_script
+                == hex::encode(
+                    funder
+                        .receive_script()
+                        .map_err(RuntimeError::from)?
+                        .as_bytes(),
+                )
             && first.fee_rate == budget.fee_rate
             && existing.maximum_fee <= budget.max_fee
-            && node
-                .available_utxos(signer)?
-                .iter()
-                .any(|output| output.txid == outpoint.txid && output.vout == outpoint.vout)
+            && funding_unspent(node, funder, &first.funding)?
         {
             tracing::info!(target: "urma_progress", "Reusing the existing signed publication plan");
             return inspect_plan(directory);
@@ -108,14 +111,26 @@ pub fn prepare_snapshot(
         .tempdir_in(urma_io::output_parent(directory))?;
     let fresh = staging.path().join("plan");
     workspace::copy_snapshot(directory, &fresh)?;
-    let report = sign_snapshot(node, signer, &fresh, limits, budget)?;
+    let report = sign_snapshot(node, author, funder, &fresh, limits, budget)?;
     workspace::replace(&fresh, directory)?;
     Ok(report)
 }
 
+fn funding_unspent(node: &Node, funder: &Account, funding: &[Funding]) -> Result<bool, Error> {
+    let coins = node.wallet(funder)?.coins;
+    for source in funding {
+        let (outpoint, _) = source.prevout().map_err(RuntimeError::from)?;
+        if !coins.iter().any(|coin| coin.outpoint == outpoint) {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 fn sign_snapshot(
     node: &Node,
-    signer: &impl IdentitySigner,
+    author: &impl IdentitySigner,
+    funder: &Account,
     directory: &Path,
     limits: &Limits,
     budget: PlanLimits,
@@ -127,7 +142,8 @@ fn sign_snapshot(
     tracing::info!(target: "urma_progress", "Selecting funding and signing the immutable publication plan...");
     let publication = DiskPlan::prepare_multipart(
         node,
-        signer,
+        author,
+        funder,
         &mut payload,
         length,
         Descriptor::PROFILE,

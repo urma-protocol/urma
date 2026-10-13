@@ -3717,6 +3717,7 @@ dependencies = [
  "urma-io",
  "urma-profiles",
  "urma-runtime",
+ "urma-wallet",
 ]
 
 [[package]]

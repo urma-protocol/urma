@@ -11,10 +11,10 @@ use urma_runtime::plan::PublicationPlan;
 use urma_wallet::funding::Funding;
 
 #[test]
-fn publication_requires_signed_compressed_funding_and_matching_author() {
+fn publication_requires_signed_compressed_funding_from_any_funder_and_matching_author() {
     let secp = Secp256k1::new();
     let secret = SecretKey::from_slice(&[7; 32]).unwrap();
-    let signer = Keypair::from_secret_key(&secp, &secret);
+    let author = Keypair::from_secret_key(&secp, &SecretKey::from_slice(&[8; 32]).unwrap());
     let public = CompressedPublicKey(secret.public_key(&secp));
     let previous = TxOut {
         value: Amount::from_sat(100_000),
@@ -28,11 +28,12 @@ fn publication_requires_signed_compressed_funding_and_matching_author() {
     };
     let mut pair = urma_runtime::publication::prepare(
         &urma_core::format::PublicRecord::Post("funding validation".into()),
-        &signer,
-        Funding {
+        &author,
+        vec![Funding {
             raw_transaction: hex::encode(serialize(&funding)),
             vout: 0,
-        },
+        }],
+        &previous.script_pubkey,
         Chain::BitcoinRegtest,
         1,
     )
@@ -55,7 +56,8 @@ fn publication_requires_signed_compressed_funding_and_matching_author() {
     let plan = PublicationPlan {
         version: 1,
         chain: Chain::BitcoinRegtest,
-        author: public.0.x_only_public_key().0.to_string(),
+        author: author.x_only_public_key().0.to_string(),
+        return_script: hex::encode(previous.script_pubkey.as_bytes()),
         root_txid: reveal.compute_txid().to_string(),
         total_fee: previous.value.to_sat()
             - commit.output[1].value.to_sat()
@@ -68,7 +70,7 @@ fn publication_requires_signed_compressed_funding_and_matching_author() {
     wrong_author.author = "other author".into();
     assert_eq!(
         wrong_author.validate().unwrap_err().to_string(),
-        "author and funding identities differ"
+        "record author mismatch"
     );
     for mutation in 0..7 {
         let mut changed = commit.clone();

@@ -172,7 +172,16 @@ struct Pair {
 }
 
 fn pair(record: &PublicRecord, author: &Keypair, seed: u8) -> Result<Pair> {
-    let plan = publication::prepare(record, author, funding(seed), Chain::BitcoinRegtest, 1)?;
+    let source = funding(seed);
+    let back = source.prevout()?.1.script_pubkey;
+    let plan = publication::prepare(
+        record,
+        author,
+        vec![source],
+        &back,
+        Chain::BitcoinRegtest,
+        1,
+    )?;
     Ok(Pair {
         commit: deserialize(&hex::decode(plan.commit)?)?,
         reveal: deserialize(&hex::decode(plan.reveal)?)?,

@@ -24,8 +24,6 @@ use urma_chain::{
     observation::Chain,
     validation::BlockValidationError,
 };
-use urma_identity::identity::IdentitySigner;
-use urma_wallet::funding::Funding;
 
 #[derive(Clone)]
 pub struct NodeConfig {
@@ -49,21 +47,6 @@ struct Acknowledged {
 enum Backend {
     Local(Client),
     Routed(Router),
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Utxo {
-    pub txid: Txid,
-    pub vout: u32,
-    pub value: u64,
-    pub height: u64,
-}
-
-#[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct Spendable {
-    pub outputs: Vec<Utxo>,
-    pub reported: usize,
-    pub verified: bool,
 }
 
 pub struct Observed {
@@ -128,7 +111,11 @@ impl Node {
     ) -> Result<Self, Error> {
         let pins = std::sync::Arc::new(Pins::in_directory(cache_dir)?);
         let light = providers::light_clients(chain, cache_dir)?;
-        additional.extend(providers::assemble(endpoints::defaults(chain), pins, &light)?);
+        additional.extend(providers::assemble(
+            endpoints::defaults(chain),
+            pins,
+            &light,
+        )?);
         let mut node = Self::with_providers(chain, additional)?;
         node.light = light;
         Ok(node)
@@ -511,156 +498,5 @@ impl Node {
         };
         slot.insert(presence.clone());
         Ok(presence)
-    }
-
-    pub fn utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
-        self.verify_network()?;
-        if matches!(self.backend, Backend::Routed(_)) {
-            return self.public_utxos(signer);
-        }
-        let script = urma_wallet::signing::script(signer)?;
-        let scan = self.call(
-            "scantxoutset",
-            &[
-                json!("start"),
-                json!([format!("raw({})", hex::encode(script.as_bytes()))]),
-            ],
-        )?;
-        ensure!(scan["success"] == true, "UTXO scan did not complete");
-        let rows = scan["unspents"].as_array().context("missing UTXO scan")?;
-        ensure!(rows.len() <= 1000, "UTXO client capacity exceeded");
-        let mut outputs = Vec::new();
-        for row in rows {
-            let amount = bitcoin::Amount::from_str_in(
-                &row["amount"].to_string(),
-                bitcoin::Denomination::Bitcoin,
-            )?;
-            outputs.push(Utxo {
-                txid: row["txid"].as_str().context("missing UTXO txid")?.parse()?,
-                vout: u32::try_from(row["vout"].as_u64().context("missing UTXO vout")?)?,
-                value: amount.to_sat(),
-                height: row["height"].as_u64().context("missing UTXO height")?,
-            });
-        }
-        outputs.sort_by_key(|output| (output.value, output.txid, output.vout));
-        Ok(outputs)
-    }
-
-    fn public_utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
-        let address = urma_wallet::address::receive_address(signer, self.chain)?;
-        let rows = self.call("addressutxos", &[json!(address)])?;
-        let rows = rows.as_array().context("missing public UTXOs")?;
-        ensure!(rows.len() <= 1000, "UTXO client capacity exceeded");
-        let mut outputs = Vec::new();
-        for row in rows {
-            if row["status"]["confirmed"] != true {
-                continue;
-            }
-            outputs.push(Utxo {
-                txid: row["txid"].as_str().context("missing UTXO txid")?.parse()?,
-                vout: u32::try_from(row["vout"].as_u64().context("missing UTXO index")?)?,
-                value: row["value"].as_u64().context("missing UTXO value")?,
-                height: row["status"]["block_height"]
-                    .as_u64()
-                    .context("missing UTXO height")?,
-            });
-        }
-        outputs.sort_by_key(|output| (output.value, output.txid, output.vout));
-        Ok(outputs)
-    }
-
-    fn verified_output(&self, output: &Utxo, expected: &str) -> Result<bool, Error> {
-        let unspent = self.call(
-            "gettxout",
-            &[json!(output.txid), json!(output.vout), json!(true)],
-        )?;
-        if unspent.is_null() {
-            return Ok(false);
-        }
-        let confirmations = config::confirmations(&unspent)?;
-        if confirmations < 1 || (unspent["coinbase"] == true && confirmations < 100) {
-            return Ok(false);
-        }
-        ensure!(
-            unspent["scriptPubKey"]["hex"] == expected,
-            "live funding script disagrees with identity"
-        );
-        let amount = bitcoin::Amount::from_str_in(
-            &unspent["value"].to_string(),
-            bitcoin::Denomination::Bitcoin,
-        )?;
-        ensure!(
-            amount.to_sat() == output.value,
-            "live funding value disagrees with UTXO scan"
-        );
-        Ok(true)
-    }
-
-    pub fn spendable(&self, signer: &impl IdentitySigner) -> Result<Spendable, Error> {
-        let expected = hex::encode(urma_wallet::signing::script(signer)?.as_bytes());
-        let outputs = self.utxos(signer)?;
-        let reported = outputs.len();
-        if reported > config::WALLET_VERIFY_OUTPUTS {
-            tracing::warn!(
-                reported,
-                bound = config::WALLET_VERIFY_OUTPUTS,
-                "spendable set exceeds the per-output verification bound; summary follows the provider's unspent rows"
-            );
-            return Ok(Spendable {
-                outputs,
-                reported,
-                verified: false,
-            });
-        }
-        let mut available = Vec::new();
-        for output in outputs {
-            if self.verified_output(&output, &expected)? {
-                available.push(output);
-            }
-        }
-        Ok(Spendable {
-            outputs: available,
-            reported,
-            verified: true,
-        })
-    }
-
-    pub fn available_utxos(&self, signer: &impl IdentitySigner) -> Result<Vec<Utxo>, Error> {
-        Ok(self.spendable(signer)?.outputs)
-    }
-
-    pub fn select_funding(
-        &self,
-        signer: &impl IdentitySigner,
-        minimum: u64,
-    ) -> Result<Funding, Error> {
-        let expected = hex::encode(urma_wallet::signing::script(signer)?.as_bytes());
-        for output in self.utxos(signer)? {
-            if output.value < minimum || !self.verified_output(&output, &expected)? {
-                continue;
-            }
-            let block = self.call("getblockhash", &[json!(output.height)])?;
-            let raw = self.call(
-                "getrawtransaction",
-                &[json!(output.txid), json!(false), block],
-            )?;
-            let funding = Funding {
-                raw_transaction: raw.as_str().context("missing funding bytes")?.to_owned(),
-                vout: output.vout,
-            };
-            let (outpoint, previous) = funding.prevout()?;
-            ensure!(
-                outpoint.txid == output.txid && previous.value.to_sat() == output.value,
-                "funding transaction disagrees with scanned outpoint"
-            );
-            ensure!(
-                previous.script_pubkey == urma_wallet::signing::script(signer)?,
-                "funding identity mismatch"
-            );
-            return Ok(funding);
-        }
-        Err(Error::Missing(
-            "no confirmed identity UTXO large enough; fund its address and confirm first".into(),
-        ))
     }
 }

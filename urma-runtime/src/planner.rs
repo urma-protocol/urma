@@ -2,6 +2,7 @@ use crate::config;
 use crate::error::{Context, Error, ensure};
 use crate::publication::{PublicPlan, prepare_signed_bytes};
 use crate::transaction::decode;
+use crate::wallet::FundingInput;
 use crate::{
     node::Node,
     plan::{PlanLimits, PublicationPlan},
@@ -11,21 +12,24 @@ use std::num::NonZeroU64;
 use urma_core::multipart::ChildReference;
 use urma_identity::identity::IdentitySigner;
 use urma_wallet::{
+    account::{Account, KeyPath},
     funding::Funding,
     wallet::{FeeBudget, FeeRate},
 };
 
-pub(crate) struct Planner<'a, S> {
-    signer: &'a S,
-    funding: Funding,
+pub(crate) struct Planner<'a, A> {
+    author: &'a A,
+    funder: &'a Account,
+    inputs: Vec<FundingInput>,
     plan: PublicationPlan,
     limits: PlanLimits,
 }
 
-impl<'a, S: IdentitySigner> Planner<'a, S> {
+impl<'a, A: IdentitySigner> Planner<'a, A> {
     pub(crate) fn new(
         node: &Node,
-        signer: &'a S,
+        author: &'a A,
+        funder: &'a Account,
         limits: PlanLimits,
         records: u32,
     ) -> Result<Self, Error> {
@@ -33,12 +37,13 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
             records <= PublicationPlan::MAX_RECORDS,
             "in-memory publication exceeds client capacity"
         );
-        Self::streaming(node, signer, limits, records)
+        Self::streaming(node, author, funder, limits, records)
     }
 
     pub(crate) fn streaming(
         node: &Node,
-        signer: &'a S,
+        author: &'a A,
+        funder: &'a Account,
         limits: PlanLimits,
         records: u32,
     ) -> Result<Self, Error> {
@@ -54,15 +59,17 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
             .max_fee
             .checked_add((u64::from(records) + 1) * config::publication_return(node.chain()))
             .context("funding budget overflow")?;
-        let funding = node.select_funding(signer, minimum)?;
+        let selection = node.select_coins(funder, minimum, 0)?;
         Ok(Self {
-            signer,
-            funding,
+            author,
+            funder,
+            inputs: selection.inputs,
             limits,
             plan: PublicationPlan {
                 version: 1,
                 chain: node.chain(),
-                author: signer.public_key().inner.x_only_public_key().0.to_string(),
+                author: author.public_key().inner.x_only_public_key().0.to_string(),
+                return_script: hex::encode(funder.receive_script()?.as_bytes()),
                 root_txid: String::new(),
                 total_fee: 0,
                 maximum_fee: limits.max_fee,
@@ -86,15 +93,9 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
             rate: FeeRate(NonZeroU64::new(self.limits.fee_rate).context("zero fee rate")?),
             maximum_base_units: self.limits.max_fee,
         };
-        let prepared = prepare_signed_bytes(
-            record,
-            self.signer,
-            self.funding.clone(),
-            self.plan.chain,
-            budget,
-        )?;
+        let prepared =
+            prepare_signed_bytes(record, self.author, self.funder, &self.inputs, budget)?;
         let pair = prepared.plan;
-        let fee = prepared.fee;
         let reveal = decode(
             &pair.reveal,
             usize::try_from(config::STANDARD_TX_WEIGHT)? * 2,
@@ -102,17 +103,20 @@ impl<'a, S: IdentitySigner> Planner<'a, S> {
         let total_fee = self
             .plan
             .total_fee
-            .checked_add(fee)
+            .checked_add(prepared.fee)
             .context("fee sum overflow")?;
         ensure!(
             total_fee <= self.limits.max_fee,
             "publication exceeds approved maximum fee"
         );
         self.plan.total_fee = total_fee;
-        self.funding = Funding {
-            raw_transaction: pair.commit.clone(),
-            vout: 1,
-        };
+        self.inputs = vec![FundingInput {
+            funding: Funding {
+                raw_transaction: pair.commit.clone(),
+                vout: 1,
+            },
+            path: KeyPath::RECEIVE,
+        }];
         self.plan.root_txid = reveal.compute_txid().to_string();
         let reference = ChildReference {
             txid: reveal.compute_txid(),

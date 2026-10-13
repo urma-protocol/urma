@@ -6,7 +6,7 @@ use crate::{
     node::Node,
     plan::{PlanLimits, PublicationPlan},
     planner::Planner,
-    validation::Validation,
+    validation::{self, Validation},
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -18,6 +18,7 @@ use std::{
 use urma_chain::observation::Chain;
 use urma_core::multipart::Geometry;
 use urma_identity::identity::IdentitySigner;
+use urma_wallet::account::Account;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -25,6 +26,7 @@ pub struct DiskPlan {
     pub version: u8,
     pub chain: Chain,
     pub author: String,
+    pub return_script: String,
     pub root_txid: String,
     pub total_fee: u64,
     pub maximum_fee: u64,
@@ -41,7 +43,8 @@ impl DiskPlan {
 
     pub fn prepare_multipart(
         node: &Node,
-        signer: &impl IdentitySigner,
+        author: &impl IdentitySigner,
+        funder: &Account,
         reader: &mut impl Read,
         length: u64,
         profile: [u8; 8],
@@ -49,7 +52,7 @@ impl DiskPlan {
         directory: &Path,
     ) -> Result<Self, Error> {
         let geometry = urma_core::multipart::Geometry::new(length)?;
-        let planner = Planner::streaming(node, signer, limits, geometry.nodes())?;
+        let planner = Planner::streaming(node, author, funder, limits, geometry.nodes())?;
         let writer = DiskWriter::new(directory, planner)?;
         writer.prepare(reader, geometry, length, profile)
     }
@@ -65,6 +68,7 @@ impl DiskPlan {
             version: 1,
             chain: metadata.chain,
             author: metadata.author.clone(),
+            return_script: metadata.return_script.clone(),
             root_txid: metadata.root_txid.clone(),
             total_fee: metadata.total_fee,
             maximum_fee: metadata.maximum_fee,
@@ -126,13 +130,18 @@ impl DiskPlan {
             "disk plan digest mismatch"
         );
         let mut offset = 0u64;
+        let return_script = validation::return_script(&self.return_script)?;
         let mut state = Validation::new();
         let mut order = Order::new();
         for _ in 0..self.record_count {
             let (actual, length) = read_index(&mut index)?;
             ensure!(actual == offset, "noncanonical disk plan offset");
-            let bytes =
-                state.append(&read_pair(&mut records, length)?, self.chain, &self.author)?;
+            let bytes = state.append(
+                &read_pair(&mut records, length)?,
+                self.chain,
+                &self.author,
+                &return_script,
+            )?;
             order.append(&bytes, state.last_txid()?)?;
             offset = offset
                 .checked_add(u64::from(length))

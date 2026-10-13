@@ -15,9 +15,9 @@ use urma_core::multipart::{
 };
 use urma_identity::identity::IdentitySigner;
 
-pub(crate) struct DiskWriter<'a, S> {
+pub(crate) struct DiskWriter<'a, A> {
     directory: &'a Path,
-    planner: Planner<'a, S>,
+    planner: Planner<'a, A>,
     records: File,
     index: File,
     records_hash: Sha256,
@@ -26,9 +26,9 @@ pub(crate) struct DiskWriter<'a, S> {
     count: u32,
 }
 
-impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
+impl<'a, A: IdentitySigner> DiskWriter<'a, A> {
     #[cfg(not(target_arch = "wasm32"))]
-    pub(crate) fn new(directory: &'a Path, planner: Planner<'a, S>) -> Result<Self, Error> {
+    pub(crate) fn new(directory: &'a Path, planner: Planner<'a, A>) -> Result<Self, Error> {
         use std::os::unix::fs::OpenOptionsExt;
         urma_io::create_private_directory(directory)?;
         let records = OpenOptions::new()
@@ -54,7 +54,7 @@ impl<'a, S: IdentitySigner> DiskWriter<'a, S> {
     }
 
     #[cfg(target_arch = "wasm32")]
-    pub(crate) fn new(directory: &'a Path, planner: Planner<'a, S>) -> Result<Self, Error> {
+    pub(crate) fn new(directory: &'a Path, planner: Planner<'a, A>) -> Result<Self, Error> {
         drop(planner);
         Err(Error::Unsupported(format!(
             "native disk plan storage is unavailable on WASM: {}",

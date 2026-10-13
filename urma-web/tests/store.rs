@@ -74,7 +74,10 @@ fn publish(package: &Package, author: &Keypair, seed: u8) -> Result<Published> {
         )?],
     })
     .encode()?;
-    let plan = publication::prepare_bytes(&root, author, funding(seed), Chain::BitcoinRegtest, 1)?;
+    let source = funding(seed);
+    let back = source.prevout()?.1.script_pubkey;
+    let plan =
+        publication::prepare_bytes(&root, author, vec![source], &back, Chain::BitcoinRegtest, 1)?;
     Ok(Published {
         reveal: deserialize(&hex::decode(plan.reveal)?)?,
         commit: deserialize(&hex::decode(plan.commit)?)?,

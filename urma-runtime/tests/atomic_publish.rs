@@ -15,6 +15,7 @@ fn a_child_is_submitted_even_when_the_preflight_node_lags_its_parent() {
     let plan = prepare_atomic(
         &mock.node(),
         &mock.signer,
+        &mock.funder,
         &PublicRecord::Post("fixture".into()),
         PlanLimits {
             fee_rate: 1,
@@ -70,6 +71,7 @@ fn atomic_mempool_restart_and_confirmation() {
     let plan = prepare_atomic(
         &mock.node(),
         &mock.signer,
+        &mock.funder,
         &PublicRecord::Post("fixture".into()),
         PlanLimits {
             fee_rate: 1,
@@ -141,6 +143,7 @@ fn rejected_or_unavailable_parent_never_submits_reveal() {
     let plan = prepare_atomic(
         &mock.node(),
         &mock.signer,
+        &mock.funder,
         &PublicRecord::Post("fixture".into()),
         PlanLimits {
             fee_rate: 1,

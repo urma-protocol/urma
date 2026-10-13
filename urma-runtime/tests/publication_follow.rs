@@ -12,6 +12,7 @@ impl Mock {
         DiskPlan::prepare_multipart(
             &self.node(),
             &self.signer,
+            &self.funder,
             &mut &*payload,
             payload.len() as u64,
             *b"RUNTIME0",

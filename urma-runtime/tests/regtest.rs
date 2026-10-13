@@ -8,13 +8,14 @@ use std::{
     time::{Duration, Instant},
 };
 use urma_chain::observation::Chain;
-use urma_identity::{keyring::Keyring, phrase::IdentityPhrase};
+use urma_identity::{keyring::Keyring, phrase::IdentityPhrase, root::Root};
 use urma_runtime::{
     node::{Node, NodeConfig},
     plan::{PlanLimits, PublicationPlan, prepare_multipart},
     publish::publish,
     recovery::recover,
 };
+use urma_wallet::account::Account;
 
 struct Daemon(Child);
 impl Drop for Daemon {
@@ -77,15 +78,24 @@ fn signed_publication_restart_reorg_and_recovery() {
         .unwrap()
         .active()
         .unwrap();
-    let address = urma_wallet::address::receive_address(&signer, Chain::BitcoinRegtest).unwrap();
+    let funder = Account::new(
+        Chain::BitcoinRegtest,
+        Root::from_phrase(&phrase)
+            .unwrap()
+            .account(Chain::BitcoinRegtest)
+            .unwrap(),
+    )
+    .unwrap();
+    let address = funder.receive_address().unwrap();
     node.call("generatetoaddress", &[json!(102), json!(address)])
         .unwrap();
-    let available_before = node.available_utxos(&signer).unwrap().len();
+    let available_before = node.wallet(&funder).unwrap().coins.len();
     assert_eq!(available_before, 3);
     let payload = vec![77; urma_core::multipart::Geometry::DATA_BYTES * 2 + 1];
     let plan = prepare_multipart(
         &node,
         &signer,
+        &funder,
         &payload,
         *b"RUNTIME0",
         PlanLimits {
@@ -111,7 +121,7 @@ fn signed_publication_restart_reorg_and_recovery() {
     assert!(!report.confirmed);
     assert_eq!(report.transactions.len(), 1);
     assert_eq!(
-        node.available_utxos(&signer).unwrap().len(),
+        node.wallet(&funder).unwrap().coins.len(),
         available_before - 1
     );
     let reloaded = PublicationPlan::load(&plan_path).unwrap();

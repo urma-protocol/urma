@@ -29,6 +29,7 @@ urma-core = { version = "0.2.2", path = "../urma-core" }
 urma-chain = { version = "0.2.2", path = "../urma-chain" }
 urma-runtime = { version = "0.2.2", path = "../urma-runtime" }
 urma-identity = { version = "0.2.2", path = "../urma-identity" }
+urma-wallet = { version = "0.2.2", path = "../urma-wallet" }
 
 [dev-dependencies]
 anyhow = "1"
