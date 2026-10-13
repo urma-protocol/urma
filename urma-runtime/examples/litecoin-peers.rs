@@ -45,6 +45,7 @@ struct Options {
     hello: Hello,
     marks: Vec<u64>,
     catchup: Option<u64>,
+    watch: bool,
     pinned: Vec<SocketAddr>,
     trace: bool,
 }
@@ -116,6 +117,7 @@ fn options() -> Result<Options, Error> {
         hello: Hello::light(),
         marks: vec![120, 300, 600],
         catchup: None,
+        watch: false,
         pinned: Vec::new(),
         trace: false,
     };
@@ -138,6 +140,7 @@ fn options() -> Result<Options, Error> {
                     _ => return Err(usage()),
                 }
             }
+            "--watch" => options.watch = true,
             "--catchup" => options.catchup = Some(args.next().ok_or_else(usage)?.parse()?),
             "--marks" => {
                 let list = args.next().ok_or_else(usage)?;
@@ -335,7 +338,11 @@ fn learned(shared: &Shared, peer: &mut Peer) {
         total = session.advertised;
     });
     if !shared.quiet {
-        let sample: Vec<String> = batch.iter().take(SAMPLE).map(ToString::to_string).collect();
+        let sample: Vec<String> = batch
+            .iter()
+            .take(SAMPLE)
+            .map(|gossiped| gossiped.address.to_string())
+            .collect();
         println!(
             "{} addr  {:<26} +{} (total {}): {}",
             at(),
@@ -347,7 +354,7 @@ fn learned(shared: &Shared, peer: &mut Peer) {
     }
     let mut discovery = lock(&shared.discovery);
     for address in batch {
-        discovery.offer_gossip(address);
+        discovery.offer_gossip(address.address);
     }
 }
 
@@ -386,7 +393,7 @@ fn listen(shared: &Shared, mut peer: Peer) {
 
 fn worker(shared: Arc<Shared>) {
     while Instant::now() < shared.deadline {
-        let next = lock(&shared.discovery).next();
+        let next = lock(&shared.discovery).next(Instant::now());
         let Next::Address(address) = next else {
             thread::sleep(Duration::from_millis(500));
             continue;
@@ -606,14 +613,69 @@ fn catchup(chain: Chain, blocks: u64, seconds: u64) -> Result<(), Error> {
     Ok(())
 }
 
+fn watch(chain: Chain, seconds: u64) -> Result<(), Error> {
+    let directory = tempfile::tempdir()?;
+    let provider = P2pProvider::new(chain, directory.path())?;
+    provider.warm()?;
+    let deadline = Instant::now() + Duration::from_secs(seconds);
+    while Instant::now() < deadline {
+        thread::sleep(
+            Duration::from_secs(10).min(deadline.saturating_duration_since(Instant::now())),
+        );
+        let progress = provider.progress();
+        println!(
+            "{} watch peers {} synced {} headers {}/{}",
+            at(),
+            progress.peers_connected,
+            progress.synced,
+            progress.headers_synced,
+            progress.headers_target
+        );
+    }
+    let reported = provider.progress().peers_connected;
+    let tip = match provider.verified_tip() {
+        Ok((tip, _)) => tip,
+        Err(error) => {
+            println!(
+                "{} watch end: reported peers {reported}, tip unavailable: {error}",
+                at()
+            );
+            return Ok(());
+        }
+    };
+    let fetched = Instant::now();
+    let (mut ok, mut failed) = (0, 0);
+    for height in tip.saturating_sub(9)..=tip {
+        match provider.verified_block(height) {
+            Ok(_block) => ok += 1,
+            Err(error) => {
+                failed += 1;
+                println!("{} watch block {height} failed: {error}", at());
+            }
+        }
+    }
+    println!(
+        "{} watch end: reported peers {reported} | tip blocks ok {ok} failed {failed} in {:.1}s | peers after use {}",
+        at(),
+        fetched.elapsed().as_secs_f64(),
+        provider.progress().peers_connected
+    );
+    Ok(())
+}
+
 fn main() -> Result<(), Error> {
     let options = options()?;
     elapsed();
-    if let Some(blocks) = options.catchup {
+    if options.watch || options.catchup.is_some() {
         tracing_subscriber::fmt()
             .with_max_level(tracing::Level::INFO)
             .with_target(false)
             .init();
+    }
+    if options.watch {
+        return watch(options.chain, options.seconds);
+    }
+    if let Some(blocks) = options.catchup {
         return catchup(options.chain, blocks, options.seconds);
     }
     let height = match options.chain {

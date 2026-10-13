@@ -14,6 +14,7 @@ use std::io::{BufReader, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use urma_chain::observation::Chain;
 use urma_chain::pow::check_header_pow;
 
@@ -21,6 +22,11 @@ use urma_chain::pow::check_header_pow;
 pub enum Behaviour {
     Serve,
     EofOnGetData,
+    Silent,
+    CloseAfter(Duration),
+    Trickle,
+    SilentOnGetData,
+    Announce(i32),
 }
 
 pub struct MockPeer {
@@ -116,10 +122,25 @@ fn serve(
     count_data: &AtomicUsize,
     count_headers: &AtomicUsize,
 ) {
+    if behaviour == Behaviour::Silent {
+        let mut sink = stream;
+        let _drained = std::io::copy(&mut sink, &mut std::io::sink());
+        return;
+    }
+    let closing = match behaviour {
+        Behaviour::CloseAfter(delay) => Some(Instant::now() + delay),
+        _other => None,
+    };
     let mut writer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(stream);
     let known = |hash: BlockHash| blocks.iter().position(|block| block.block_hash() == hash);
     loop {
+        for deadline in closing.iter() {
+            let Some(remaining) = deadline.checked_duration_since(Instant::now()) else {
+                return;
+            };
+            reader.get_ref().set_read_timeout(Some(remaining)).unwrap();
+        }
         let Ok(frame) = RawNetworkMessage::consensus_decode(&mut reader) else {
             return;
         };
@@ -132,12 +153,25 @@ fn serve(
                     Address::new(&"127.0.0.1:0".parse().unwrap(), ServiceFlags::NONE),
                     7,
                     "/mock:0/".into(),
-                    i32::try_from(blocks.len() - 1).unwrap(),
+                    match behaviour {
+                        Behaviour::Announce(height) => height,
+                        _other => i32::try_from(blocks.len() - 1).unwrap(),
+                    },
                 );
                 if !send(&mut writer, NetworkMessage::Version(ours))
                     || !send(&mut writer, NetworkMessage::Verack)
                 {
                     return;
+                }
+                if behaviour == Behaviour::Trickle {
+                    let mut pinger = writer.try_clone().unwrap();
+                    std::thread::spawn(move || {
+                        let mut nonce = 0;
+                        while send(&mut pinger, NetworkMessage::Ping(nonce)) {
+                            nonce += 1;
+                            std::thread::sleep(Duration::from_millis(500));
+                        }
+                    });
                 }
             }
             NetworkMessage::Ping(nonce) => {
@@ -147,6 +181,9 @@ fn serve(
             }
             NetworkMessage::GetHeaders(request) => {
                 count_headers.fetch_add(1, Ordering::AcqRel);
+                if behaviour == Behaviour::Trickle {
+                    continue;
+                }
                 let start = request
                     .locator_hashes
                     .iter()
@@ -166,6 +203,9 @@ fn serve(
                 count_data.fetch_add(1, Ordering::AcqRel);
                 if behaviour == Behaviour::EofOnGetData {
                     return;
+                }
+                if behaviour == Behaviour::SilentOnGetData {
+                    continue;
                 }
                 for item in items {
                     let (Inventory::WitnessBlock(hash) | Inventory::Block(hash)) = item else {

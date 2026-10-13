@@ -1,3 +1,4 @@
+#[allow(dead_code)]
 #[path = "support/mock_peer.rs"]
 mod mock_peer;
 
@@ -5,6 +6,7 @@ use bitcoin::consensus::encode::serialize;
 use mock_peer::{Behaviour, MockPeer, regtest_chain};
 use serde_json::json;
 use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::{Duration, Instant};
 use urma_chain::observation::Chain;
 use urma_runtime::p2p::{Anchor, P2pProvider};
@@ -81,10 +83,7 @@ fn a_synced_client_without_peers_fails_fast_and_withdraws_from_routing() {
     assert!(!provider.supports("getblock"));
     assert!(!provider.supports("getblockchaininfo"));
     assert!(provider.synced());
-    assert_eq!(
-        dropping.getdata.load(std::sync::atomic::Ordering::Acquire),
-        1
-    );
+    assert_eq!(dropping.getdata.load(Ordering::Acquire), 1);
 }
 
 #[test]
@@ -107,11 +106,88 @@ fn a_sequential_walk_prefetches_ahead_and_serves_the_rest_from_cache() {
     }
     let per_peer: Vec<usize> = peers
         .iter()
-        .map(|peer| peer.getdata.load(std::sync::atomic::Ordering::Acquire))
+        .map(|peer| peer.getdata.load(Ordering::Acquire))
         .collect();
     let total: usize = per_peer.iter().sum();
     assert_eq!(total, 7, "getdata per peer {per_peer:?}");
     assert_eq!(per_peer, vec![3, 2, 1, 1]);
+}
+
+#[test]
+fn parallel_dials_reach_a_live_peer_behind_silent_listeners() {
+    let blocks = Arc::new(regtest_chain(4));
+    let silent: Vec<MockPeer> = (0..6)
+        .map(|_index| mock_peer::spawn(blocks.clone(), Behaviour::Silent))
+        .collect();
+    let good = mock_peer::spawn(blocks.clone(), Behaviour::Serve);
+    let mut handles: Vec<&MockPeer> = silent.iter().collect();
+    handles.push(&good);
+    let dir = tempfile::tempdir().unwrap();
+    let started = Instant::now();
+    let provider = provider(dir.path(), &blocks, &handles);
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < Duration::from_secs(5),
+        "six silent listeners each hold a 15 s handshake; parallel dialing took {elapsed:?}"
+    );
+    assert!(provider.ready());
+    assert_eq!(provider.progress().headers_synced, 3);
+    assert!(
+        !dir.path().join("Bitcoin-regtest-peers.json").exists(),
+        "a pinned run never writes the peer book"
+    );
+}
+
+#[test]
+fn an_idle_drop_is_detected_without_a_request() {
+    let blocks = Arc::new(regtest_chain(4));
+    let closing = mock_peer::spawn(
+        blocks.clone(),
+        Behaviour::CloseAfter(Duration::from_millis(1500)),
+    );
+    let good = mock_peer::spawn(blocks.clone(), Behaviour::Serve);
+    let dir = tempfile::tempdir().unwrap();
+    let provider = provider(dir.path(), &blocks, &[&closing, &good]);
+    assert_eq!(provider.progress().peers_connected, 2);
+    let started = Instant::now();
+    while provider.progress().peers_connected != 1 {
+        assert!(
+            started.elapsed() < Duration::from_secs(5),
+            "idle drop not noticed: {:?}",
+            provider.progress()
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(provider.ready());
+    assert_eq!(
+        getblock(&provider, &blocks[2]).unwrap(),
+        serialize(&blocks[2])
+    );
+    assert_eq!(
+        closing.getdata.load(Ordering::Acquire),
+        0,
+        "a detected drop is never asked for a block"
+    );
+}
+
+#[test]
+fn a_silent_block_holder_gives_way_to_the_next_peer() {
+    let blocks = Arc::new(regtest_chain(6));
+    let silent = mock_peer::spawn(blocks.clone(), Behaviour::SilentOnGetData);
+    let good = mock_peer::spawn(blocks.clone(), Behaviour::Serve);
+    let dir = tempfile::tempdir().unwrap();
+    let provider = provider(dir.path(), &blocks, &[&silent, &good]);
+    assert_eq!(provider.progress().peers_connected, 2);
+    let started = Instant::now();
+    assert_eq!(
+        getblock(&provider, &blocks[3]).unwrap(),
+        serialize(&blocks[3])
+    );
+    let elapsed = started.elapsed();
+    assert!(elapsed < Duration::from_secs(12), "{elapsed:?}");
+    assert_eq!(silent.getdata.load(Ordering::Acquire), 1);
+    assert!(good.getdata.load(Ordering::Acquire) >= 1);
+    assert_eq!(provider.progress().peers_connected, 1);
 }
 
 #[test]
@@ -124,12 +200,9 @@ fn a_dropping_peer_is_replaced_by_a_good_peer_inside_the_fetch() {
     assert_eq!(provider.progress().peers_connected, 2);
     let raw = getblock(&provider, &blocks[3]).unwrap();
     assert_eq!(raw, serialize(&blocks[3]));
+    assert_eq!(dropping.getdata.load(Ordering::Acquire), 1);
     assert_eq!(
-        dropping.getdata.load(std::sync::atomic::Ordering::Acquire),
-        1
-    );
-    assert_eq!(
-        good.getdata.load(std::sync::atomic::Ordering::Acquire),
+        good.getdata.load(Ordering::Acquire),
         2,
         "one fetch plus one prefetch of the next block"
     );
@@ -140,13 +213,8 @@ fn a_dropping_peer_is_replaced_by_a_good_peer_inside_the_fetch() {
         serialize(&blocks[4]),
         "the prefetched block is served from cache"
     );
-    assert_eq!(good.getdata.load(std::sync::atomic::Ordering::Acquire), 2);
+    assert_eq!(good.getdata.load(Ordering::Acquire), 2);
     assert!(provider.ready());
-    assert!(
-        dropping
-            .getheaders
-            .load(std::sync::atomic::Ordering::Acquire)
-            >= 1
-    );
-    assert!(good.getheaders.load(std::sync::atomic::Ordering::Acquire) >= 1);
+    assert!(dropping.getheaders.load(Ordering::Acquire) >= 1);
+    assert!(good.getheaders.load(Ordering::Acquire) >= 1);
 }

@@ -1,4 +1,4 @@
-use crate::config::{P2P_ADDRESS_POOL, P2P_SEED_INTERVAL_SECS};
+use crate::config::{P2P_ADDRESS_POOL, P2P_REDIAL_BACKOFF_SECS, P2P_SEED_INTERVAL_SECS};
 use std::collections::{HashSet, VecDeque};
 use std::net::{IpAddr, SocketAddr};
 use std::time::{Duration, Instant};
@@ -23,6 +23,7 @@ pub struct Discovery {
     pool: VecDeque<SocketAddr>,
     tried: HashSet<SocketAddr>,
     banned: HashSet<IpAddr>,
+    redial: VecDeque<(Instant, SocketAddr)>,
     skip_v6: bool,
     seeded: Seeded,
     drought: Drought,
@@ -34,6 +35,7 @@ impl Discovery {
             pool: VecDeque::new(),
             tried: HashSet::new(),
             banned: HashSet::new(),
+            redial: VecDeque::new(),
             skip_v6: false,
             seeded: Seeded::Never,
             drought: Drought::Clear,
@@ -113,7 +115,29 @@ impl Discovery {
         }
     }
 
-    pub fn next(&mut self) -> Next {
+    pub fn dropped(&mut self, address: SocketAddr, now: Instant) {
+        if self.banned.contains(&address.ip()) || self.redial.iter().any(|entry| entry.1 == address)
+        {
+            return;
+        }
+        let due = now + Duration::from_secs(P2P_REDIAL_BACKOFF_SECS);
+        self.redial.push_back((due, address));
+    }
+
+    pub fn redial_pending(&self) -> usize {
+        self.redial.len()
+    }
+
+    pub fn next(&mut self, now: Instant) -> Next {
+        let ready = self.redial.front().copied().filter(|entry| entry.0 <= now);
+        for entry in ready.iter().copied() {
+            self.redial.pop_front();
+            let address = entry.1;
+            if !self.banned.contains(&address.ip()) && !(self.skip_v6 && address.is_ipv6()) {
+                self.tried.insert(address);
+                return Next::Address(address);
+            }
+        }
         let Some(address) = self.pool.pop_front() else {
             return Next::Exhausted;
         };
@@ -124,11 +148,13 @@ impl Discovery {
     pub fn ban(&mut self, ip: IpAddr) {
         self.banned.insert(ip);
         self.pool.retain(|address| address.ip() != ip);
+        self.redial.retain(|entry| entry.1.ip() != ip);
     }
 
     pub fn unreachable_v6(&mut self) {
         self.skip_v6 = true;
         self.pool.retain(|address| !address.is_ipv6());
+        self.redial.retain(|entry| !entry.1.is_ipv6());
     }
 
     pub fn skips_v6(&self) -> bool {

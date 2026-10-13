@@ -13,6 +13,7 @@ pub struct ChainParams {
     pub magic: [u8; 4],
     pub port: u16,
     pub dns_seeds: &'static [&'static str],
+    pub fixed_seeds: &'static [&'static str],
     pub pow: PowFunction,
     pub pow_limit_bits: u32,
     pub retarget_interval: u64,

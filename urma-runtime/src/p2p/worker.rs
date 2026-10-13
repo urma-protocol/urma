@@ -1,15 +1,19 @@
 use crate::config::{
     P2P_FETCH_ATTEMPTS, P2P_IDLE_POLL_MILLIS, P2P_MAX_HEADERS_PER_MESSAGE, P2P_PREFETCH_BLOCKS,
+    P2P_TOP_UP_BUDGET_SECS,
 };
 use crate::error::Error;
 use crate::p2p::blocks::{BlockCache, Held};
 use crate::p2p::headers::{Extension, HeaderChain};
+use crate::p2p::peer::Peer;
 use crate::p2p::peers::Peers;
 use bitcoin::BlockHash;
+use bitcoin::block::Header;
 use std::collections::HashSet;
 use std::net::SocketAddr;
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{Receiver, SyncSender};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use urma_chain::decode;
@@ -40,6 +44,7 @@ pub(super) struct Status {
 pub(super) struct Shared {
     pub(super) chain: Chain,
     pub(super) pinned: Vec<SocketAddr>,
+    pub(super) cache_dir: PathBuf,
     pub(super) headers: Mutex<HeaderChain>,
     pub(super) blocks: Mutex<BlockCache>,
     pub(super) status: Mutex<Status>,
@@ -60,7 +65,7 @@ pub(super) fn locked<'a, T>(mutex: &'a Mutex<T>, what: &str) -> MutexGuard<'a, T
 }
 
 pub(super) fn run(shared: Arc<Shared>, commands: Receiver<Command>) {
-    let mut peers = Peers::new(shared.chain, shared.pinned.clone());
+    let mut peers = Peers::new(shared.chain, shared.pinned.clone(), &shared.cache_dir);
     loop {
         if shared.stop.load(Ordering::Acquire) {
             return;
@@ -73,10 +78,11 @@ pub(super) fn run(shared: Arc<Shared>, commands: Receiver<Command>) {
             }
             continue;
         }
-        match commands.recv() {
+        match commands.recv_timeout(Duration::from_millis(P2P_IDLE_POLL_MILLIS)) {
             Ok(command) => serve(&shared, &mut peers, command),
-            Err(error) => {
-                tracing::warn!(%error, "light client command channel closed; worker stops");
+            Err(RecvTimeoutError::Timeout) => (),
+            Err(RecvTimeoutError::Disconnected) => {
+                tracing::warn!("light client command channel closed; worker stops");
                 return;
             }
         }
@@ -84,6 +90,7 @@ pub(super) fn run(shared: Arc<Shared>, commands: Receiver<Command>) {
 }
 
 fn maintain_peers(shared: &Shared, peers: &mut Peers) {
+    peers.poll_idle();
     peers.absorb_gossip();
     if peers.count() < peers.target() {
         let height = locked(&shared.headers, "headers").tip_height();
@@ -98,20 +105,25 @@ fn maintain_peers(shared: &Shared, peers: &mut Peers) {
             "light client stage completed"
         );
         let started = Instant::now();
-        peers.top_up(height);
+        let patience = match peers.count() {
+            0 => Duration::from_secs(P2P_TOP_UP_BUDGET_SECS),
+            _ => Duration::ZERO,
+        };
+        peers.top_up(height, patience);
         tracing::debug!(
             target: "urma_startup",
             chain = shared.chain.label(),
             stage = "peer_connect",
             elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
             connected = peers.count(),
+            dialing = peers.dialing(),
             pooled = peers.pool_size(),
             "light client stage completed"
         );
     }
     let mut status = locked(&shared.status, "status");
     status.peers = peers.count();
-    status.target = status.target.max(peers.best_height());
+    status.target = status.target.max(peers.announced_height());
 }
 
 fn now_unix() -> Result<u32, Error> {
@@ -152,6 +164,10 @@ struct HeaderRound {
     answered: usize,
     context: Option<Error>,
 }
+
+#[cfg(test)]
+#[path = "sync_tests.rs"]
+mod sync_tests;
 
 #[cfg(test)]
 mod header_round_tests {
@@ -239,15 +255,34 @@ impl HeaderRound {
 
 fn sync_round(shared: &Shared, peers: &mut Peers) -> Result<(), Error> {
     let started = Instant::now();
+    let refreshing = locked(&shared.status, "status").synced;
     let mut round = HeaderRound::default();
-    let mut index = 0;
-    while index < peers.count() {
-        let outcome = sync_from(shared, peers, index);
-        if let Err(error) = &outcome {
-            tracing::warn!(peer = %peers.connected[index].address, %error, "header synchronization failed");
-        }
+    let tip = locked(&shared.headers, "headers").tip_height();
+    let order: Vec<SocketAddr> = peers
+        .order_for_headers(tip)
+        .into_iter()
+        .map(|index| peers.connected[index].address)
+        .collect();
+    for address in order {
+        let Some(index) = peers
+            .connected
+            .iter()
+            .position(|peer| peer.address == address)
+        else {
+            continue;
+        };
+        let (advanced, outcome) = match sync_from(shared, peers, index) {
+            Ok(advanced) => (advanced, Ok(())),
+            Err(error) => {
+                tracing::warn!(peer = %peers.connected[index].address, %error, "header synchronization failed");
+                (false, Err(error))
+            }
+        };
+        let tip = locked(&shared.headers, "headers").tip_height();
+        let caught_up = tip >= peers.best_height(tip);
         match round.observe(outcome) {
-            HeaderPeerAction::Advance | HeaderPeerAction::KeepForContext => index += 1,
+            HeaderPeerAction::Advance if refreshing && advanced && caught_up => break,
+            HeaderPeerAction::Advance | HeaderPeerAction::KeepForContext => (),
             HeaderPeerAction::Ban => {
                 peers.ban_peer(index);
             }
@@ -278,9 +313,34 @@ fn sync_round(shared: &Shared, peers: &mut Peers) -> Result<(), Error> {
     round.finish()
 }
 
-fn sync_from(shared: &Shared, peers: &mut Peers, index: usize) -> Result<(), Error> {
+fn record_proof(shared: &Shared, peer: &mut Peer, batch: &[Header]) {
+    let headers = locked(&shared.headers, "headers");
+    let Some(last) = batch.last() else {
+        peer.start_height = peer
+            .start_height
+            .min(headers.tip_height().saturating_sub(1));
+        return;
+    };
+    match headers.height_of(last.block_hash()) {
+        Ok(height) => {
+            peer.proven_height = match peer.proven_height {
+                Some(proven) => Some(proven.max(height)),
+                None => Some(height),
+            }
+        }
+        Err(error) => {
+            tracing::debug!(peer = %peer.address, %error, "headers answer is off our chain")
+        }
+    }
+}
+
+fn sync_from(shared: &Shared, peers: &mut Peers, index: usize) -> Result<bool, Error> {
+    let mut advanced = false;
     loop {
-        let locator = locked(&shared.headers, "headers").locator();
+        let mut locator = locked(&shared.headers, "headers").locator();
+        if locator.len() > 1 {
+            locator.remove(0);
+        }
         let started = Instant::now();
         let requested = peers.connected[index].request_headers(locator);
         tracing::debug!(
@@ -326,21 +386,24 @@ fn sync_from(shared: &Shared, peers: &mut Peers, index: usize) -> Result<(), Err
             }
             outcome
         };
+        record_proof(shared, &mut peers.connected[index], &batch);
         match outcome {
-            Extension::Ignored => return Ok(()),
+            Extension::Ignored => return Ok(advanced),
             Extension::Appended(count) => {
+                advanced = true;
                 tracing::info!(peer = %peers.connected[index].address, count, "headers appended");
             }
             Extension::Reorganized {
                 fork_height,
                 appended,
             } => {
+                advanced = true;
                 tracing::warn!(peer = %peers.connected[index].address, fork_height, appended, "header chain reorganized");
                 locked(&shared.blocks, "blocks").prune_above(fork_height);
             }
         }
         if batch.len() < P2P_MAX_HEADERS_PER_MESSAGE {
-            return Ok(());
+            return Ok(advanced);
         }
     }
 }
@@ -446,12 +509,17 @@ fn prefetch_targets(shared: &Shared, served: u64) -> Vec<(u64, BlockHash)> {
 
 fn prefetch(shared: &Shared, peers: &mut Peers, served: u64, served_by: usize) {
     let targets = prefetch_targets(shared, served);
-    let mut asked = Vec::new();
+    let tip = locked(&shared.headers, "headers").tip_height();
+    let mut asked: Vec<(usize, u64, BlockHash)> = Vec::new();
     for (slot, (height, hash)) in targets.into_iter().enumerate() {
-        if slot >= peers.count() {
+        let holders = peers.order_for_block(height, tip);
+        let start = served_by + 1 + slot;
+        let unasked = (0..holders.len())
+            .map(|step| holders[(start + step) % holders.len()])
+            .find(|index| asked.iter().all(|entry| entry.0 != *index));
+        let Some(index) = unasked else {
             break;
-        }
-        let index = (served_by + 1 + slot) % peers.count();
+        };
         match peers.connected[index].ask_block(hash) {
             Ok(()) => asked.push((index, height, hash)),
             Err(error) => {
@@ -461,9 +529,15 @@ fn prefetch(shared: &Shared, peers: &mut Peers, served: u64, served_by: usize) {
     }
     let mut dropped = Vec::new();
     for (index, height, hash) in asked {
+        if dropped.contains(&index) {
+            continue;
+        }
         let answer = peers.connected[index].await_block(hash);
         match answer.and_then(|raw| admit_block(shared, &raw, hash, height)) {
             Ok(()) => tracing::debug!(height, "block prefetched"),
+            Err(Error::Missing(message)) => {
+                tracing::debug!(peer = %peers.connected[index].address, %message, height, "prefetch skipped; peer lacks the block");
+            }
             Err(error) => {
                 tracing::warn!(peer = %peers.connected[index].address, %error, height, "prefetch failed; peer dropped");
                 dropped.push(index);
@@ -471,6 +545,7 @@ fn prefetch(shared: &Shared, peers: &mut Peers, served: u64, served_by: usize) {
         }
     }
     dropped.sort_unstable();
+    dropped.dedup();
     for index in dropped.into_iter().rev() {
         peers.drop_peer(index);
     }

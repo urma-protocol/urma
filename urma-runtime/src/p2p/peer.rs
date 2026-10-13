@@ -1,5 +1,6 @@
 use crate::config::{
-    P2P_BLOCK_TIMEOUT_SECS, P2P_CONNECT_TIMEOUT_SECS, P2P_HANDSHAKE_TIMEOUT_SECS,
+    P2P_BLOCK_PEER_TIMEOUT_SECS, P2P_CONNECT_TIMEOUT_SECS, P2P_HANDSHAKE_TIMEOUT_SECS,
+    P2P_HEADERS_TIMEOUT_SECS, P2P_HEIGHT_SLACK, P2P_POLL_MESSAGES, P2P_POLL_READ_TIMEOUT_MILLIS,
     P2P_PROTOCOL_VERSION, P2P_READ_TIMEOUT_SECS, P2P_USER_AGENT,
 };
 use crate::error::{Context, Error, ensure};
@@ -13,6 +14,7 @@ use bitcoin::p2p::address::Address;
 use bitcoin::p2p::message::NetworkMessage;
 use bitcoin::p2p::message_blockdata::{GetHeadersMessage, Inventory};
 use bitcoin::p2p::message_network::VersionMessage;
+use std::io::{self, ErrorKind};
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use urma_chain::observation::Chain;
@@ -23,8 +25,15 @@ pub struct Peer {
     pub address: SocketAddr,
     pub services: ServiceFlags,
     pub start_height: u64,
-    pub learned: Vec<SocketAddr>,
+    pub learned: Vec<Gossiped>,
     pub version: Option<VersionMessage>,
+    pub(super) proven_height: Option<u64>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Gossiped {
+    pub address: SocketAddr,
+    pub time: u32,
 }
 
 enum Waited<T> {
@@ -75,6 +84,7 @@ impl Peer {
             start_height: 0,
             learned: Vec::new(),
             version: None,
+            proven_height: None,
         };
         peer.handshake(our_height, hello)?;
         Ok(peer)
@@ -135,6 +145,13 @@ impl Peer {
         Ok(())
     }
 
+    pub(super) fn height_hint(&self, tip: u64) -> u64 {
+        match self.proven_height {
+            None => self.start_height.min(tip + P2P_HEIGHT_SLACK),
+            Some(proven) => proven.max(self.start_height.min(tip)),
+        }
+    }
+
     pub(super) fn limited(&self) -> bool {
         !self.services.has(ServiceFlags::NETWORK)
     }
@@ -155,6 +172,30 @@ impl Peer {
         received
     }
 
+    pub(super) fn poll(&mut self) -> Result<(), Error> {
+        let mut byte = [0u8; 1];
+        for _round in 0..P2P_POLL_MESSAGES {
+            self.stream.set_nonblocking(true)?;
+            let peeked = self.stream.peek(&mut byte);
+            self.stream.set_nonblocking(false)?;
+            match peeked {
+                Ok(0) => return Err(Error::Io(ErrorKind::UnexpectedEof.into())),
+                Ok(_waiting) => {
+                    self.stream.set_read_timeout(Some(Duration::from_millis(
+                        P2P_POLL_READ_TIMEOUT_MILLIS,
+                    )))?;
+                    let message = self.receive();
+                    self.stream
+                        .set_read_timeout(Some(Duration::from_secs(P2P_READ_TIMEOUT_SECS)))?;
+                    self.absorb(message?)?;
+                }
+                Err(error) if error.kind() == ErrorKind::WouldBlock => return Ok(()),
+                Err(error) => return Err(error.into()),
+            }
+        }
+        Ok(())
+    }
+
     pub fn absorb_next(&mut self) -> Result<(), Error> {
         let message = self.receive()?;
         self.absorb(message)
@@ -164,14 +205,14 @@ impl Peer {
         match message {
             Message::Ping(nonce) => self.send(NetworkMessage::Pong(nonce)),
             Message::Addr(rows) => {
-                for (_time, address) in rows {
-                    self.learn(address.socket_addr(), address.services);
+                for (time, address) in rows {
+                    self.learn(address.socket_addr(), address.services, time);
                 }
                 Ok(())
             }
             Message::AddrV2(rows) => {
                 for row in rows {
-                    self.learn(row.socket_addr(), row.services);
+                    self.learn(row.socket_addr(), row.services, row.time);
                 }
                 Ok(())
             }
@@ -204,17 +245,22 @@ impl Peer {
         }
     }
 
-    fn learn(&mut self, address: Result<SocketAddr, bitcoin::io::Error>, services: ServiceFlags) {
+    fn learn(
+        &mut self,
+        address: Result<SocketAddr, bitcoin::io::Error>,
+        services: ServiceFlags,
+        time: u32,
+    ) {
         match address {
             Ok(address) => {
                 if services.has(ServiceFlags::WITNESS)
                     && (services.has(ServiceFlags::NETWORK)
                         || services.has(ServiceFlags::NETWORK_LIMITED))
                 {
-                    self.learned.push(address);
+                    self.learned.push(Gossiped { address, time });
                 }
             }
-            Err(error) => tracing::warn!(%error, "gossiped address is not reachable by socket"),
+            Err(error) => tracing::debug!(%error, "gossiped address is not reachable by socket"),
         }
     }
 
@@ -224,11 +270,12 @@ impl Peer {
         mut matcher: impl FnMut(&mut Self, Message) -> Result<Waited<T>, Error>,
     ) -> Result<T, Error> {
         loop {
-            ensure!(
-                Instant::now() < deadline,
-                "peer {} did not answer in time",
-                self.address
-            );
+            if Instant::now() >= deadline {
+                return Err(Error::Io(io::Error::new(
+                    ErrorKind::TimedOut,
+                    format!("peer {} did not answer in time", self.address),
+                )));
+            }
             let message = self.receive()?;
             match matcher(self, message)? {
                 Waited::Done(value) => return Ok(value),
@@ -244,14 +291,18 @@ impl Peer {
         let mut request = GetHeadersMessage::new(locator, BlockHash::all_zeros());
         request.version = P2P_PROTOCOL_VERSION;
         self.send(NetworkMessage::GetHeaders(request))?;
-        let deadline = Instant::now() + Duration::from_secs(P2P_READ_TIMEOUT_SECS);
-        self.wait(deadline, |peer, message| match message {
+        let patience = Duration::from_secs(P2P_HEADERS_TIMEOUT_SECS);
+        self.stream.set_read_timeout(Some(patience))?;
+        let answered = self.wait(Instant::now() + patience, |peer, message| match message {
             Message::Headers(rows) => Ok(Waited::Done(rows)),
             other => {
                 peer.absorb(other)?;
                 Ok(Waited::Keep)
             }
-        })
+        });
+        self.stream
+            .set_read_timeout(Some(Duration::from_secs(P2P_READ_TIMEOUT_SECS)))?;
+        answered
     }
 
     pub(super) fn request_block(&mut self, hash: BlockHash) -> Result<Vec<u8>, Error> {
@@ -264,8 +315,9 @@ impl Peer {
     }
 
     pub(super) fn await_block(&mut self, hash: BlockHash) -> Result<Vec<u8>, Error> {
-        let deadline = Instant::now() + Duration::from_secs(P2P_BLOCK_TIMEOUT_SECS);
-        self.wait(deadline, |peer, message| match message {
+        let patience = Duration::from_secs(P2P_BLOCK_PEER_TIMEOUT_SECS);
+        self.stream.set_read_timeout(Some(patience))?;
+        let answered = self.wait(Instant::now() + patience, |peer, message| match message {
             Message::Block(raw) => {
                 let header: Header = deserialize(raw.get(..Header::SIZE).context("block shorter than a header")?)?;
                 match header.block_hash() == hash {
@@ -289,6 +341,9 @@ impl Peer {
                 peer.absorb(other)?;
                 Ok(Waited::Keep)
             }
-        })
+        });
+        self.stream
+            .set_read_timeout(Some(Duration::from_secs(P2P_READ_TIMEOUT_SECS)))?;
+        answered
     }
 }

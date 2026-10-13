@@ -53,7 +53,7 @@ impl P2pProvider {
             "light client stage completed"
         );
         let headers = loaded?;
-        Ok(Self::from_headers(chain, headers, pinned))
+        Ok(Self::from_headers(chain, headers, pinned, cache_dir))
     }
 
     /// Open a checkpoint-relative view with authenticated preceding context.
@@ -68,13 +68,19 @@ impl P2pProvider {
     ) -> Result<Self, Error> {
         let chain = bootstrap.chain();
         let headers = HeaderChain::open_bootstrap(cache_dir, bootstrap)?;
-        Ok(Self::from_headers(chain, headers, pinned))
+        Ok(Self::from_headers(chain, headers, pinned, cache_dir))
     }
 
-    fn from_headers(chain: Chain, headers: HeaderChain, pinned: Vec<SocketAddr>) -> Self {
+    fn from_headers(
+        chain: Chain,
+        headers: HeaderChain,
+        pinned: Vec<SocketAddr>,
+        cache_dir: &Path,
+    ) -> Self {
         let shared = Arc::new(Shared {
             chain,
             pinned,
+            cache_dir: cache_dir.to_owned(),
             headers: Mutex::new(headers),
             blocks: Mutex::new(BlockCache::new()),
             status: Mutex::new(Status {

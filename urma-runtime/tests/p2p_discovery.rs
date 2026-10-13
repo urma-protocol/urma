@@ -1,6 +1,6 @@
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
-use urma_runtime::config::{P2P_ADDRESS_POOL, P2P_SEED_INTERVAL_SECS};
+use urma_runtime::config::{P2P_ADDRESS_POOL, P2P_REDIAL_BACKOFF_SECS, P2P_SEED_INTERVAL_SECS};
 use urma_runtime::p2p::{Discovery, Next};
 
 fn v4(last: u8) -> SocketAddr {
@@ -22,8 +22,8 @@ fn seeding_is_due_only_for_an_empty_pool_and_once_per_interval() {
     assert!(discovery.seeding_due(start + Duration::from_secs(P2P_SEED_INTERVAL_SECS)));
     discovery.offer_gossip(v4(1));
     assert!(!discovery.seeding_due(start + Duration::from_secs(P2P_SEED_INTERVAL_SECS * 3)));
-    assert_eq!(discovery.next(), Next::Address(v4(1)));
-    assert_eq!(discovery.next(), Next::Exhausted);
+    assert_eq!(discovery.next(Instant::now()), Next::Address(v4(1)));
+    assert_eq!(discovery.next(Instant::now()), Next::Exhausted);
     assert!(discovery.seeding_due(start + Duration::from_secs(P2P_SEED_INTERVAL_SECS * 3)));
 }
 
@@ -34,17 +34,17 @@ fn seeded_addresses_come_before_gossip_and_tried_or_banned_ones_never_return() {
     discovery.offer_seeded(vec![v4(1), v4(2)]);
     discovery.offer_gossip(v4(9));
     assert_eq!(discovery.len(), 3);
-    assert_eq!(discovery.next(), Next::Address(v4(1)));
-    assert_eq!(discovery.next(), Next::Address(v4(2)));
+    assert_eq!(discovery.next(Instant::now()), Next::Address(v4(1)));
+    assert_eq!(discovery.next(Instant::now()), Next::Address(v4(2)));
     discovery.offer_seeded(vec![v4(1)]);
-    assert_eq!(discovery.next(), Next::Address(v4(9)));
-    assert_eq!(discovery.next(), Next::Exhausted);
+    assert_eq!(discovery.next(Instant::now()), Next::Address(v4(9)));
+    assert_eq!(discovery.next(Instant::now()), Next::Exhausted);
     discovery.offer_gossip(v4(3));
     discovery.offer_gossip(v4(4));
     discovery.ban(v4(3).ip());
-    assert_eq!(discovery.next(), Next::Address(v4(4)));
+    assert_eq!(discovery.next(Instant::now()), Next::Address(v4(4)));
     discovery.offer_gossip(v4(3));
-    assert_eq!(discovery.next(), Next::Exhausted);
+    assert_eq!(discovery.next(Instant::now()), Next::Exhausted);
     for last in 0..=255u8 {
         discovery.offer_gossip(format!("10.1.0.{last}:9333").parse().unwrap());
         discovery.offer_gossip(format!("10.1.1.{last}:9333").parse().unwrap());
@@ -66,8 +66,28 @@ fn ipv6_is_skipped_for_the_session_after_the_network_proves_unreachable() {
     assert_eq!(discovery.len(), 1);
     discovery.offer_gossip(v6(3));
     discovery.offer_seeded(vec![v6(4)]);
-    assert_eq!(discovery.next(), Next::Address(v4(1)));
-    assert_eq!(discovery.next(), Next::Exhausted);
+    assert_eq!(discovery.next(Instant::now()), Next::Address(v4(1)));
+    assert_eq!(discovery.next(Instant::now()), Next::Exhausted);
+}
+
+#[test]
+fn a_dropped_peer_is_redialed_first_once_its_backoff_elapses() {
+    let mut discovery = Discovery::new();
+    let start = Instant::now();
+    let backoff = Duration::from_secs(P2P_REDIAL_BACKOFF_SECS);
+    discovery.offer_gossip(v4(1));
+    assert_eq!(discovery.next(start), Next::Address(v4(1)));
+    discovery.offer_gossip(v4(2));
+    discovery.dropped(v4(1), start);
+    discovery.dropped(v4(1), start);
+    assert_eq!(discovery.redial_pending(), 1);
+    assert_eq!(discovery.next(start + backoff / 2), Next::Address(v4(2)));
+    assert_eq!(discovery.next(start + backoff / 2), Next::Exhausted);
+    assert_eq!(discovery.next(start + backoff), Next::Address(v4(1)));
+    assert_eq!(discovery.redial_pending(), 0);
+    discovery.dropped(v4(1), start);
+    discovery.ban(v4(1).ip());
+    assert_eq!(discovery.next(start + backoff * 2), Next::Exhausted);
 }
 
 #[test]
@@ -81,7 +101,7 @@ fn a_drought_warns_once_per_interval_and_clears_when_addresses_arrive() {
     assert!(discovery.drought_warns(start + Duration::from_secs(P2P_SEED_INTERVAL_SECS * 2)));
     discovery.offer_gossip(v4(1));
     assert!(!discovery.drought_warns(start + Duration::from_secs(P2P_SEED_INTERVAL_SECS * 9)));
-    assert_eq!(discovery.next(), Next::Address(v4(1)));
+    assert_eq!(discovery.next(Instant::now()), Next::Address(v4(1)));
     assert!(!discovery.drought_warns(start + Duration::from_secs(P2P_SEED_INTERVAL_SECS * 9)));
     assert!(discovery.drought_warns(start + Duration::from_secs(P2P_SEED_INTERVAL_SECS * 10)));
 }
