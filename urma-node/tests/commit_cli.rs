@@ -200,6 +200,7 @@ impl Answers {
         match method {
             "getblockhash" if *params == json!([0]) => (json!(self.genesis), Value::Null),
             "getindexinfo" if *params == json!(["txindex"]) => (self.txindex.clone(), Value::Null),
+            "getblockcount" => (json!(100), Value::Null),
             "getrawtransaction" if *params == json!([self.parent, false]) => {
                 (json!(hex::encode(&self.raw)), Value::Null)
             }
@@ -493,15 +494,6 @@ impl Fixture {
         ])
     }
 
-    // Startup refusal: non-zero, never listening, archive untouched and released.
-    fn refused(&self, result: &Completed, before: &Snapshot) {
-        assert!(!result.status.success(), "{}", result.stderr);
-        assert!(!result.stderr.contains(LISTENING), "{}", result.stderr);
-        assert_eq!(&snapshot(&self.data), before, "no durable progress");
-        let engine = Engine::open(&self.data, self.config.clone(), None).unwrap();
-        assert_eq!(engine.status().unwrap().unresolved_dependencies, 2);
-    }
-
     fn serve(&self, commit: &[&str]) -> OwnedChild {
         let sequence = self.sequence.get();
         self.sequence.set(sequence + 1);
@@ -596,33 +588,59 @@ fn flags(control: &Path) {
     }
 }
 
+// The daemon serves while litecoind is down; local-rpc reports why.
+fn local_rpc_error(child: &mut OwnedChild, address: SocketAddr, expected: &str) {
+    let status = poll(child, address, |status| {
+        status["commit_sources"][0]["last_error"]
+            .as_str()
+            .is_some_and(|error| error.contains(expected))
+    });
+    let shown = (&status["commit_sources"][0]["label"], &status["archive"]);
+    assert_eq!(shown.0, "local-rpc", "{status}");
+    assert_eq!(shown.1["unresolved_dependencies"], 2, "{status}");
+}
+
 fn unreachable(control: &Path) {
     let fixture = Fixture::new(control);
-    let before = fixture.seed();
+    fixture.seed();
     // Bound then released inside this namespace: connecting is refused.
     let port = TcpListener::bind("127.0.0.1:0")
         .unwrap()
         .local_addr()
         .unwrap()
         .port();
-    let result = fixture.serve_rpc(&format!("127.0.0.1:{port}")).finish();
-    fixture.refused(&result, &before);
+    let authority = format!("127.0.0.1:{port}");
+    let mut child = fixture.serve_rpc(&authority);
+    let address = child.listening_address();
+    local_rpc_error(&mut child, address, "commit source: ");
+    shutdown(child, address);
+    fs::remove_file(&fixture.cookie_path).unwrap();
+    let mut child = fixture.serve_rpc(&authority);
+    let address = child.listening_address();
+    local_rpc_error(&mut child, address, "cookie file missing: litecoind");
+    shutdown(child, address);
 }
 
 // The node answers network verification but cannot serve parents by txid.
 fn txindex_refused(control: &Path) {
     let fixture = Fixture::new(control);
-    let before = fixture.seed();
+    fixture.seed();
     for txindex in [
         json!({}),
         json!({"txindex": {"synced": false, "best_block_height": 50}}),
     ] {
         let stub = fixture.stub(txindex.clone());
-        let result = fixture.serve_rpc(&stub.address.to_string()).finish();
-        fixture.refused(&result, &before);
+        let mut child = fixture.serve_rpc(&stub.address.to_string());
+        let address = child.listening_address();
+        local_rpc_error(&mut child, address, "txindex=1");
+        shutdown(child, address);
         let (calls, rejected) = stub.finish();
         assert_eq!(rejected, 0, "cookie authentication mismatch");
-        assert_eq!(calls, startup_calls(), "{txindex}");
+        assert_eq!(calls[..2], startup_calls()[..], "{txindex}");
+        let fetches = calls
+            .iter()
+            .filter(|(method, _)| method == "getrawtransaction");
+        assert_eq!(fetches.count(), 0, "{calls:?}");
     }
 }
 
@@ -662,8 +680,9 @@ fn resolves(control: &Path) {
     };
     assert_eq!(fetched(parent), 1, "{calls:?}");
     assert!(fetched(absent) >= 2, "{calls:?}");
+    let probes = calls.iter().filter(|(method, _)| method == "getblockcount");
     assert_eq!(
-        2 + fetched(parent) + fetched(absent),
+        2 + fetched(parent) + fetched(absent) + probes.count(),
         calls.len(),
         "{calls:?}"
     );
@@ -759,12 +778,12 @@ fn commit_rpc_flags_require_each_other_and_p2p_before_touching_data() {
 }
 
 #[test]
-fn unreachable_commit_rpc_exits_before_listening_without_progress() {
+fn stopped_litecoind_or_missing_cookie_starts_and_reports_local_rpc_error() {
     run_host("unreachable");
 }
 
 #[test]
-fn absent_or_unsynced_txindex_exits_before_listening_without_progress() {
+fn absent_or_unsynced_txindex_starts_and_reports_without_fetching() {
     run_host("txindex");
 }
 

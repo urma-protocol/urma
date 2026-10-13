@@ -38,6 +38,11 @@ The node then runs `serve` in the foreground:
 `--urma-seed MULTIADDR` and `--urma-peer MULTIADDR` (repeatable) pass through
 in `p2p` mode. The built-in seed of the chain is used too.
 
+A daemon started with `--commit-rpc-url`/`--commit-rpc-cookie` no longer needs
+a running litecoind: it starts anyway, and the `local-rpc` entry in
+`commit_sources` turns from an error to `null` within 10 seconds of litecoind
+starting (and back when it stops).
+
 `--chain-peer IP:PORT` (repeatable, `p2p` only) picks the Litecoin peers for
 headers and blocks. Pinned peers replace peer discovery entirely: no DNS
 seeds, no gossiped addresses.

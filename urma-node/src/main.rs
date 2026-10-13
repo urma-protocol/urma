@@ -16,11 +16,10 @@ use urma_node::{
     peerbook::{Origin, PeerAddress, PeerBook},
     retrieval::RecordSource,
     service::{Service, create_token},
-    source::{CommitSources, LitecoinSource, PublicCommitSource, RuntimeCommitSource},
+    source::{CommitSources, LitecoinSource, LocalRpcCommitSource, PublicCommitSource},
 };
 use urma_runtime::{
     endpoints,
-    node::{Node, NodeConfig},
     p2p::{Anchor, HeaderBootstrap, context_headers},
 };
 
@@ -152,7 +151,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         let source = open_chain_source(&args, chain, application_height)?;
         engine = engine.with_source(Arc::new(source))?;
     }
-    let commit_source = connect_commit_source(&args.command, chain)?;
+    let commit_source = connect_commit_source(&args.command, chain);
     let engine = Arc::new(engine);
     match args.command {
         Command::Status => println!("{}", serde_json::to_string_pretty(&engine.status()?)?),
@@ -228,27 +227,20 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn connect_commit_source(
-    command: &Command,
-    chain: Chain,
-) -> Result<Option<RuntimeCommitSource>, Box<dyn std::error::Error>> {
+fn connect_commit_source(command: &Command, chain: Chain) -> Option<LocalRpcCommitSource> {
     let Command::Serve {
         commit_rpc_url: Some(rpc_url),
         commit_rpc_cookie: Some(cookie_file),
         ..
     } = command
     else {
-        return Ok(None);
+        return None;
     };
-    let node = Node::connect(NodeConfig {
+    Some(LocalRpcCommitSource::new(
         chain,
-        rpc_url: rpc_url.clone(),
-        cookie_file: cookie_file.clone(),
-    })?;
-    node.require_txindex()?;
-    Ok(Some(RuntimeCommitSource {
-        node: Arc::new(node),
-    }))
+        rpc_url.clone(),
+        cookie_file.clone(),
+    ))
 }
 
 fn bind_service(
@@ -396,7 +388,7 @@ fn shutdown_overlay(network: Arc<PeerNetwork>) -> Result<(), urma_node::Error> {
 fn attach_commit_sources(
     service: Service,
     chain: Chain,
-    local: Option<RuntimeCommitSource>,
+    local: Option<LocalRpcCommitSource>,
     overlay: Option<OverlayCommitSource>,
     public: Option<PathBuf>,
 ) -> Result<Service, Box<dyn std::error::Error>> {

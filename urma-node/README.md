@@ -492,9 +492,13 @@ the daemon assembles, in this order:
    loopback IP literal (`localhost` is refused), path exactly `/`, no userinfo,
    query or fragment, and cookie-file authentication. Absence is the typed
    Missing result or JSON-RPC code -5, which also covers lookups a node without
-   `-txindex` cannot answer, so a synchronized `txindex=1` is required. The
-   connection and txindex check run at startup, after archive ownership and
-   before the control API listens; failure exits nonzero.
+   `-txindex` cannot answer, so a synchronized `txindex=1` is required.
+   The daemon starts without Core: startup checks only that both flags are
+   present. Each lookup reads the cookie, and a new cookie (a restarted node)
+   is connected and txindex-verified once; until then the entry falls through
+   to the next source. Status probes it at most every 10 seconds (cookie read
+   plus `getblockcount`), so `commit_sources` shows `local-rpc` flip between an
+   error and `null` as litecoind stops and starts.
 2. `overlay`, with `--peer-key`: the same peer-book entries used for record
    recovery. Peers serve only raw bytes they already retain and never fetch on
    behalf of others.

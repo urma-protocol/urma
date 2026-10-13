@@ -1,7 +1,7 @@
 //! Linux Service scheduling for automatic raw commit-parent acquisition.
 //! Genuine public signed vectors in mock-selected witness-authenticated blocks;
-//! the commit source is an owned in-memory recorder. No sockets beyond the
-//! loopback control surface, no live nodes, no PoW or consensus claim.
+//! the commit source is an owned in-memory recorder or a loopback RPC stub.
+//! No live nodes, no PoW or consensus claim.
 #![cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod common;
@@ -9,8 +9,9 @@ use bitcoin::{Block, BlockHash, Txid, block::Header};
 use common::{MemorySource, SignedPair, config, profile, witness_block};
 use serde_json::{Value, json};
 use std::{
+    fs,
     io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
+    net::{SocketAddr, TcpListener, TcpStream},
     path::Path,
     sync::{
         Arc, Mutex,
@@ -25,7 +26,7 @@ use urma_node::{
     engine::Engine,
     model::{ChainPoint, Retention, ServiceStatus},
     service::{Service, ShutdownHandle},
-    source::{ChainSource, CommitSource, CommitSources},
+    source::{ChainSource, CommitSource, CommitSources, LocalRpcCommitSource},
 };
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const LABEL: &str = "owned in-memory recording parent source";
@@ -185,6 +186,9 @@ struct Running {
 }
 impl Running {
     fn start(engine: Engine, source: Option<&Recording>, synchronize: bool) -> Self {
+        Self::with_sources(engine, source.map(single), synchronize)
+    }
+    fn with_sources(engine: Engine, sources: Option<CommitSources>, synchronize: bool) -> Self {
         let engine = Arc::new(engine);
         let mut service = Service::bind(
             "127.0.0.1:0".parse().unwrap(),
@@ -192,8 +196,8 @@ impl Running {
             Arc::clone(&engine),
         )
         .unwrap();
-        if let Some(source) = source {
-            service = service.with_commit_sources(single(source)).unwrap();
+        if let Some(sources) = sources {
+            service = service.with_commit_sources(sources).unwrap();
         }
         let address = service.address().unwrap();
         let handle = service.shutdown_handle();
@@ -401,6 +405,205 @@ fn status_reports_chain_peers_from_the_source_and_zero_offline() {
         assert_eq!(older.chain_peers, 0);
         running.finish();
     }
+}
+
+const COOKIE: &str = "__cookie__:5c0ffee5c0ffee5c0ffee5c0ffee5c0ffee5c0ffee5c0ffee5c0ffee5";
+const MISSING_COOKIE: &str = "commit source: cookie file missing: litecoind not running?";
+
+// Loopback stand-in for a cookie-authenticated litecoind with txindex.
+struct Rpc {
+    address: SocketAddr,
+    calls: Arc<Mutex<Vec<String>>>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Rpc {
+    fn start(parent: Txid, raw: Vec<u8>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap();
+        let (calls, stop) = (
+            Arc::new(Mutex::new(Vec::new())),
+            Arc::new(AtomicBool::new(false)),
+        );
+        let (log, halted) = (calls.clone(), stop.clone());
+        let thread = thread::spawn(move || {
+            while !halted.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _)) => answer(stream, &log, parent, &raw).unwrap(),
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5))
+                    }
+                    Err(error) => panic!("rpc stub accept: {error}"),
+                }
+            }
+        });
+        Self {
+            address,
+            calls,
+            stop,
+            thread: Some(thread),
+        }
+    }
+    fn url(&self) -> String {
+        format!("http://{}/", self.address)
+    }
+    fn count(&self, method: &str) -> usize {
+        self.calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|m| *m == method)
+            .count()
+    }
+}
+
+impl Drop for Rpc {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            thread.join().unwrap();
+        }
+    }
+}
+
+fn answer(
+    mut stream: TcpStream,
+    calls: &Mutex<Vec<String>>,
+    parent: Txid,
+    raw: &[u8],
+) -> io::Result<()> {
+    stream.set_nonblocking(false)?;
+    stream.set_read_timeout(Some(HTTP_TIMEOUT))?;
+    let mut head = Vec::new();
+    while !head.ends_with(b"\r\n\r\n") {
+        let mut byte = [0];
+        stream.read_exact(&mut byte)?;
+        head.push(byte[0]);
+    }
+    let head = String::from_utf8(head).map_err(io::Error::other)?;
+    let length = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse::<usize>().ok())
+        .ok_or_else(|| io::Error::other("missing content length"))?;
+    let mut body = vec![0; length];
+    stream.read_exact(&mut body)?;
+    let request: Value = serde_json::from_slice(&body).map_err(io::Error::other)?;
+    let method = request["method"].as_str().unwrap_or_default().to_owned();
+    calls.lock().unwrap().push(method.clone());
+    let genesis = Chain::BitcoinRegtest.genesis().unwrap().0.to_string();
+    let (result, error) = match method.as_str() {
+        "getblockhash" => (json!(genesis), Value::Null),
+        "getindexinfo" => (
+            json!({"txindex": {"synced": true, "best_block_height": 1}}),
+            Value::Null,
+        ),
+        "getblockcount" => (json!(1), Value::Null),
+        "getrawtransaction" if request["params"] == json!([parent, false]) => {
+            (json!(hex::encode(raw)), Value::Null)
+        }
+        _ => (
+            Value::Null,
+            json!({"code": -5, "message": "No such mempool or blockchain transaction."}),
+        ),
+    };
+    let reply =
+        serde_json::to_vec(&json!({"result": result, "error": error, "id": request["id"]}))?;
+    let status = if error.is_null() {
+        "200 OK"
+    } else {
+        "500 Internal Server Error"
+    };
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+        reply.len()
+    )?;
+    stream.write_all(&reply)?;
+    stream.flush()
+}
+
+fn local_error(sources: &CommitSources) -> Option<String> {
+    sources.status().unwrap()[0].last_error.clone()
+}
+
+#[test]
+fn local_rpc_comes_and_goes_with_its_cookie_and_falls_through_while_away() {
+    let pair = profile();
+    let parent = pair.commit.compute_txid();
+    let rpc = Rpc::start(parent, pair.raw_commit.clone());
+    let directory = tempfile::tempdir().unwrap();
+    let cookie = directory.path().join("rpc.cookie");
+    let local = LocalRpcCommitSource::new(Chain::BitcoinRegtest, rpc.url(), cookie.clone());
+    let backup = Recording::new(Chain::BitcoinRegtest, &pair.raw_commit, 0);
+    let mut sources = CommitSources::new(Chain::BitcoinRegtest);
+    sources.push(
+        "local-rpc".into(),
+        Box::new(local.with_probe_interval(Duration::ZERO)),
+    );
+    sources.push(LABEL.into(), Box::new(backup.clone()));
+    let running = AtomicBool::new(false);
+    // litecoind down: probe and lookup report the cookie; the backup serves.
+    assert_eq!(local_error(&sources).as_deref(), Some(MISSING_COOKIE));
+    assert_eq!(
+        sources.fetch(parent, &running).unwrap(),
+        Some(pair.raw_commit.clone())
+    );
+    assert_eq!(backup.requests(), vec![parent]);
+    // litecoind up: the next probe clears the error and lookups use it.
+    fs::write(&cookie, COOKIE).unwrap();
+    assert_eq!(local_error(&sources), None);
+    assert_eq!(
+        sources.fetch(parent, &running).unwrap(),
+        Some(pair.raw_commit.clone())
+    );
+    assert_eq!(backup.requests().len(), 1, "local-rpc served the parent");
+    assert_eq!(rpc.count("getrawtransaction"), 1);
+    // litecoind down again: the error returns and lookups fall through.
+    fs::remove_file(&cookie).unwrap();
+    assert_eq!(local_error(&sources).as_deref(), Some(MISSING_COOKIE));
+    assert_eq!(
+        sources.fetch(parent, &running).unwrap(),
+        Some(pair.raw_commit.clone())
+    );
+    assert_eq!(backup.requests().len(), 2);
+    // One verification for the one cookie that existed; probes are cheap.
+    assert_eq!(rpc.count("getindexinfo"), 1);
+    assert!(rpc.count("getblockcount") >= 1);
+}
+
+#[test]
+fn service_status_flips_local_rpc_within_one_probe() {
+    let pair = profile();
+    let rpc = Rpc::start(pair.commit.compute_txid(), pair.raw_commit.clone());
+    let directory = tempfile::tempdir().unwrap();
+    let (engine, _chain) = fixture(&directory.path().join("archive"), &pair, 0);
+    let cookie = directory.path().join("rpc.cookie");
+    let local = LocalRpcCommitSource::new(Chain::BitcoinRegtest, rpc.url(), cookie.clone())
+        .with_probe_interval(Duration::from_millis(100));
+    let mut sources = CommitSources::new(Chain::BitcoinRegtest);
+    sources.push("local-rpc".into(), Box::new(local));
+    let running = Running::with_sources(engine, Some(sources), false);
+    let entry = |s: &Value| field(s, "commit_sources")[0].clone();
+    let first = status(running.address);
+    assert_eq!(entry(&first)["label"], json!("local-rpc"), "{first}");
+    assert_eq!(
+        entry(&first)["last_error"],
+        json!(MISSING_COOKIE),
+        "{first}"
+    );
+    fs::write(&cookie, COOKIE).unwrap();
+    poll(running.address, "local-rpc ok", |s| {
+        entry(s)["last_error"].is_null()
+    });
+    fs::remove_file(&cookie).unwrap();
+    poll(running.address, "local-rpc error again", |s| {
+        entry(s)["last_error"] == json!(MISSING_COOKIE)
+    });
+    running.finish();
 }
 
 #[test]

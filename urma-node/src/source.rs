@@ -15,7 +15,7 @@ use std::{
 };
 use urma_chain::{decode, observation::Chain};
 use urma_runtime::{
-    node::Node,
+    node::{Node, NodeConfig},
     p2p::{Anchor, HeaderBootstrap, P2pProvider},
 };
 
@@ -41,6 +41,11 @@ pub trait ChainSource: Send + Sync {
 pub trait CommitSource {
     fn chain(&self) -> Chain;
     fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error>;
+    /// A liveness check for status, rate-limited by the source itself. `None`
+    /// when no fresh check ran (or the source has none); otherwise its result.
+    fn probe(&self) -> Option<Result<(), Error>> {
+        None
+    }
 }
 
 pub(crate) fn check_cancelled(cancelled: &AtomicBool) -> Result<(), Error> {
@@ -86,6 +91,99 @@ impl CommitSource for RuntimeCommitSource {
     fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
         check_cancelled(cancelled)?;
         fetch_from_node(&self.node, txid)
+    }
+}
+
+/// Optional local Litecoin Core: it may start, stop or restart at any time.
+/// Holds only the URL and cookie path; every lookup and probe reads the cookie,
+/// and a node is rebuilt and its txindex verified whenever the cookie changes.
+pub struct LocalRpcCommitSource {
+    chain: Chain,
+    rpc_url: String,
+    cookie_file: PathBuf,
+    probe_interval: Duration,
+    verified: Mutex<Option<(Vec<u8>, Arc<Node>)>>,
+    probed: Mutex<Option<Instant>>,
+}
+
+impl LocalRpcCommitSource {
+    pub const PROBE_INTERVAL: Duration = Duration::from_secs(10);
+
+    pub fn new(chain: Chain, rpc_url: String, cookie_file: PathBuf) -> Self {
+        Self {
+            chain,
+            rpc_url,
+            cookie_file,
+            probe_interval: Self::PROBE_INTERVAL,
+            verified: Mutex::new(None),
+            probed: Mutex::new(None),
+        }
+    }
+
+    pub fn with_probe_interval(mut self, interval: Duration) -> Self {
+        self.probe_interval = interval;
+        self
+    }
+
+    fn node(&self) -> Result<Arc<Node>, Error> {
+        let cookie = std::fs::read(&self.cookie_file).map_err(|_| {
+            Error::CommitSource("cookie file missing: litecoind not running?".into())
+        })?;
+        let mut verified = self
+            .verified
+            .lock()
+            .map_err(|_| Error::Invalid("local RPC commit source poisoned".into()))?;
+        if let Some((seen, node)) = verified.as_ref() {
+            if *seen == cookie {
+                return Ok(Arc::clone(node));
+            }
+        }
+        *verified = None;
+        let node = Node::connect(NodeConfig {
+            chain: self.chain,
+            rpc_url: self.rpc_url.clone(),
+            cookie_file: self.cookie_file.clone(),
+        })
+        .and_then(|node| node.require_txindex().map(|()| Arc::new(node)))
+        .map_err(|error| Error::CommitSource(error.to_string()))?;
+        *verified = Some((cookie, Arc::clone(&node)));
+        Ok(node)
+    }
+
+    fn probe_due(&self) -> Result<bool, Error> {
+        let mut probed = self
+            .probed
+            .lock()
+            .map_err(|_| Error::Invalid("local RPC probe clock poisoned".into()))?;
+        let due = probed.is_none_or(|last| last.elapsed() >= self.probe_interval);
+        if due {
+            *probed = Some(Instant::now());
+        }
+        Ok(due)
+    }
+}
+
+impl CommitSource for LocalRpcCommitSource {
+    fn chain(&self) -> Chain {
+        self.chain
+    }
+
+    fn fetch(&self, txid: Txid, cancelled: &AtomicBool) -> Result<Option<Vec<u8>>, Error> {
+        check_cancelled(cancelled)?;
+        let node = self.node()?;
+        fetch_from_node(&node, txid)
+    }
+
+    fn probe(&self) -> Option<Result<(), Error>> {
+        match self.probe_due() {
+            Ok(false) => None,
+            Ok(true) => Some(self.node().and_then(|node| {
+                node.call("getblockcount", &[])
+                    .map(|_| ())
+                    .map_err(|error| Error::CommitSource(error.to_string()))
+            })),
+            Err(error) => Some(Err(error)),
+        }
     }
 }
 
@@ -207,6 +305,11 @@ impl CommitSources {
     }
 
     pub fn status(&self) -> Result<Vec<CommitSourceStatus>, Error> {
+        for (index, entry) in self.entries.iter().enumerate() {
+            if let Some(probed) = entry.1.probe() {
+                self.record(index, probed.err().map(|error| RecordedError::now(&error)))?;
+            }
+        }
         let errors = self.errors()?;
         Ok(self
             .entries
