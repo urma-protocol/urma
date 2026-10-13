@@ -73,6 +73,16 @@ The core handles bytes and proofs without network or filesystem I/O. The runtime
 
 Each crate README links to its package and API reference. Supported options, limits and dependency versions live in the API documentation, CLI help and Cargo manifests rather than a second table of changing values here.
 
+## Run a node
+
+The URMA Node daemon and its desktop app live in [urma-node](https://github.com/urma-protocol/urma-node):
+
+```sh
+cargo install --locked urma-node
+```
+
+Applications reach a running node through [urma-node-client](https://github.com/urma-protocol/urma/tree/master/urma-node-client#readme); every URMA client stays autonomous without one.
+
 ## Work from source
 
 ```sh

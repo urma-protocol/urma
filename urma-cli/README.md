@@ -50,7 +50,7 @@ These help commands do not publish records or spend funds. Defaults and limits a
 ### Optional local Names projection (development checkout)
 
 This checkout can accelerate `names resolve` and `names pending` with the
-separately operated URMA Node. Add an explicit connection to the normal config
+separately operated [URMA Node](https://github.com/urma-protocol/urma-node). Add an explicit connection to the normal config
 file (`URMA_CONFIG`, or `~/.config/urma/config.json`):
 
 ```json

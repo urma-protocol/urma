@@ -15,7 +15,6 @@ members = [
     "urma-git",
     "urma-names",
     "urma-web",
-    "urma-node",
     "urma-node-client",
 ]
 
@@ -27,3 +26,15 @@ authors = ["Cristian Zmole <urma@rosint.org>"]
 homepage = "https://urma.rosint.org"
 publish = ["crates-io"]
 repository = "https://github.com/urma-protocol/urma"
+
+# The registry urma-node (urma-cli test fixtures) builds against these workspace crates.
+[patch.crates-io]
+urma-chain = { path = "urma-chain" }
+urma-core = { path = "urma-core" }
+urma-identity = { path = "urma-identity" }
+urma-io = { path = "urma-io" }
+urma-names = { path = "urma-names" }
+urma-profiles = { path = "urma-profiles" }
+urma-runtime = { path = "urma-runtime" }
+urma-wallet = { path = "urma-wallet" }
+urma-wire = { path = "urma-wire" }
