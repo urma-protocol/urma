@@ -113,15 +113,23 @@ pub fn node(root: &Path, name: &str, ip: Option<&str>) -> Node {
     node_on(offline(root, name), ip)
 }
 
-/// Discovery over `book`, saved at `<root>/<name>/peers.json`. Each step
-/// hands the network its gossip snapshot from the same book.
+/// Discovery over `book`, saved at `<root>/<name>/peers.json`, announcing
+/// nothing. Each step hands the network its gossip snapshot from the book.
 pub fn discover(root: &Path, name: &str, node: &Node, book: PeerBook) -> (Discovery, PathBuf) {
+    announcing(root, name, node, book, Vec::new())
+}
+
+pub fn announcing(
+    root: &Path,
+    name: &str,
+    node: &Node,
+    book: PeerBook,
+    announce: Vec<Multiaddr>,
+) -> (Discovery, PathBuf) {
     let path = root.join(name).join("peers.json");
     let book = Arc::new(Mutex::new(book));
-    (
-        Discovery::new(node.network.clone(), book, path.clone()),
-        path,
-    )
+    let discovery = Discovery::new(node.network.clone(), book, path.clone(), announce);
+    (discovery, path)
 }
 
 pub fn rounds(discovery: &Discovery, node: &Node, count: u64) {
@@ -129,6 +137,10 @@ pub fn rounds(discovery: &Discovery, node: &Node, count: u64) {
     for _ in 0..count {
         discovery.step(&node.engine, &stop).unwrap();
     }
+}
+
+pub fn saved_book(path: &Path, node: &Node) -> PeerBook {
+    PeerBook::load(path, node.genesis()).unwrap()
 }
 
 pub fn entry_of(book: &PeerBook, id: PeerId) -> BookEntry {
