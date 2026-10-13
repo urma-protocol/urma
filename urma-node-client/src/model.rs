@@ -187,13 +187,15 @@ pub struct OverlayStatus {
     pub discovery: Option<DiscoveryStatus>,
 }
 
-/// Peer book and discovery counters. `verified` counts entries with a past
-/// successful dial; a dial proves an identity answered, not honesty.
+/// Peer book and discovery counters. `reached` counts entries whose last dial
+/// succeeded, `reached_ever` entries with any past successful dial; a dial
+/// proves an identity answered, not honesty.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DiscoveryStatus {
     pub seeds: u64,
     pub book: u64,
-    pub verified: u64,
+    pub reached: u64,
+    pub reached_ever: u64,
     pub gossip: u64,
     pub last_seed_round_error: Option<String>,
     pub last_seed_round_error_at: Option<u64>,

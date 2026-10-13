@@ -340,31 +340,40 @@ Seeds are multiaddrs with seed origin. Litecoin mainnet has the built-in
 the node dials whatever they resolve to); regtest and the Bitcoin test chains
 have none. Every dial ends with a chain probe, so a node on another chain never
 counts as reached. `--urma-seed MULTIADDR` (repeatable) adds more, `--no-seeds` skips the
-built-in ones. Seeds are dialed at startup while fewer than four book entries
-have ever been reached, and again every 600 rounds while below target.
+built-in ones. Seeds are dialed in random order at startup while fewer than
+four book entries have ever been reached (ignoring backoff saved by an earlier
+run), every round while no peer is connected, and every 600 rounds while below
+target; outside startup a failing seed waits out its backoff.
 
 Each `run(true)` round runs one discovery step before the inventory step: while
-fewer than 8 peers are connected it dials up to 2 non-seed candidates (never-tried
-first, at random, then the oldest expired backoff), and every 30 rounds it asks
-one random connected peer for up to 32 addresses. A round makes at most three
-network operations and checks cancellation between them, each with a 10-second
-bound. A failed dial backs the entry off for 60 s × 2^(failures−1) (60 s after
-the first failure), capped at one day; a success clears it. Each round also
-refreshes the snapshot served to Peers requests: verified book entries, plus
-this node when `--urma-announce MULTIADDR` (repeatable) is given.
+fewer than 8 peers are connected it dials up to 2 non-seed candidates, alternating
+a never-tried entry (at random) with a tried one (oldest expired backoff first),
+and every 30 rounds it asks one random connected peer for up to 32 addresses. A
+round makes at most three network operations and checks cancellation between
+them, each with a 10-second bound. A failed dial backs the entry off for
+60 s × 2^(failures−1) (60 s after the first failure), capped at one day; a
+success clears it. Each round also merges peers that identified themselves over
+a connection (public literal addresses, same caps) and refreshes the snapshot
+served to Peers requests from reached book entries. `--urma-announce MULTIADDR`
+(repeatable, public IP/TCP) is advertised through identify, as are observed
+addresses confirmed by two peers.
 
 `peers.json` (format version 2; older files are refused, not migrated) holds up
 to 1024 entries with identity (once learned), up to four addresses, origin
 (manual, seed or gossip), last success, failure count and backoff. Gossip may
 only add public literal IPs, at most two entries per IPv4 /24 or IPv6 /48;
-loopback, private and DNS addresses come only from the operator. At capacity
+loopback, private and DNS addresses come only from the operator. Gossip never
+changes an entry already in the book: it cannot name an unidentified seed or
+manual address (only a successful dial learns identities) nor add addresses to
+a known peer; identify may add a known peer's own addresses. At capacity
 the gossip entry with most failures and oldest success is evicted; manual and
 seed entries never are. Peers with recorded omissions are neither dialed for
 sync nor passed on, and the book never contains this node. Record and commit
 sources are built from identified book entries at startup; the inventory peer
 list follows the book every step, keeping each known peer's in-flight range.
 
-`overlay.discovery` reports `seeds`, `book`, `verified` (entries ever reached),
+`overlay.discovery` reports `seeds`, `book`, `reached` (last dial succeeded),
+`reached_ever` (any past success),
 `gossip`, and the last seed-round and gossip errors with their times;
 `last_discovery_error` reports a failed step. `GET /v1/overlay/book` returns
 the book entries (at most 1024).

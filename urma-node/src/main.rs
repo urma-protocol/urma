@@ -310,7 +310,7 @@ fn attach_overlay(
         Arc::clone(engine),
         identity,
         listener,
-        options.announce.clone(),
+        options.announce,
     )?);
     let peers = book.sync_addresses(&engine.omitting_peers()?);
     let book_size = book.stats().book;
@@ -324,12 +324,7 @@ fn attach_overlay(
     let service = match options.commit_parents {
         true => service
             .with_peer_sync(peer_sync(&network, &peers, book_size)?)?
-            .with_discovery(Discovery::new(
-                Arc::clone(&network),
-                book,
-                book_path,
-                options.announce,
-            ))?,
+            .with_discovery(Discovery::new(Arc::clone(&network), book, book_path))?,
         false => service,
     };
     eprintln!(

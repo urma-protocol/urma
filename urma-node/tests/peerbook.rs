@@ -218,17 +218,17 @@ fn gossip_accepts_only_public_literal_ips_under_the_group_cap() {
     ));
     for (index, segment) in (1u16..).zip(["1", "2"]) {
         let text = format!(
-            "/ip6/2001:db8:1::{segment}/tcp/4001/p2p/{}",
+            "/ip6/2a01:4f8:1::{segment}/tcp/4001/p2p/{}",
             peer(300 + index)
         );
         assert!(book.add(addr(&text), Origin::Gossip).unwrap());
     }
-    let crowded = addr(&format!("/ip6/2001:db8:1:ff::9/tcp/4001/p2p/{}", peer(400)));
+    let crowded = addr(&format!("/ip6/2a01:4f8:1:ff::9/tcp/4001/p2p/{}", peer(400)));
     assert!(matches!(
         book.add(crowded, Origin::Gossip),
         Err(Error::Busy(_))
     ));
-    let elsewhere = addr(&format!("/ip6/2001:db8:2::1/tcp/4001/p2p/{}", peer(401)));
+    let elsewhere = addr(&format!("/ip6/2a01:4f8:2::1/tcp/4001/p2p/{}", peer(401)));
     assert!(book.add(elsewhere, Origin::Gossip).unwrap());
 }
 
@@ -309,8 +309,69 @@ fn candidates_prefer_untried_and_skip_banned_seed_connected_and_omitting() {
     let picked = book.candidates(1_000, &[ids[4]], &omitting, 10);
     assert_eq!(picked, vec![public(1, ids[0]), public(2, ids[1])]);
     assert_eq!(book.candidates(1_000, &[ids[4]], &omitting, 1).len(), 1);
-    assert_eq!(book.seeds(&[]), vec![public(4, ids[3])]);
-    assert!(book.seeds(&[ids[3].to_string()]).is_empty());
+    assert_eq!(book.seeds(&[], Some(1_000)), vec![public(4, ids[3])]);
+    assert!(book.seeds(&[ids[3].to_string()], None).is_empty());
+    book.failed(&public(4, ids[3]), 1_000);
+    assert!(book.seeds(&[], Some(1_059)).is_empty());
+    assert_eq!(book.seeds(&[], Some(1_060)), vec![public(4, ids[3])]);
+    assert_eq!(book.seeds(&[], None), vec![public(4, ids[3])]);
+}
+
+#[test]
+fn candidates_alternate_fresh_and_tried_entries() {
+    let mut book = empty();
+    for index in 1..=6 {
+        book.add(public(index, peer(index)), Origin::Gossip)
+            .unwrap();
+    }
+    for index in 4..=6 {
+        book.succeeded(&public(index, peer(index)), peer(index), peer(99), 10);
+    }
+    let fresh = |address: &Multiaddr| (1..=3).any(|index| *address == public(index, peer(index)));
+    let picked = book.candidates(1_000, &[], &[], 2);
+    assert!(fresh(&picked[0]));
+    assert_eq!(picked[1], public(4, peer(4)));
+    let all = book.candidates(1_000, &[], &[], 10);
+    assert_eq!(all.len(), 6);
+    for (slot, index) in [(1, 4), (3, 5), (5, 6)] {
+        assert_eq!(all[slot], public(index, peer(index)));
+        assert!(fresh(&all[slot - 1]));
+    }
+}
+
+#[test]
+fn gossip_never_relabels_or_extends_known_entries_but_identify_may_extend() {
+    let mut book = empty();
+    let (id, other, local_id) = (peer(1), peer(2), peer(99));
+    book.add(addr("/ip4/11.0.1.1/tcp/4001"), Origin::Seed)
+        .unwrap();
+    assert!(!book.add(public(1, id), Origin::Gossip).unwrap());
+    let seed = &book.entries()[0];
+    assert_eq!((seed.peer_id, seed.origin), (None, Origin::Seed));
+    let report = |address: Multiaddr| {
+        [GossipPeer {
+            peer_id: id,
+            addrs: vec![address],
+            last_seen: 1,
+        }]
+    };
+    assert_eq!(
+        book.merge_identified(&report(public(1, id)), local_id, &[]),
+        0
+    );
+    assert_eq!(book.entries()[0].peer_id, None);
+    book.add(public(2, other), Origin::Gossip).unwrap();
+    let second = addr(&format!("/ip4/11.0.3.1/tcp/4001/p2p/{other}"));
+    assert!(!book.add(second.clone(), Origin::Gossip).unwrap());
+    let claim = [GossipPeer {
+        peer_id: other,
+        addrs: vec![second],
+        last_seen: 1,
+    }];
+    assert_eq!(book.merge(&claim, local_id, &[]), 0);
+    assert_eq!(entry(&book, other).addrs.len(), 1);
+    assert_eq!(book.merge_identified(&claim, local_id, &[]), 1);
+    assert_eq!(entry(&book, other).addrs.len(), 2);
 }
 
 #[test]
@@ -335,7 +396,9 @@ fn sync_and_gossip_exports_use_identified_verified_public_entries_only() {
     assert_eq!(gossip[0].peer_id, verified);
     assert_eq!(gossip[0].last_seen, 50);
     assert_eq!(gossip[0].addrs, vec![addr("/ip4/11.0.1.1/tcp/4001")]);
-    assert_eq!(book.stats().verified, 2);
+    assert_eq!((book.stats().reached, book.stats().reached_ever), (2, 2));
+    book.failed(&public(3, hidden), 70);
+    assert_eq!((book.stats().reached, book.stats().reached_ever), (1, 2));
 }
 
 #[test]

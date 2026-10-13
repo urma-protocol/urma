@@ -28,7 +28,6 @@ pub struct Discovery {
     network: Arc<PeerNetwork>,
     book: Arc<Mutex<PeerBook>>,
     path: PathBuf,
-    announce: Vec<Multiaddr>,
     round: AtomicU64,
     seed_error: Mutex<Option<RecordedError>>,
     gossip_error: Mutex<Option<RecordedError>>,
@@ -69,26 +68,19 @@ impl Discovery {
     /// Rounds between address requests to one random connected peer.
     pub const GOSSIP_EVERY: u64 = 30;
     pub const GOSSIP_LIMIT: u32 = 32;
-    /// Rounds between seed passes while below target.
+    /// Rounds between seed passes while below target but connected.
     pub const SEED_EVERY: u64 = 600;
-    /// At startup seeds are dialed while fewer entries than this are verified.
-    pub const BOOTSTRAP_VERIFIED: u64 = 4;
+    /// At startup seeds are dialed while fewer entries than this were ever reached.
+    pub const BOOTSTRAP_REACHED: u64 = 4;
     /// Wall-clock bound of one dial or address request.
     pub const OPERATION_TIME: Duration = Duration::from_secs(10);
 
-    /// `path` is where the book is saved after a round changes it; `announce`
-    /// are this node's own public addresses offered to peers.
-    pub fn new(
-        network: Arc<PeerNetwork>,
-        book: Arc<Mutex<PeerBook>>,
-        path: PathBuf,
-        announce: Vec<Multiaddr>,
-    ) -> Self {
+    /// `path` is where the book is saved after a round changes it.
+    pub fn new(network: Arc<PeerNetwork>, book: Arc<Mutex<PeerBook>>, path: PathBuf) -> Self {
         Self {
             network,
             book,
             path,
-            announce,
             round: AtomicU64::new(0),
             seed_error: Mutex::new(None),
             gossip_error: Mutex::new(None),
@@ -108,20 +100,20 @@ impl Discovery {
             .collect())
     }
 
-    /// One bounded round: refresh the served gossip snapshot, seeds when due,
-    /// up to two dials while below target, every thirtieth round one address
-    /// request.
+    /// One bounded round: merge peers learned through identify, refresh the
+    /// served gossip snapshot, seeds when due, up to two dials while below
+    /// target, every thirtieth round one address request.
     pub fn step(&self, engine: &Engine, stop: &AtomicBool) -> Result<(), Error> {
         let round = self.round.fetch_add(1, Ordering::Relaxed);
         let omitting = engine.omitting_peers()?;
+        let mut changed = self.merge_identified(&omitting)?;
         self.publish(&omitting)?;
         let mut budget = Budget {
             left: Self::OPERATIONS_PER_ROUND,
             stop,
         };
-        let mut changed = false;
         if self.seeds_due(round)? {
-            changed |= self.dial_seeds(&omitting, &mut budget)?;
+            changed |= self.dial_seeds(&omitting, &mut budget, round == 0)?;
         }
         changed |= self.dial_candidates(&omitting, &mut budget)?;
         if round % Self::GOSSIP_EVERY == Self::GOSSIP_EVERY - 1 {
@@ -133,19 +125,33 @@ impl Discovery {
         Ok(())
     }
 
-    /// Verified book entries, plus this node when it announces addresses.
+    /// Peers that identified themselves to us, with public literal addresses,
+    /// enter the book as gossip under the same caps; a local operation.
+    fn merge_identified(&self, omitting: &[String]) -> Result<bool, Error> {
+        let at = now()?;
+        let peers: Vec<GossipPeer> = self
+            .network
+            .drain_identified()
+            .into_iter()
+            .map(|(peer_id, addrs)| GossipPeer {
+                peer_id,
+                addrs,
+                last_seen: at,
+            })
+            .collect();
+        if peers.is_empty() {
+            return Ok(false);
+        }
+        let local = self.network.peer_id();
+        Ok(self.lock()?.merge_identified(&peers, local, omitting) > 0)
+    }
+
+    /// Verified book entries; this node itself is learned through identify.
     fn publish(&self, omitting: &[String]) -> Result<(), Error> {
         let limit = usize::try_from(Self::GOSSIP_LIMIT)
             .map_err(|error| Error::Invalid(format!("gossip limit: {error}")))?;
         let at = now()?;
         let mut peers = Vec::new();
-        if !self.announce.is_empty() {
-            peers.push(GossipPeer {
-                peer_id: self.network.peer_id(),
-                addrs: self.announce.clone(),
-                last_seen: at,
-            });
-        }
         for mut peer in self.lock()?.gossip(limit, omitting) {
             peer.last_seen = peer.last_seen.min(at);
             peers.push(peer);
@@ -154,12 +160,17 @@ impl Discovery {
         Ok(())
     }
 
+    /// Isolated nodes retry seeds every round, limited by each seed's backoff.
     fn seeds_due(&self, round: u64) -> Result<bool, Error> {
-        if self.network.connected_peer_ids().len() >= Self::TARGET {
+        let connected = self.network.connected_peer_ids().len();
+        if connected >= Self::TARGET {
             return Ok(false);
         }
-        let verified = self.lock()?.stats().verified;
-        Ok((round == 0 && verified < Self::BOOTSTRAP_VERIFIED)
+        if connected == 0 {
+            return Ok(true);
+        }
+        let reached_ever = self.lock()?.stats().reached_ever;
+        Ok((round == 0 && reached_ever < Self::BOOTSTRAP_REACHED)
             || (round > 0 && round % Self::SEED_EVERY == 0))
     }
 
@@ -179,8 +190,15 @@ impl Discovery {
         Ok(outcome)
     }
 
-    fn dial_seeds(&self, omitting: &[String], budget: &mut Budget) -> Result<bool, Error> {
-        let seeds = self.lock()?.seeds(omitting);
+    /// The startup pass ignores backoff persisted by an earlier process.
+    fn dial_seeds(
+        &self,
+        omitting: &[String],
+        budget: &mut Budget,
+        startup: bool,
+    ) -> Result<bool, Error> {
+        let backoff_at = if startup { None } else { Some(now()?) };
+        let seeds = self.lock()?.seeds(omitting, backoff_at);
         let mut dialed = false;
         let mut error = None;
         let mut reached = false;
@@ -229,7 +247,8 @@ impl Discovery {
     }
 
     /// Ask one random connected, non-omitting peer for addresses and merge
-    /// them under the book's caps.
+    /// them under the book's caps. Lock order: the book lock is released
+    /// before `gossip_error` is taken; the two are never held together.
     fn ask_for_peers(&self, omitting: &[String], budget: &mut Budget) -> Result<bool, Error> {
         let connected: Vec<PeerId> = self
             .network
@@ -247,18 +266,18 @@ impl Discovery {
         let outcome = self
             .network
             .peers_of(peer, Self::GOSSIP_LIMIT, budget.stop, deadline);
-        let mut error = self.gossip_error.lock().map_err(|_| poisoned())?;
-        match outcome {
+        let (changed, recorded) = match outcome {
             Ok(peers) => {
-                *error = None;
                 let local = self.network.peer_id();
-                Ok(self.lock()?.merge(&peers, local, omitting) > 0)
+                (self.lock()?.merge(&peers, local, omitting) > 0, None)
             }
-            Err(failure) => {
-                *error = Some(RecordedError::now(format!("{peer}: {failure}")));
-                Ok(false)
-            }
-        }
+            Err(failure) => (
+                false,
+                Some(RecordedError::now(format!("{peer}: {failure}"))),
+            ),
+        };
+        *self.gossip_error.lock().map_err(|_| poisoned())? = recorded;
+        Ok(changed)
     }
 
     pub fn status(&self) -> Result<DiscoveryStatus, Error> {
@@ -270,7 +289,8 @@ impl Discovery {
         Ok(DiscoveryStatus {
             seeds: stats.seeds,
             book: stats.book,
-            verified: stats.verified,
+            reached: stats.reached,
+            reached_ever: stats.reached_ever,
             gossip: stats.gossip,
             last_seed_round_error,
             last_seed_round_error_at,

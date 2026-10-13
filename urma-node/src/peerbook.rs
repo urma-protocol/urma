@@ -3,7 +3,11 @@
 //! or a statement of record availability. Nothing here resolves names, dials
 //! or starts networking; the caller owns the directory, its lock and saves.
 
-use crate::{Error, peer_gossip::is_public, peer_protocol::GossipPeer};
+use crate::{
+    Error,
+    peer_gossip::{is_public, validate_gossip_address},
+    peer_protocol::GossipPeer,
+};
 use bitcoin::BlockHash;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use rand::seq::SliceRandom;
@@ -74,13 +78,24 @@ pub struct BookEntry {
     pub banned_until: Option<u64>,
 }
 
-/// Counts reported in overlay status.
+/// Counts reported in overlay status. `reached` entries succeeded and have
+/// not failed since; `reached_ever` entries succeeded at least once.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub struct BookStats {
     pub seeds: u64,
     pub book: u64,
-    pub verified: u64,
+    pub reached: u64,
+    pub reached_ever: u64,
     pub gossip: u64,
+}
+
+/// Who supplied an address: the operator, a peer's gossip, or a peer
+/// identifying itself over a connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Learned {
+    Operator,
+    Gossip,
+    Identify,
 }
 
 pub struct PeerBook {
@@ -197,11 +212,30 @@ impl PeerBook {
     /// usable address including loopback and names. Returns whether memory
     /// changed; capacity is made by evicting the worst gossip entry only.
     pub fn add(&mut self, address: Multiaddr, origin: Origin) -> Result<bool, Error> {
+        let learned = match origin {
+            Origin::Gossip => Learned::Gossip,
+            Origin::Seed | Origin::Manual => Learned::Operator,
+        };
+        self.insert(address, origin, learned)
+    }
+
+    /// Learned addresses never relabel an existing entry: an address already
+    /// in the book is left alone, and only identify (not gossip) may add an
+    /// address to a known peer. Identities are learned only by `succeeded`.
+    fn insert(
+        &mut self,
+        address: Multiaddr,
+        origin: Origin,
+        learned: Learned,
+    ) -> Result<bool, Error> {
         let (address, peer) = split(address)?;
         if origin == Origin::Gossip {
             self.admit_gossip(&address)?;
         }
         if let Some(index) = self.position_of_address(&address) {
+            if learned != Learned::Operator {
+                return Ok(false);
+            }
             let entry = &mut self.entries[index];
             if peer.is_some() && entry.peer_id.is_some() && entry.peer_id != peer {
                 return Err(Error::Invalid("address already names another peer".into()));
@@ -212,6 +246,9 @@ impl PeerBook {
             return Ok(upgraded);
         }
         if let Some(index) = peer.and_then(|peer| self.position_of_peer(peer)) {
+            if learned == Learned::Gossip {
+                return Ok(false);
+            }
             let entry = &mut self.entries[index];
             if entry.addrs.len() == Self::ADDRESSES {
                 return Err(Error::Busy("peer already has four addresses".into()));
@@ -236,6 +273,27 @@ impl PeerBook {
     /// this archive found omitting records are never stored from gossip.
     /// Returns how many addresses changed memory; refusals are skipped.
     pub fn merge(&mut self, peers: &[GossipPeer], local: PeerId, omitting: &[String]) -> usize {
+        self.learn(peers, local, omitting, Learned::Gossip)
+    }
+
+    /// Peers that identified themselves over a connection: like gossip, but a
+    /// known peer may gain the addresses it reported for itself.
+    pub fn merge_identified(
+        &mut self,
+        peers: &[GossipPeer],
+        local: PeerId,
+        omitting: &[String],
+    ) -> usize {
+        self.learn(peers, local, omitting, Learned::Identify)
+    }
+
+    fn learn(
+        &mut self,
+        peers: &[GossipPeer],
+        local: PeerId,
+        omitting: &[String],
+        learned: Learned,
+    ) -> usize {
         let mut changed = 0;
         for peer in peers {
             let id = peer.peer_id;
@@ -250,7 +308,7 @@ impl PeerBook {
                     continue;
                 }
                 let address = address.with(Protocol::P2p(id));
-                if let Ok(true) = self.add(address, Origin::Gossip) {
+                if let Ok(true) = self.insert(address, Origin::Gossip, learned) {
                     changed += 1;
                 }
             }
@@ -305,8 +363,9 @@ impl PeerBook {
     }
 
     /// Up to `count` dial addresses for non-seed entries that are not banned,
-    /// connected or omitting. Never-tried entries come first, picked at random;
-    /// then the rest by oldest backoff expiry (verified entries first).
+    /// connected or omitting. Never-tried entries (picked at random) alternate
+    /// with tried ones (oldest backoff expiry first), so fresh gossip cannot
+    /// starve peers that were reached before.
     pub fn candidates(
         &self,
         now: u64,
@@ -328,26 +387,39 @@ impl PeerBook {
             .partition(|entry| entry.last_success.is_none() && entry.failures == 0);
         fresh.shuffle(&mut rand::thread_rng());
         tried.sort_by_key(|entry| (entry.banned_until, entry.failures));
-        fresh
-            .into_iter()
-            .chain(tried)
-            .take(count)
-            .filter_map(dial_address)
-            .collect()
+        let mut fresh = fresh.into_iter();
+        let mut tried = tried.into_iter();
+        let mut picked = Vec::new();
+        while picked.len() < count {
+            let (next_fresh, next_tried) = (fresh.next(), tried.next());
+            if next_fresh.is_none() && next_tried.is_none() {
+                break;
+            }
+            picked.extend(next_fresh.into_iter().chain(next_tried));
+        }
+        picked.truncate(count);
+        picked.into_iter().filter_map(dial_address).collect()
     }
 
-    /// Seed dial addresses, skipping seeds known to be this node's omitters.
-    pub fn seeds(&self, omitting: &[String]) -> Vec<Multiaddr> {
-        self.entries
+    /// Seed dial addresses in random order, skipping seeds known to be this
+    /// node's omitters and, given `now`, seeds still backing off.
+    pub fn seeds(&self, omitting: &[String], now: Option<u64>) -> Vec<Multiaddr> {
+        let mut seeds: Vec<Multiaddr> = self
+            .entries
             .iter()
             .filter(|entry| entry.origin == Origin::Seed)
+            .filter(|entry| {
+                now.is_none_or(|now| entry.banned_until.is_none_or(|until| until <= now))
+            })
             .filter(|entry| {
                 entry
                     .peer_id
                     .is_none_or(|peer| !omitting.contains(&peer.to_string()))
             })
             .filter_map(dial_address)
-            .collect()
+            .collect();
+        seeds.shuffle(&mut rand::thread_rng());
+        seeds
     }
 
     /// Identified IP/TCP addresses for record, commit and inventory sources,
@@ -400,7 +472,8 @@ impl PeerBook {
         BookStats {
             seeds: count(&|entry| entry.origin == Origin::Seed),
             book: count(&|_| true),
-            verified: count(&|entry| entry.last_success.is_some()),
+            reached: count(&|entry| entry.failures == 0 && entry.last_success.is_some()),
+            reached_ever: count(&|entry| entry.last_success.is_some()),
             gossip: count(&|entry| entry.origin == Origin::Gossip),
         }
     }
@@ -449,6 +522,7 @@ impl PeerBook {
                 "gossip addresses must be literal IPs".into(),
             ));
         };
+        validate_gossip_address(address)?;
         if !is_public(address) {
             return Err(Error::Invalid("gossip named a non-public address".into()));
         }
