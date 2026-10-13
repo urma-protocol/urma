@@ -366,8 +366,10 @@ fn complete_operator_view_matches_legacy_resolve_pending_without_scanning_or_ind
         ("pending", None),
     ] {
         f.config(None, &f.temp.path().join("token"));
-        let (ok, expected, _) = f.invoke(command, name, Some(id(1)));
+        let (ok, mut expected, _) = f.invoke(command, name, Some(id(1)));
         assert!(ok);
+        assert_eq!(expected["source"], json!({"kind":"autonomous-local"}));
+        expected.as_object_mut().unwrap().remove("source");
         let server = Server::new(f.pages());
         f.config(Some(server.addr), &f.temp.path().join("token"));
         // A healthy archive view must not even require an existing local index.
@@ -376,8 +378,10 @@ fn complete_operator_view_matches_legacy_resolve_pending_without_scanning_or_ind
             f.temp.path().join("index.saved"),
         )
         .unwrap();
-        let (ok, actual, err) = f.invoke(command, name, Some(id(1)));
+        let (ok, mut actual, err) = f.invoke(command, name, Some(id(1)));
         assert!(ok, "{err}");
+        assert_eq!(actual["source"]["kind"], "local-node-operator");
+        actual.as_object_mut().unwrap().remove("source");
         assert_eq!(actual, expected);
         let requests = server.finish();
         assert_eq!(requests.len(), 3);

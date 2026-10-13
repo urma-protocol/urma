@@ -1061,10 +1061,10 @@ fn healthy(control: &Path) {
             let persisted: Value =
                 serde_json::from_slice(&fs::read(cli.destination.join("recovery.json")).unwrap())
                     .unwrap();
-            assert_eq!(
-                persisted,
-                serde_json::from_str::<Value>(&receipt.stdout).unwrap()
-            );
+            let mut printed: Value = serde_json::from_str(&receipt.stdout).unwrap();
+            assert_eq!(printed["source"]["kind"], "local-node-operator");
+            printed.as_object_mut().unwrap().remove("source");
+            assert_eq!(persisted, printed);
             cli.destination.clone()
         } else {
             assert!(receipt.stdout.trim().is_empty());

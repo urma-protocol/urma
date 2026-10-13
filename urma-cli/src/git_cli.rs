@@ -245,7 +245,10 @@ fn recover(args: RecoverArgs) -> Result<Value, Error> {
         // Acquisition and all Git checks finished privately. Once publication
         // begins, an I/O error is returned; it cannot trigger another source.
         publish_recovery(directory.path(), &args.output)?;
-        return Ok(serde_json::to_value(report)?);
+        let mut value = serde_json::to_value(report)?;
+        value["source"] = json!({"kind":"local-node-operator",
+            "trust":"content and signatures verified from the local operator archive; chain inclusion not checked"});
+        return Ok(value);
     }
     let node = stage("Connecting to the selected network...", || {
         args.node.connect()
@@ -255,7 +258,10 @@ fn recover(args: RecoverArgs) -> Result<Value, Error> {
         workflows::recover(&node, root, &args.output, &limits)
     })
     .map_err(boundary)?;
-    Ok(serde_json::to_value(report)?)
+    let mut value = serde_json::to_value(report)?;
+    value["source"] = json!({"kind":"autonomous","evidence":node.inclusion_evidence(),
+        "providers":node.provider_labels()});
+    Ok(value)
 }
 
 fn archive_root(chain: urma_chain::observation::Chain, text: &str) -> Result<bitcoin::Txid, Error> {

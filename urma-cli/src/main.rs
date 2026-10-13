@@ -41,6 +41,7 @@ mod public_cli;
 mod wallet_cli;
 mod web_archive;
 mod web_cli;
+mod wire_archive;
 mod wire_live_cli;
 use clap::{Parser, Subcommand};
 use serde_json::Value;

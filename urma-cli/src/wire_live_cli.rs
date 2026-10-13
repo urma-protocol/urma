@@ -1,7 +1,9 @@
 use crate::common_cli::publish_plan;
 use crate::{
+    config,
     key_cli::{VaultAccess, funding_account},
     node_cli::NodeArgs,
+    wire_archive,
 };
 use bitcoin::{Block, BlockHash, Transaction, Txid, XOnlyPublicKey};
 use clap::{Args, Subcommand};
@@ -51,22 +53,32 @@ pub(crate) struct IndexArgs {
     #[arg(long, default_value_t = 1000)]
     max_blocks: u64,
 }
+#[derive(Args)]
+pub(crate) struct ReadSource {
+    #[arg(long, default_value = "wire-index.json")]
+    index: PathBuf,
+    #[arg(
+        long,
+        help = "Read only the local index, even when an operator archive is configured"
+    )]
+    local: bool,
+}
 #[derive(Subcommand)]
 pub(crate) enum ReadCommand {
     Feed {
-        #[arg(long, default_value = "wire-index.json")]
-        index: PathBuf,
+        #[command(flatten)]
+        source: ReadSource,
         #[arg(long, default_value_t = 50)]
         limit: usize,
     },
     Record {
-        #[arg(long, default_value = "wire-index.json")]
-        index: PathBuf,
+        #[command(flatten)]
+        source: ReadSource,
         txid: Txid,
     },
     Identity {
-        #[arg(long, default_value = "wire-index.json")]
-        index: PathBuf,
+        #[command(flatten)]
+        source: ReadSource,
         author: XOnlyPublicKey,
     },
 }
@@ -115,22 +127,42 @@ pub(crate) fn index(args: IndexArgs) -> Result<Value, Error> {
     ))?;
     Ok(serde_json::to_value(report)?)
 }
+/// The operator archive first when configured (unless `--local`), labelled
+/// with its coverage; any failure warns and falls back to the local index.
+fn open_index(source: &ReadSource) -> Result<(Index, Value), Error> {
+    if !source.local {
+        for settings in config::load()?.archive.iter() {
+            match wire_archive::read(settings) {
+                Ok(view) => return Ok(view),
+                Err(cause) => tracing::warn!(target: "urma_cli", error = %cause,
+                    "optional Wire archive unavailable; reading the local index"),
+            }
+        }
+    }
+    let index = wire_result(Index::load(&source.index))?;
+    Ok((index, wire_archive::autonomous_source()))
+}
+
 pub(crate) fn read(command: ReadCommand) -> Result<Value, Error> {
     match command {
-        ReadCommand::Feed { index, limit } => {
-            let index = wire_result(Index::load(&index))?;
-            Ok(
-                json!({"genesis":index.genesis,"records":wire_result(urma_wire::view::records(&index, limit))?,"start_height":index.start,"locally_cached":true}),
-            )
+        ReadCommand::Feed { source, limit } => {
+            let (index, source) = open_index(&source)?;
+            Ok(json!({"genesis":index.genesis,
+                "records":wire_result(urma_wire::view::records(&index, limit))?,
+                "start_height":index.start,"locally_cached":true,"source":source}))
         }
-        ReadCommand::Record { index, txid } => wire_result(urma_wire::view::record(
-            &wire_result(Index::load(&index))?,
-            txid,
-        )),
-        ReadCommand::Identity { index, author } => wire_result(urma_wire::view::identity(
-            &wire_result(Index::load(&index))?,
-            author,
-        )),
+        ReadCommand::Record { source, txid } => {
+            let (index, source) = open_index(&source)?;
+            let mut value = wire_result(urma_wire::view::record(&index, txid))?;
+            value["source"] = source;
+            Ok(value)
+        }
+        ReadCommand::Identity { source, author } => {
+            let (index, source) = open_index(&source)?;
+            let mut value = wire_result(urma_wire::view::identity(&index, author))?;
+            value["source"] = source;
+            Ok(value)
+        }
     }
 }
 

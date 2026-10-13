@@ -682,10 +682,20 @@ fn expected_resolve(engine: &Engine, page: &NamesPage, name: &Name) -> Value {
     json!({"network":NETWORK,"registry":page.status.genesis.to_string(),
         "genesis_height":page.status.genesis_block.height,"height":page.status.projected.height,
         "block_hash":page.status.projected.hash.to_string(),"name":name.as_str(),
-        "resolution":resolved.resolution,"pending":pending_rows(&pending(page),Some(name)),"locally_cached":true})
+        "resolution":resolved.resolution,"pending":pending_rows(&pending(page),Some(name)),"locally_cached":true,"source":operator(page)})
 }
-fn expected_pending(genesis: Txid, height: u64, rows: &BTreeMap<Txid, PendingRecord>) -> Value {
-    json!({"network":NETWORK,"registry":genesis.to_string(),"height":height,"pending":pending_rows(rows,None)})
+fn operator(page: &NamesPage) -> Value {
+    json!({"kind":"local-node-operator","generation":page.status.generation,
+        "selected_tip":page.status.selected_tip,"complete_to_tip":page.status.complete_to_tip,
+        "trust":"local operator projection; not portable chain or ownership evidence"})
+}
+fn expected_pending(
+    genesis: Txid,
+    height: u64,
+    rows: &BTreeMap<Txid, PendingRecord>,
+    source: Value,
+) -> Value {
+    json!({"network":NETWORK,"registry":genesis.to_string(),"height":height,"pending":pending_rows(rows,None),"source":source})
 }
 fn read_state(engine: &Engine) -> Value {
     // Public global projection revision remains readable even when Names is stale.
@@ -759,7 +769,7 @@ fn scenario(control: &Path) {
             None,
             rpc_addr
         ),
-        expected_pending(fixture.genesis, 104, &rows)
+        expected_pending(fixture.genesis, 104, &rows, operator(&page))
     );
     assert!(!missing_index.exists());
     assert!(!control.join("default-names-indexes").exists());
@@ -838,7 +848,7 @@ fn scenario(control: &Path) {
         ),
         json!({"network":NETWORK,"registry":fixture.genesis.to_string(),"genesis_height":100,
             "height":100,"block_hash":index.tip_hash(),"name":"alpha",
-            "resolution":index.registry.resolve(&name),"pending":[],"locally_cached":true})
+            "resolution":index.registry.resolve(&name),"pending":[],"locally_cached":true,"source":{"kind":"autonomous-local"}})
     );
     assert_eq!(
         invoke(
@@ -849,7 +859,12 @@ fn scenario(control: &Path) {
             None,
             rpc_addr
         ),
-        expected_pending(fixture.genesis, 100, &BTreeMap::new())
+        expected_pending(
+            fixture.genesis,
+            100,
+            &BTreeMap::new(),
+            json!({"kind":"autonomous-local"})
+        )
     );
     assert_eq!(
         fs::read(&local_index).unwrap(),

@@ -2,8 +2,10 @@ use crate::{
     config::{self, IndexChoice},
     key_cli::{VaultAccess, funding_account},
     names_approval::{self, ApproveArgs, RequestArgs, ReviewArgs},
+    names_archive::View,
     names_flow::{self, Publication, names_error, names_record},
     node_cli::{NodeArgs, chain_name},
+    wire_archive::autonomous_source,
 };
 use bitcoin::{Block, BlockHash, Transaction, Txid, XOnlyPublicKey};
 use clap::{Args, Subcommand, ValueEnum};
@@ -354,9 +356,20 @@ pub(crate) fn pending_records(index: &NamesIndex, name: &str) -> Result<Vec<Valu
 fn resolve(args: IndexArgs, name: &str) -> Result<Value, Error> {
     let name = Name::normalize(name)?;
     if let Some(view) = archive_view(&args)? {
-        return Ok(view.resolve(&args.network, &name));
+        let mut value = view.resolve(&args.network, &name);
+        value["source"] = names_operator_source(&view);
+        return Ok(value);
     }
-    resolution(&open_index(args)?, &name)
+    let mut value = resolution(&open_index(args)?, &name)?;
+    value["source"] = autonomous_source();
+    Ok(value)
+}
+
+fn names_operator_source(view: &View) -> Value {
+    let status = view.status();
+    json!({"kind":"local-node-operator","generation":status.generation,
+        "selected_tip":status.selected_tip,"complete_to_tip":status.complete_to_tip,
+        "trust":"local operator projection; not portable chain or ownership evidence"})
 }
 
 fn archive_view(args: &IndexArgs) -> Result<Option<crate::names_archive::View>, Error> {
@@ -391,7 +404,9 @@ pub(crate) fn resolution(index: &NamesIndex, name: &Name) -> Result<Value, Error
 
 fn pending(args: IndexArgs) -> Result<Value, Error> {
     if let Some(view) = archive_view(&args)? {
-        return Ok(view.pending(&args.network));
+        let mut value = view.pending(&args.network);
+        value["source"] = names_operator_source(&view);
+        return Ok(value);
     }
     let index = open_index(args)?;
     Ok(json!({
@@ -399,6 +414,7 @@ fn pending(args: IndexArgs) -> Result<Value, Error> {
         "registry": index.registry.genesis().to_string(),
         "height": index.registry.height(),
         "pending": pending_records(&index, "")?,
+        "source": autonomous_source(),
     }))
 }
 
