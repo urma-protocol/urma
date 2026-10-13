@@ -40,7 +40,7 @@ pub struct Offer {
 
 pub struct ServingPeer {
     address: PeerAddress,
-    served: Arc<AtomicUsize>,
+    counters: Arc<Counters>,
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
 }
@@ -97,11 +97,19 @@ fn answer(offer: &Offer, kind: &Kind, served: &AtomicUsize) -> Reply {
     }
 }
 
+/// What the daemon did to this peer, observed from the peer's side.
+#[derive(Default)]
+struct Counters {
+    served: AtomicUsize,
+    requests: AtomicUsize,
+    connections: AtomicUsize,
+}
+
 async fn serve(
     key: Keypair,
     offer: Offer,
     ready: mpsc::SyncSender<Multiaddr>,
-    served: Arc<AtomicUsize>,
+    counters: Arc<Counters>,
     stop: Arc<AtomicBool>,
 ) {
     let mut swarm = swarm(key);
@@ -117,11 +125,18 @@ async fn serve(
                     address.push(Protocol::P2p(*swarm.local_peer_id()));
                     let _ = ready.try_send(address);
                 }
+                SwarmEvent::ConnectionEstablished { .. } => {
+                    counters.connections.fetch_add(1, Ordering::AcqRel);
+                }
+                SwarmEvent::ConnectionClosed { .. } => {
+                    counters.connections.fetch_sub(1, Ordering::AcqRel);
+                }
                 SwarmEvent::Behaviour(Event::Message {
                     message: Message::Request { request, channel, .. },
                     ..
                 }) => {
-                    let result = answer(&offer, &request.kind, &served);
+                    counters.requests.fetch_add(1, Ordering::AcqRel);
+                    let result = answer(&offer, &request.kind, &counters.served);
                     let response = Response {
                         version: VERSION,
                         chain_genesis: offer.genesis,
@@ -141,9 +156,9 @@ impl ServingPeer {
         let key = Keypair::generate_ed25519();
         let id = key.public().to_peer_id();
         let (ready, listening) = mpsc::sync_channel(1);
-        let served = Arc::new(AtomicUsize::new(0));
+        let counters = Arc::new(Counters::default());
         let stop = Arc::new(AtomicBool::new(false));
-        let (count, flag) = (served.clone(), stop.clone());
+        let (count, flag) = (counters.clone(), stop.clone());
         let worker = thread::spawn(move || {
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
@@ -156,7 +171,7 @@ impl ServingPeer {
             .expect("serving peer listener");
         Self {
             address: PeerAddress::new(id, listen).unwrap(),
-            served,
+            counters,
             stop,
             worker: Some(worker),
         }
@@ -168,7 +183,17 @@ impl ServingPeer {
 
     /// Record requests answered with this peer's package.
     pub fn served(&self) -> usize {
-        self.served.load(Ordering::Acquire)
+        self.counters.served.load(Ordering::Acquire)
+    }
+
+    /// Requests of any kind received from anyone.
+    pub fn requests(&self) -> usize {
+        self.counters.requests.load(Ordering::Acquire)
+    }
+
+    /// Connections currently established with this peer.
+    pub fn connections(&self) -> usize {
+        self.counters.connections.load(Ordering::Acquire)
     }
 }
 

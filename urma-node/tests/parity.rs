@@ -55,6 +55,9 @@ const TRANSPORT_NETWORK: &str = "peer refused record or returned wrong network";
 /// Extra refusing peers in `Mode::Keep`: with the corpus peers, more refusing
 /// and stale peers than the daemon's eight outbound connection slots.
 const CROWD: usize = 8;
+/// Peers serving a package proven in an orphaned block, never blamed.
+const STALE_CROWD: usize = 8;
+const STALE_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Whether a serving peer is stopped once its verdict settles.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -595,16 +598,70 @@ fn parity(root: &Path, mode: Mode) -> Value {
     json!({"cases":report,"stored":stored,"refused":refused,"reverse_served":served,"crowd":crowd.len()})
 }
 
+fn offer(corpus: &Corpus, name: &str) -> Offer {
+    let case = corpus.cases.iter().find(|c| c.name == name);
+    case.unwrap().offer.clone()
+}
+
+/// One observation of the stale crowd and the honest peer, from both sides.
+fn sample(status: &Value, honest: &ServingPeer, crowd: &[ServingPeer]) -> Value {
+    let entry = peer_status(status, honest);
+    json!({
+        "connected": status["overlay"]["connected"],
+        "crowd_connected": crowd.iter().filter(|p| p.connections() > 0).count(),
+        "crowd_served": crowd.iter().map(ServingPeer::served).sum::<usize>(),
+        "honest_connected": honest.connections() > 0,
+        "honest_requests": honest.requests(),
+        "honest_error": entry["last_error"],
+        "honest_synced": entry["synced_through"],
+    })
+}
+
+/// STALE_CROWD peers prove one package in the orphaned fork block at the
+/// selected height, listed before one honest peer. Records each distinct
+/// observation until the honest record syncs or the bound expires.
+fn stale_crowd(root: &Path) -> Value {
+    let corpus = corpus();
+    let stale = offer(&corpus, "stale generation");
+    let crowd: Vec<ServingPeer> = (0..STALE_CROWD)
+        .map(|_| ServingPeer::start(stale.clone()))
+        .collect();
+    let honest = ServingPeer::start(offer(&corpus, "valid"));
+    let everyone: Vec<&ServingPeer> = crowd.iter().chain([&honest]).collect();
+    let mut daemon = Daemon::start(root, &corpus.main, &everyone);
+    let began = Instant::now();
+    let (mut timeline, mut last) = (Vec::new(), Value::Null);
+    let converged = loop {
+        let (_, status) = daemon.get("/v1/status");
+        let state = sample(&status, &honest, &crowd);
+        let synced = state["honest_synced"] == json!(FIRST_HEIGHT);
+        if state != last {
+            let at = began.elapsed().as_millis();
+            timeline.push(json!({"ms": at, "state": state.clone()}));
+            last = state;
+        }
+        if synced || began.elapsed() >= STALE_TIMEOUT {
+            break synced;
+        }
+        thread::sleep(Duration::from_millis(250));
+    };
+    let seconds = began.elapsed().as_secs();
+    let txid = offer(&corpus, "valid").placement.txid;
+    let stored = daemon.get(&format!("/v1/records/{txid}")).0 == 200;
+    daemon.shutdown();
+    json!({"converged":converged,"stored":stored,"seconds":seconds,"timeline":timeline})
+}
+
 #[test]
 #[ignore = "owned loopback-only namespace host, not a standalone case"]
 fn parity_host() {
     let root = PathBuf::from(std::env::var_os("PARITY_TEMP").expect("owned TEMP"));
-    let mode = match std::env::var("PARITY_MODE").unwrap().as_str() {
-        "release" => Mode::Release,
-        "keep" => Mode::Keep,
+    let report = match std::env::var("PARITY_MODE").unwrap().as_str() {
+        "release" => parity(&root, Mode::Release),
+        "keep" => parity(&root, Mode::Keep),
+        "stale" => stale_crowd(&root),
         other => panic!("unknown parity mode {other}"),
     };
-    let report = parity(&root, mode);
     fs::write(
         root.join("result.json"),
         serde_json::to_vec(&report).unwrap(),
@@ -686,4 +743,13 @@ fn embedded_and_standalone_engines_reach_identical_verdicts_and_bytes() {
 #[test]
 fn standalone_converges_with_refusing_peers_beyond_its_connection_slots() {
     assert_report(&run_host("keep"), CROWD);
+}
+
+#[test]
+fn stale_crowd_does_not_starve_an_honest_peer() {
+    let report = run_host("stale");
+    // The timeline characterizes slot use; shown with --show-output.
+    println!("{report}");
+    assert_eq!(report["converged"], true, "{report}");
+    assert_eq!(report["stored"], true, "{report}");
 }
