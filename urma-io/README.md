@@ -39,11 +39,11 @@ fn main() -> Result<(), std::io::Error> {
 
 ## Where it fits
 
-For sensitive inputs on supported native targets, see `read_private`, `read_regular` and `create_private_directory` in the API. These are used by [urma-identity](https://crates.io/crates/urma-identity), [urma-runtime](https://crates.io/crates/urma-runtime) and higher-level workflows.
+For sensitive inputs on supported native targets, see `read_private`, `read_shared`, `read_regular`, `create_file` and `create_private_directory` in the API. These are used by [urma-identity](https://crates.io/crates/urma-identity), [urma-runtime](https://crates.io/crates/urma-runtime) and higher-level workflows.
 
 ## Boundaries
 
-Native private-file helpers rely on Unix filesystem semantics. A WASM build does not imply browser access to native filesystem operations. Choose the helper appropriate to the target and handle its errors.
+Native private-file helpers use Unix modes and `O_NOFOLLOW` on Unix, and DACLs plus reparse-point refusal on Windows. A WASM build does not imply browser access to native filesystem operations. Choose the helper appropriate to the target and handle its errors.
 
 ## License
 

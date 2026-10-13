@@ -3742,11 +3742,13 @@ dependencies = [
 
 [[package]]
 name = "urma-io"
-version = "0.3.0"
+version = "0.3.1"
 dependencies = [
  "libc",
  "sha2",
  "tempfile",
+ "tracing",
+ "windows-sys 0.61.2",
  "zeroize",
 ]
 

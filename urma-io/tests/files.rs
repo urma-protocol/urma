@@ -67,15 +67,16 @@ fn atomic_modes_preserve_existing_file_or_replace_it() {
     let path = dir.path().join("output");
     write_new(&path, b"first").unwrap();
     let error = write_new(&path, b"second").unwrap_err();
-    match &error {
-        Error::Context { cause, .. } => match cause.as_ref() {
-            Error::Persist(cause) => {
-                assert_eq!(cause.error.kind(), std::io::ErrorKind::AlreadyExists)
-            }
-            other => panic!("unexpected cause: {other:?}"),
-        },
-        other => panic!("unexpected error: {other:?}"),
-    }
+    assert!(matches!(error, Error::Context { .. }));
+    let mut cause: Option<&(dyn std::error::Error + 'static)> = Some(&error);
+    let io = loop {
+        let current = cause.expect("an io::Error in the source chain");
+        match current.downcast_ref::<std::io::Error>() {
+            Some(io) => break io,
+            None => cause = current.source(),
+        }
+    };
+    assert_eq!(io.kind(), std::io::ErrorKind::AlreadyExists);
     drop(error); // Releases the failed persistence temporary file.
     assert_eq!(std::fs::read(&path).unwrap(), b"first");
     write_replace(&path, b"second").unwrap();
@@ -111,6 +112,7 @@ fn stream_digest_consumes_from_current_position_without_rewinding() {
 }
 
 #[test]
+#[cfg(unix)]
 fn regular_reads_reject_symlinks_directories_and_fifo() {
     use std::os::unix::fs::symlink;
     let dir = tempfile::tempdir().unwrap();
@@ -132,6 +134,7 @@ fn regular_reads_reject_symlinks_directories_and_fifo() {
 }
 
 #[test]
+#[cfg(unix)]
 fn private_directory_refuses_existing_paths_and_has_no_group_access() {
     use std::os::unix::fs::PermissionsExt;
     let dir = tempfile::tempdir().unwrap();
@@ -145,6 +148,74 @@ fn private_directory_refuses_existing_paths_and_has_no_group_access() {
 }
 
 #[test]
+#[cfg(unix)]
+fn shared_reads_allow_the_group_refuse_others_and_never_follow_links() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("service.token");
+    std::fs::write(&path, b"token").unwrap();
+    for mode in [0o600, 0o640, 0o440] {
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert_eq!(&**read_shared(&path, 5).unwrap(), b"token");
+    }
+    assert!(matches!(
+        read_shared(&path, 4),
+        Err(Error::TooLarge { limit: 4 })
+    ));
+    for mode in [0o660, 0o620, 0o644, 0o642, 0o641] {
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(mode)).unwrap();
+        assert!(matches!(
+            read_shared(&path, 5),
+            Err(Error::PrivatePermissions)
+        ));
+    }
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o640)).unwrap();
+    let link = dir.path().join("link");
+    symlink(&path, &link).unwrap();
+    assert!(read_shared(&link, 5).is_err());
+    assert!(read_shared(dir.path(), 5).is_err());
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o000)).unwrap();
+    let denied = read_shared(&path, 5);
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    match denied {
+        Err(Error::Io(cause)) => assert_eq!(cause.kind(), std::io::ErrorKind::PermissionDenied),
+        Ok(_) => assert_eq!(unsafe { libc::geteuid() }, 0, "only root reads mode 000"),
+        Err(other) => panic!("unexpected error: {other:?}"),
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn created_files_carry_their_access_in_the_mode() {
+    use std::{
+        io::Write,
+        os::unix::fs::{PermissionsExt, symlink},
+    };
+    let dir = tempfile::tempdir().unwrap();
+    for (name, access, mode) in [
+        ("key", Access::Private, 0o600),
+        ("token", Access::Shared, 0o640),
+    ] {
+        let path = dir.path().join(name);
+        create_file(&path, access)
+            .unwrap()
+            .write_all(b"abc")
+            .unwrap();
+        assert_eq!(path.metadata().unwrap().permissions().mode() & 0o777, mode);
+        assert_eq!(&**read_shared(&path, 3).unwrap(), b"abc");
+        assert_eq!(
+            create_file(&path, access).unwrap_err().kind(),
+            std::io::ErrorKind::AlreadyExists
+        );
+    }
+    let link = dir.path().join("link");
+    symlink(dir.path().join("absent"), &link).unwrap();
+    assert!(create_file(&link, Access::Private).is_err());
+    assert!(!dir.path().join("absent").exists());
+}
+
+#[test]
+#[cfg(unix)]
 fn private_reads_check_permissions_and_bounds_on_the_open_file() {
     use std::os::unix::fs::{PermissionsExt, symlink};
     let dir = tempfile::tempdir().unwrap();
@@ -169,4 +240,70 @@ fn private_reads_check_permissions_and_bounds_on_the_open_file() {
     std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
     std::fs::write(&path, []).unwrap();
     assert!(read_private(&path, 0).unwrap().is_empty());
+}
+
+#[test]
+#[cfg(windows)]
+fn created_files_carry_their_access_in_the_dacl() {
+    use std::io::Write;
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("private");
+    create_private_directory(&target).unwrap();
+    assert_eq!(
+        create_private_directory(&target).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    let private = target.join("peer.key");
+    create_file(&private, Access::Private)
+        .unwrap()
+        .write_all(b"key")
+        .unwrap();
+    assert_eq!(
+        create_file(&private, Access::Private).unwrap_err().kind(),
+        std::io::ErrorKind::AlreadyExists
+    );
+    assert_eq!(&**read_private(&private, 3).unwrap(), b"key");
+    assert_eq!(&**read_shared(&private, 3).unwrap(), b"key");
+    assert_eq!(&**read_regular(&private, 3).unwrap(), b"key");
+    let shared = target.join("service.token");
+    create_file(&shared, Access::Shared)
+        .unwrap()
+        .write_all(b"token")
+        .unwrap();
+    assert_eq!(&**read_shared(&shared, 5).unwrap(), b"token");
+    assert!(matches!(
+        read_shared(&shared, 4),
+        Err(Error::TooLarge { limit: 4 })
+    ));
+    assert!(read_regular(&target, 5).is_err());
+    assert!(read_shared(&target, 5).is_err());
+}
+
+#[test]
+#[cfg(windows)]
+fn atomic_writes_persist_private_files_outside_private_directories() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("vault");
+    std::fs::write(dir.path().join("neighbour"), b"public").unwrap();
+    write_new(&path, b"secret").unwrap();
+    assert_eq!(&**read_private(&path, 6).unwrap(), b"secret");
+    write_replace(&path, b"rotated").unwrap();
+    assert_eq!(&**read_private(&path, 7).unwrap(), b"rotated");
+    assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 2);
+    sync_directory(dir.path()).unwrap();
+}
+
+#[test]
+#[cfg(windows)]
+fn created_files_refuse_a_dangling_final_link() {
+    let dir = tempfile::tempdir().unwrap();
+    let link = dir.path().join("link");
+    let absent = dir.path().join("absent");
+    match std::os::windows::fs::symlink_file(&absent, &link) {
+        Ok(()) => {}
+        Err(cause) if cause.raw_os_error() == Some(1314) => return,
+        Err(cause) => panic!("symlink: {cause}"),
+    }
+    assert!(create_file(&link, Access::Private).is_err());
+    assert!(!absent.exists());
 }

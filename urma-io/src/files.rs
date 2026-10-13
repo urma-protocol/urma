@@ -1,9 +1,11 @@
-use crate::{Error, output_parent};
-use std::{
-    fs::File,
-    io::{Read, Write},
-    path::Path,
-};
+use crate::Error;
+#[cfg(not(windows))]
+use crate::output_parent;
+#[cfg(windows)]
+use crate::windows::write_atomic;
+#[cfg(not(windows))]
+use std::io::Write;
+use std::{fs::File, io::Read, path::Path};
 
 pub fn read_bounded(path: &Path, limit: usize) -> Result<Vec<u8>, Error> {
     let file = File::open(path).map_err(|cause| Error::Context {
@@ -35,6 +37,7 @@ pub fn write_replace(path: &Path, bytes: &[u8]) -> Result<(), Error> {
     write_atomic(path, bytes, true)
 }
 
+#[cfg(not(windows))]
 fn write_atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<(), Error> {
     let parent = output_parent(path);
     let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
@@ -50,6 +53,11 @@ fn write_atomic(path: &Path, bytes: &[u8], replace: bool) -> Result<(), Error> {
                 cause: Box::new(Error::Persist(cause)),
             })?;
     }
-    File::open(parent)?.sync_all()?;
+    sync_directory(parent)?;
     Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn sync_directory(path: &Path) -> Result<(), std::io::Error> {
+    File::open(path)?.sync_all()
 }
