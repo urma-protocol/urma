@@ -3824,7 +3824,7 @@ dependencies = [
 
 [[package]]
 name = "urma-runtime"
-version = "0.3.2"
+version = "0.3.3"
 dependencies = [
  "bech32",
  "bitcoin",

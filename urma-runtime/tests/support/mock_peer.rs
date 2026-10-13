@@ -27,6 +27,8 @@ pub enum Behaviour {
     Trickle,
     SilentOnGetData,
     Announce(i32),
+    Delay(Duration),
+    Flood,
 }
 
 pub struct MockPeer {
@@ -163,6 +165,13 @@ fn serve(
                 {
                     return;
                 }
+                if behaviour == Behaviour::Flood {
+                    for block in blocks {
+                        if !send(&mut writer, NetworkMessage::Block(block.clone())) {
+                            return;
+                        }
+                    }
+                }
                 if behaviour == Behaviour::Trickle {
                     let mut pinger = writer.try_clone().unwrap();
                     std::thread::spawn(move || {
@@ -206,6 +215,10 @@ fn serve(
                 }
                 if behaviour == Behaviour::SilentOnGetData {
                     continue;
+                }
+                match behaviour {
+                    Behaviour::Delay(pause) => std::thread::sleep(pause),
+                    _other => (),
                 }
                 for item in items {
                     let (Inventory::WitnessBlock(hash) | Inventory::Block(hash)) = item else {

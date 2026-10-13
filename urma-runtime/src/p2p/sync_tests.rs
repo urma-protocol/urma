@@ -1,5 +1,7 @@
 use super::*;
-use crate::config::{P2P_BLOCK_PEER_TIMEOUT_SECS, P2P_HEADERS_TIMEOUT_SECS, P2P_HEIGHT_SLACK};
+use crate::config::{
+    P2P_BLOCK_PEER_TIMEOUT_SECS, P2P_HEADERS_TIMEOUT_SECS, P2P_HEIGHT_SLACK, P2P_PIPELINE_PER_PEER,
+};
 use crate::p2p::headers::Anchor;
 use bitcoin::Block;
 use bitcoin::consensus::encode::serialize;
@@ -194,9 +196,18 @@ fn a_silent_block_holder_is_dropped_for_redial_and_low_peers_are_skipped() {
     let dir = tempfile::tempdir().unwrap();
     let shared = synced_shared(dir.path(), &chain, 5);
     let mut peers = connected(dir.path(), &[&lagging, &silent, &good]);
+    let mut flight = InFlight::default();
     let started = Instant::now();
-    let raw = fetch_block(&shared, &mut peers, chain[4].block_hash()).unwrap();
+    let raw = fetch_block(&shared, &mut peers, &mut flight, chain[4].block_hash()).unwrap();
     assert_eq!(raw, serialize(&chain[4]));
+    while peers.count() == 3 {
+        assert!(
+            started.elapsed() < Duration::from_secs(P2P_BLOCK_PEER_TIMEOUT_SECS + 4),
+            "the silent holder was never dropped"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        pipeline::settle(&shared, &mut peers, &mut flight);
+    }
     assert!(
         started.elapsed() < Duration::from_secs(P2P_BLOCK_PEER_TIMEOUT_SECS + 4),
         "{:?}",
@@ -225,12 +236,48 @@ fn a_prefetch_asks_a_lone_holder_once_and_keeps_the_other_peers() {
     let dir = tempfile::tempdir().unwrap();
     let shared = synced_shared(dir.path(), &chain, 7);
     let mut peers = connected(dir.path(), &[&first, &second, &holder]);
-    let raw = fetch_block(&shared, &mut peers, chain[2].block_hash()).unwrap();
+    let mut flight = InFlight::default();
+    let raw = fetch_block(&shared, &mut peers, &mut flight, chain[2].block_hash()).unwrap();
     assert_eq!(raw, serialize(&chain[2]));
+    let started = Instant::now();
+    while peers.count() == 3 {
+        assert!(
+            started.elapsed() < Duration::from_secs(P2P_BLOCK_PEER_TIMEOUT_SECS + 4),
+            "the silent holder was never dropped"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+        pipeline::settle(&shared, &mut peers, &mut flight);
+    }
     assert_eq!(holder.getdata.load(Ordering::Acquire), 1);
     assert_eq!(peers.count(), 2);
     let kept: Vec<_> = peers.connected.iter().map(|peer| peer.address).collect();
     assert_eq!(kept, vec![first.address, second.address]);
+}
+
+#[test]
+fn unsolicited_blocks_are_dropped_and_only_requested_blocks_are_stashed() {
+    let chain = Arc::new(mock_peer::regtest_chain(120));
+    let flood = mock_peer::spawn(chain.clone(), Behaviour::Flood);
+    let dir = tempfile::tempdir().unwrap();
+    let shared = synced_shared(dir.path(), &chain, 119);
+    let mut peers = connected(dir.path(), &[&flood]);
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(2) {
+        peers.poll_idle();
+        assert!(peers.connected[0].arrived.is_empty());
+        assert!(peers.connected[0].lacking.is_empty());
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(peers.count(), 1, "a flood is dropped, not the peer");
+    let mut flight = InFlight::default();
+    let raw = fetch_block(&shared, &mut peers, &mut flight, chain[5].block_hash()).unwrap();
+    assert_eq!(raw, serialize(&chain[5]));
+    for _round in 0..10 {
+        peers.poll_idle();
+        assert!(peers.connected[0].arrived.len() <= P2P_PIPELINE_PER_PEER + 1);
+        assert!(peers.connected[0].outstanding() <= P2P_PIPELINE_PER_PEER + 1);
+        std::thread::sleep(Duration::from_millis(20));
+    }
 }
 
 #[test]
@@ -241,11 +288,19 @@ fn a_prefetch_notfound_keeps_the_peer() {
     let dir = tempfile::tempdir().unwrap();
     let shared = synced_shared(dir.path(), &chain, 5);
     let mut peers = connected(dir.path(), &[&first, &second]);
-    fetch_block(&shared, &mut peers, chain[2].block_hash()).unwrap();
-    assert!(
-        second.getdata.load(Ordering::Acquire) >= 1,
-        "prefetch asked"
-    );
+    let mut flight = InFlight::default();
+    fetch_block(&shared, &mut peers, &mut flight, chain[2].block_hash()).unwrap();
+    let started = Instant::now();
+    while second.getdata.load(Ordering::Acquire) == 0 {
+        assert!(
+            started.elapsed() < Duration::from_secs(2),
+            "prefetch never asked"
+        );
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    std::thread::sleep(Duration::from_millis(200));
+    peers.poll_idle();
+    pipeline::settle(&shared, &mut peers, &mut flight);
     assert_eq!(peers.count(), 2, "notfound to a prefetch is not a drop");
     assert_eq!(peers.redial_pending(), 0);
 }

@@ -203,7 +203,8 @@ pub const P2P_SEED_INTERVAL_SECS: u64 = 60;
 pub const P2P_SEED_TIMEOUT_SECS: u64 = 3;
 pub const P2P_FETCH_ATTEMPTS: usize = 4;
 pub const P2P_POW_WORKERS: usize = 4;
-pub const P2P_PREFETCH_BLOCKS: u64 = 4;
+pub const P2P_PREFETCH_BLOCKS: u64 = 16;
+pub const P2P_PIPELINE_PER_PEER: usize = 8;
 
 pub struct Checkpoint {
     pub height: u64,

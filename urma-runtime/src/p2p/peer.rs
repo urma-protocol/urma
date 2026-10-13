@@ -1,7 +1,7 @@
 use crate::config::{
     P2P_BLOCK_PEER_TIMEOUT_SECS, P2P_CONNECT_TIMEOUT_SECS, P2P_HANDSHAKE_TIMEOUT_SECS,
-    P2P_HEADERS_TIMEOUT_SECS, P2P_HEIGHT_SLACK, P2P_POLL_MESSAGES, P2P_POLL_READ_TIMEOUT_MILLIS,
-    P2P_PROTOCOL_VERSION, P2P_READ_TIMEOUT_SECS, P2P_USER_AGENT,
+    P2P_HEADERS_TIMEOUT_SECS, P2P_HEIGHT_SLACK, P2P_PIPELINE_PER_PEER, P2P_POLL_MESSAGES,
+    P2P_POLL_READ_TIMEOUT_MILLIS, P2P_PROTOCOL_VERSION, P2P_READ_TIMEOUT_SECS, P2P_USER_AGENT,
 };
 use crate::error::{Context, Error, ensure};
 use crate::p2p::wire::{self, Message};
@@ -28,6 +28,9 @@ pub struct Peer {
     pub learned: Vec<Gossiped>,
     pub version: Option<VersionMessage>,
     pub(super) proven_height: Option<u64>,
+    pub(super) arrived: Vec<Vec<u8>>,
+    pub(super) lacking: Vec<BlockHash>,
+    requested: Vec<BlockHash>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,6 +88,9 @@ impl Peer {
             learned: Vec::new(),
             version: None,
             proven_height: None,
+            arrived: Vec::new(),
+            lacking: Vec::new(),
+            requested: Vec::new(),
         };
         peer.handshake(our_height, hello)?;
         Ok(peer)
@@ -222,7 +228,16 @@ impl Peer {
                 Ok(())
             }
             Message::Block(raw) => {
-                tracing::debug!(peer = %self.address, bytes = raw.len(), "unsolicited block ignored");
+                let hash = block_hash(&raw)?;
+                match self.requested.contains(&hash) {
+                    true => {
+                        self.requested.retain(|asked| *asked != hash);
+                        self.arrived.push(raw);
+                    }
+                    false => {
+                        tracing::debug!(peer = %self.address, bytes = raw.len(), "unsolicited block dropped")
+                    }
+                }
                 Ok(())
             }
             Message::Pong(nonce) => {
@@ -234,7 +249,14 @@ impl Peer {
                 Ok(())
             }
             Message::NotFound(items) => {
-                tracing::trace!(peer = %self.address, count = items.len(), "notfound outside a request");
+                for item in items {
+                    if let Inventory::WitnessBlock(hash) | Inventory::Block(hash) = item {
+                        if self.requested.contains(&hash) {
+                            self.requested.retain(|asked| *asked != hash);
+                            self.lacking.push(hash);
+                        }
+                    }
+                }
                 Ok(())
             }
             Message::Verack => Ok(()),
@@ -305,37 +327,50 @@ impl Peer {
         answered
     }
 
-    pub(super) fn request_block(&mut self, hash: BlockHash) -> Result<Vec<u8>, Error> {
-        self.ask_block(hash)?;
-        self.await_block(hash)
+    pub(super) fn outstanding(&self) -> usize {
+        self.requested.len()
     }
 
-    pub(super) fn ask_block(&mut self, hash: BlockHash) -> Result<(), Error> {
-        self.send(NetworkMessage::GetData(vec![Inventory::WitnessBlock(hash)]))
+    pub(super) fn ask_blocks(&mut self, hashes: &[BlockHash]) -> Result<(), Error> {
+        ensure!(
+            self.requested.len() + hashes.len() <= P2P_PIPELINE_PER_PEER + 1,
+            "peer {} already holds its block request window",
+            self.address
+        );
+        let items = hashes
+            .iter()
+            .copied()
+            .map(Inventory::WitnessBlock)
+            .collect();
+        self.send(NetworkMessage::GetData(items))?;
+        self.requested.extend_from_slice(hashes);
+        Ok(())
     }
 
     pub(super) fn await_block(&mut self, hash: BlockHash) -> Result<Vec<u8>, Error> {
+        if self.lacking.contains(&hash) {
+            self.lacking.retain(|missing| *missing != hash);
+            return Err(self.missing(hash));
+        }
+        for (position, raw) in self.arrived.iter().enumerate() {
+            if block_hash(raw)? == hash {
+                return Ok(self.arrived.remove(position));
+            }
+        }
         let patience = Duration::from_secs(P2P_BLOCK_PEER_TIMEOUT_SECS);
         self.stream.set_read_timeout(Some(patience))?;
         let answered = self.wait(Instant::now() + patience, |peer, message| match message {
-            Message::Block(raw) => {
-                let header: Header = deserialize(raw.get(..Header::SIZE).context("block shorter than a header")?)?;
-                match header.block_hash() == hash {
-                    true => Ok(Waited::Done(raw)),
-                    false => {
-                        tracing::debug!(peer = %peer.address, "block for another request ignored");
-                        Ok(Waited::Keep)
-                    }
-                }
+            Message::Block(raw) if block_hash(&raw)? == hash => {
+                peer.requested.retain(|asked| *asked != hash);
+                Ok(Waited::Done(raw))
             }
-            Message::NotFound(rows) => {
-                let absent = rows.iter().any(|item| {
+            Message::NotFound(rows)
+                if rows.iter().any(|item| {
                     matches!(item, Inventory::WitnessBlock(missing) | Inventory::Block(missing) if *missing == hash)
-                });
-                match absent {
-                    true => Err(Error::Missing(format!("peer {} does not have block {hash}", peer.address))),
-                    false => Ok(Waited::Keep),
-                }
+                }) =>
+            {
+                peer.requested.retain(|asked| *asked != hash);
+                Err(peer.missing(hash))
             }
             other => {
                 peer.absorb(other)?;
@@ -346,4 +381,16 @@ impl Peer {
             .set_read_timeout(Some(Duration::from_secs(P2P_READ_TIMEOUT_SECS)))?;
         answered
     }
+
+    fn missing(&self, hash: BlockHash) -> Error {
+        Error::Missing(format!("peer {} does not have block {hash}", self.address))
+    }
+}
+
+pub(super) fn block_hash(raw: &[u8]) -> Result<BlockHash, Error> {
+    let header: Header = deserialize(
+        raw.get(..Header::SIZE)
+            .context("block shorter than a header")?,
+    )?;
+    Ok(header.block_hash())
 }

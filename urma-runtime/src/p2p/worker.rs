@@ -1,12 +1,12 @@
 use crate::config::{
-    P2P_FETCH_ATTEMPTS, P2P_IDLE_POLL_MILLIS, P2P_MAX_HEADERS_PER_MESSAGE, P2P_PREFETCH_BLOCKS,
-    P2P_TOP_UP_BUDGET_SECS,
+    P2P_FETCH_ATTEMPTS, P2P_IDLE_POLL_MILLIS, P2P_MAX_HEADERS_PER_MESSAGE, P2P_TOP_UP_BUDGET_SECS,
 };
 use crate::error::Error;
 use crate::p2p::blocks::{BlockCache, Held};
 use crate::p2p::headers::{Extension, HeaderChain};
 use crate::p2p::peer::Peer;
 use crate::p2p::peers::Peers;
+use crate::p2p::pipeline::{self, Holder, InFlight};
 use bitcoin::BlockHash;
 use bitcoin::block::Header;
 use std::collections::HashSet;
@@ -66,11 +66,13 @@ pub(super) fn locked<'a, T>(mutex: &'a Mutex<T>, what: &str) -> MutexGuard<'a, T
 
 pub(super) fn run(shared: Arc<Shared>, commands: Receiver<Command>) {
     let mut peers = Peers::new(shared.chain, shared.pinned.clone(), &shared.cache_dir);
+    let mut flight = InFlight::default();
     loop {
         if shared.stop.load(Ordering::Acquire) {
             return;
         }
         maintain_peers(&shared, &mut peers);
+        pipeline::settle(&shared, &mut peers, &mut flight);
         let synced = locked(&shared.status, "status").synced;
         if !synced {
             if sync_round(&shared, &mut peers).is_err() {
@@ -79,7 +81,7 @@ pub(super) fn run(shared: Arc<Shared>, commands: Receiver<Command>) {
             continue;
         }
         match commands.recv_timeout(Duration::from_millis(P2P_IDLE_POLL_MILLIS)) {
-            Ok(command) => serve(&shared, &mut peers, command),
+            Ok(command) => serve(&shared, &mut peers, &mut flight, command),
             Err(RecvTimeoutError::Timeout) => (),
             Err(RecvTimeoutError::Disconnected) => {
                 tracing::warn!("light client command channel closed; worker stops");
@@ -135,7 +137,7 @@ fn now_unix() -> Result<u32, Error> {
     Ok(u32::try_from(elapsed.as_secs())?)
 }
 
-fn serve(shared: &Shared, peers: &mut Peers, command: Command) {
+fn serve(shared: &Shared, peers: &mut Peers, flight: &mut InFlight, command: Command) {
     match command {
         Command::Refresh { reply } => {
             let outcome = sync_round(shared, peers);
@@ -144,10 +146,12 @@ fn serve(shared: &Shared, peers: &mut Peers, command: Command) {
                 Err(error) => tracing::warn!(%error, "refresh requester went away"),
             }
         }
-        Command::Block { hash, reply } => match reply.send(fetch_block(shared, peers, hash)) {
-            Ok(()) => (),
-            Err(error) => tracing::warn!(%error, "block requester went away"),
-        },
+        Command::Block { hash, reply } => {
+            match reply.send(fetch_block(shared, peers, flight, hash)) {
+                Ok(()) => (),
+                Err(error) => tracing::warn!(%error, "block requester went away"),
+            }
+        }
     }
 }
 
@@ -408,26 +412,35 @@ fn sync_from(shared: &Shared, peers: &mut Peers, index: usize) -> Result<bool, E
     }
 }
 
-fn fetch_block(shared: &Shared, peers: &mut Peers, hash: BlockHash) -> Result<Vec<u8>, Error> {
-    let (height, tip) = {
-        let headers = locked(&shared.headers, "headers");
-        let height = headers.height_of(hash)?;
-        (height, headers.tip_height())
-    };
-    match locked(&shared.blocks, "blocks").get(hash) {
-        Held::Cached(raw) => return Ok(raw),
+fn fetch_block(
+    shared: &Shared,
+    peers: &mut Peers,
+    flight: &mut InFlight,
+    hash: BlockHash,
+) -> Result<Vec<u8>, Error> {
+    let height = locked(&shared.headers, "headers").height_of(hash)?;
+    let held = locked(&shared.blocks, "blocks").get(hash);
+    match held {
+        Held::Cached(raw) => {
+            pipeline::fill(shared, peers, flight, height + 1, &HashSet::new());
+            return Ok(raw);
+        }
         Held::Absent => (),
     }
     let mut failures = Vec::new();
     let mut lacking = HashSet::new();
     for attempt in 0..P2P_FETCH_ATTEMPTS {
-        let usable = |peers: &Peers| {
-            peers
-                .order_for_block(height, tip)
-                .into_iter()
-                .find(|index| !lacking.contains(&peers.connected[*index].address))
+        if let Holder::Nobody = flight.holder(hash) {
+            pipeline::fill(shared, peers, flight, height, &lacking);
+        }
+        let holder = match flight.holder(hash) {
+            Holder::Peer(address) => peers
+                .connected
+                .iter()
+                .position(|peer| peer.address == address),
+            Holder::Nobody => None,
         };
-        let Some(index) = usable(peers) else {
+        let Some(index) = holder else {
             locked(&shared.status, "status").peers = peers.count();
             return Err(Error::Unsupported(format!(
                 "block {hash}: no connected peer after {attempt} attempts: {}",
@@ -435,21 +448,27 @@ fn fetch_block(shared: &Shared, peers: &mut Peers, hash: BlockHash) -> Result<Ve
             )));
         };
         let address = peers.connected[index].address;
-        match fetch_from(shared, peers, index, hash, height) {
-            Ok(raw) => return Ok(raw),
+        match pipeline::receive(shared, peers, flight, index, (height, hash)) {
+            Ok(raw) => {
+                pipeline::fill(shared, peers, flight, height + 1, &lacking);
+                return Ok(raw);
+            }
             Err(Error::Missing(message)) => {
                 tracing::warn!(peer = %address, %message, "peer lacks the requested block");
                 failures.push(message);
                 lacking.insert(address);
+                flight.forget(hash);
             }
             Err(error @ Error::Invalid(_)) => {
                 tracing::warn!(peer = %address, %error, "peer banned for an invalid block");
                 failures.push(error.to_string());
+                flight.forget_peer(address);
                 peers.ban_peer(index);
             }
             Err(error) => {
                 tracing::warn!(peer = %address, %error, attempt, "peer dropped during block fetch; retrying with another peer");
                 failures.push(error.to_string());
+                flight.forget_peer(address);
                 peers.drop_peer(index);
             }
         }
@@ -460,20 +479,12 @@ fn fetch_block(shared: &Shared, peers: &mut Peers, hash: BlockHash) -> Result<Ve
     )))
 }
 
-fn fetch_from(
+pub(super) fn admit_block(
     shared: &Shared,
-    peers: &mut Peers,
-    index: usize,
+    raw: &[u8],
     hash: BlockHash,
     height: u64,
-) -> Result<Vec<u8>, Error> {
-    let raw = peers.connected[index].request_block(hash)?;
-    admit_block(shared, &raw, hash, height)?;
-    prefetch(shared, peers, height, index);
-    Ok(raw)
-}
-
-fn admit_block(shared: &Shared, raw: &[u8], hash: BlockHash, height: u64) -> Result<(), Error> {
+) -> Result<(), Error> {
     let block = decode::esplora_block(raw, shared.chain, hash)?;
     let expected = locked(&shared.headers, "headers").header_at(height)?;
     if block.header != expected {
@@ -483,71 +494,4 @@ fn admit_block(shared: &Shared, raw: &[u8], hash: BlockHash, height: u64) -> Res
     }
     locked(&shared.blocks, "blocks").insert(hash, height, raw.to_vec());
     Ok(())
-}
-
-fn prefetch_targets(shared: &Shared, served: u64) -> Vec<(u64, BlockHash)> {
-    let headers = locked(&shared.headers, "headers");
-    let blocks = locked(&shared.blocks, "blocks");
-    let mut targets = Vec::new();
-    let tip = headers.tip_height();
-    let last = (served + P2P_PREFETCH_BLOCKS).min(tip);
-    for height in served + 1..=last {
-        let hash = match headers.hash_at(height) {
-            Ok(hash) => hash,
-            Err(error) => {
-                tracing::warn!(height, %error, "prefetch stopped at a header the chain no longer holds");
-                break;
-            }
-        };
-        match blocks.get(hash) {
-            Held::Cached(_raw) => continue,
-            Held::Absent => targets.push((height, hash)),
-        }
-    }
-    targets
-}
-
-fn prefetch(shared: &Shared, peers: &mut Peers, served: u64, served_by: usize) {
-    let targets = prefetch_targets(shared, served);
-    let tip = locked(&shared.headers, "headers").tip_height();
-    let mut asked: Vec<(usize, u64, BlockHash)> = Vec::new();
-    for (slot, (height, hash)) in targets.into_iter().enumerate() {
-        let holders = peers.order_for_block(height, tip);
-        let start = served_by + 1 + slot;
-        let unasked = (0..holders.len())
-            .map(|step| holders[(start + step) % holders.len()])
-            .find(|index| asked.iter().all(|entry| entry.0 != *index));
-        let Some(index) = unasked else {
-            break;
-        };
-        match peers.connected[index].ask_block(hash) {
-            Ok(()) => asked.push((index, height, hash)),
-            Err(error) => {
-                tracing::warn!(peer = %peers.connected[index].address, %error, "prefetch request failed");
-            }
-        }
-    }
-    let mut dropped = Vec::new();
-    for (index, height, hash) in asked {
-        if dropped.contains(&index) {
-            continue;
-        }
-        let answer = peers.connected[index].await_block(hash);
-        match answer.and_then(|raw| admit_block(shared, &raw, hash, height)) {
-            Ok(()) => tracing::debug!(height, "block prefetched"),
-            Err(Error::Missing(message)) => {
-                tracing::debug!(peer = %peers.connected[index].address, %message, height, "prefetch skipped; peer lacks the block");
-            }
-            Err(error) => {
-                tracing::warn!(peer = %peers.connected[index].address, %error, height, "prefetch failed; peer dropped");
-                dropped.push(index);
-            }
-        }
-    }
-    dropped.sort_unstable();
-    dropped.dedup();
-    for index in dropped.into_iter().rev() {
-        peers.drop_peer(index);
-    }
-    locked(&shared.status, "status").peers = peers.count();
 }

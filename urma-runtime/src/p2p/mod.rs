@@ -6,6 +6,7 @@ mod discovery;
 mod headers;
 mod peer;
 mod peers;
+mod pipeline;
 mod provider;
 mod source;
 mod wire;
