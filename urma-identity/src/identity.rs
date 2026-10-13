@@ -2,7 +2,7 @@ use crate::{bip85, error::IdentityError, keys::AuthorIdentity};
 use bitcoin::{
     PublicKey,
     bip32::Xpriv,
-    secp256k1::{Keypair, Message, Secp256k1, ecdsa, schnorr},
+    secp256k1::{Keypair, Message, Secp256k1, schnorr},
 };
 use zeroize::Zeroizing;
 
@@ -24,7 +24,6 @@ impl IdentitySlot {
 pub trait IdentitySigner {
     fn public_key(&self) -> PublicKey;
     fn sign_author(&self, message: Message) -> Result<schnorr::Signature, IdentityError>;
-    fn sign_funding(&self, message: Message) -> Result<ecdsa::Signature, IdentityError>;
 }
 
 pub struct IdentityKey(Zeroizing<[u8; 32]>);
@@ -79,13 +78,6 @@ impl IdentitySigner for IdentityKey {
     fn sign_author(&self, message: Message) -> Result<schnorr::Signature, IdentityError> {
         Ok(Secp256k1::new().sign_schnorr_no_aux_rand(&message, &self.keypair().0))
     }
-    fn sign_funding(&self, message: Message) -> Result<ecdsa::Signature, IdentityError> {
-        let pair = self.keypair();
-        let mut secret = pair.0.secret_key();
-        let signature = Secp256k1::new().sign_ecdsa(&message, &secret);
-        secret.non_secure_erase();
-        Ok(signature)
-    }
 }
 
 impl IdentitySigner for Keypair {
@@ -94,11 +86,5 @@ impl IdentitySigner for Keypair {
     }
     fn sign_author(&self, message: Message) -> Result<schnorr::Signature, IdentityError> {
         Ok(Secp256k1::new().sign_schnorr_no_aux_rand(&message, self))
-    }
-    fn sign_funding(&self, message: Message) -> Result<ecdsa::Signature, IdentityError> {
-        let mut secret = self.secret_key();
-        let signature = Secp256k1::new().sign_ecdsa(&message, &secret);
-        secret.non_secure_erase();
-        Ok(signature)
     }
 }
