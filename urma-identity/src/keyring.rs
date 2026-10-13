@@ -20,26 +20,39 @@ pub struct Keyring {
 }
 impl Keyring {
     pub fn create(phrase: &IdentityPhrase, name: &str) -> Result<Self, IdentityError> {
-        let slot = IdentitySlot::new(0)?;
-        validate_name(name)?;
-        let root = Root::from_phrase(phrase)?;
-        root.identity(slot)?;
-        Ok(Self {
-            phrase: IdentityPhrase::from_entropy(Zeroizing::new(*phrase.entropy())),
-            root,
-            entries: vec![NamedIdentity {
-                slot,
-                name: name.into(),
-            }],
-            active: slot,
-        })
+        let mut keyring = Self::empty(phrase)?;
+        keyring.add(name)?;
+        Ok(keyring)
     }
     pub fn recover(phrase: &IdentityPhrase) -> Result<Self, IdentityError> {
-        let mut keyring = Self::create(phrase, "identity-0")?;
-        for index in 1..IdentitySlot::CAPACITY {
-            keyring.add(&format!("identity-{index}"))?;
+        let mut keyring = Self::empty(phrase)?;
+        for index in 0..IdentitySlot::CAPACITY {
+            keyring.push(&format!("identity-{index}"))?;
         }
         Ok(keyring)
+    }
+    pub(crate) fn empty(phrase: &IdentityPhrase) -> Result<Self, IdentityError> {
+        Ok(Self {
+            phrase: IdentityPhrase::from_entropy(Zeroizing::new(*phrase.entropy())),
+            root: Root::from_phrase(phrase)?,
+            entries: Vec::new(),
+            active: IdentitySlot::new(0)?,
+        })
+    }
+    pub(crate) fn push(&mut self, name: &str) -> Result<IdentitySlot, IdentityError> {
+        validate_name(name)?;
+        if self.entries.iter().any(|entry| entry.name == name) {
+            return Err(IdentityError::DuplicateName);
+        }
+        let slot = self.next_slot()?;
+        self.entries.push(NamedIdentity {
+            slot,
+            name: name.into(),
+        });
+        Ok(slot)
+    }
+    fn next_slot(&self) -> Result<IdentitySlot, IdentityError> {
+        IdentitySlot::new(u16::try_from(self.entries.len())?)
     }
     pub fn root(&self) -> &Root {
         &self.root
@@ -66,17 +79,8 @@ impl Keyring {
     }
     pub fn add(&mut self, name: &str) -> Result<IdentitySlot, IdentityError> {
         validate_name(name)?;
-        if self.entries.iter().any(|entry| entry.name == name) {
-            return Err(IdentityError::DuplicateName);
-        }
-        let index = u16::try_from(self.entries.len())?;
-        let slot = IdentitySlot::new(index)?;
-        self.root.identity(slot)?;
-        self.entries.push(NamedIdentity {
-            slot,
-            name: name.into(),
-        });
-        Ok(slot)
+        self.root.identity(self.next_slot()?)?;
+        self.push(name)
     }
     pub fn rename(&mut self, slot: IdentitySlot, name: &str) -> Result<(), IdentityError> {
         validate_name(name)?;

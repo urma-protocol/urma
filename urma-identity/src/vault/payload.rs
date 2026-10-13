@@ -28,8 +28,7 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Keyring, IdentityError> {
     }
     let entropy = bytes[4..20].try_into()?;
     let phrase = IdentityPhrase::from_entropy(Zeroizing::new(entropy));
-    let mut keyring = Keyring::create(&phrase, "pending")?;
-    keyring.entries.clear();
+    let mut keyring = Keyring::empty(&phrase)?;
     let mut offset = 20;
     for index in 0..count {
         let prefix = bytes
@@ -46,12 +45,12 @@ pub(super) fn decode(bytes: &[u8]) -> Result<Keyring, IdentityError> {
                 .get(offset..offset + length)
                 .ok_or(IdentityError::InvalidVault)?,
         )?;
-        keyring.add(name)?;
+        keyring.push(name)?;
         offset += length;
     }
     if offset != bytes.len() {
         return Err(IdentityError::InvalidVault);
     }
-    keyring.select(active)?;
+    keyring.active = active;
     Ok(keyring)
 }

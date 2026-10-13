@@ -41,15 +41,7 @@ pub const LITECOIN_TESTNET: ChainParams = ChainParams {
 pub const BITCOIN_MAINNET: ChainParams = ChainParams {
     magic: [0xf9, 0xbe, 0xb4, 0xd9],
     port: 8333,
-    dns_seeds: &[
-        "seed.bitcoin.sipa.be",
-        "dnsseed.bluematt.me",
-        "seed.bitcoin.jonasschnelli.ch",
-        "seed.btc.petertodd.net",
-        "seed.bitcoin.sprovoost.nl",
-        "dnsseed.emzy.de",
-        "seed.bitcoin.wiz.biz",
-    ],
+    dns_seeds: &[],
     pow: PowFunction::Sha256d,
     pow_limit_bits: 0x1d00_ffff,
     retarget_interval: 2016,

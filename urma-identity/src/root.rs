@@ -1,5 +1,5 @@
 use crate::{
-    descriptor,
+    ckd, descriptor,
     error::IdentityError,
     identity::{IdentityKey, IdentitySlot},
     phrase::IdentityPhrase,
@@ -50,12 +50,8 @@ impl Root {
         }
     }
     pub fn account(&self, chain: Chain) -> Result<Xpriv, IdentityError> {
-        let path = [
-            ChildNumber::from_hardened_idx(Self::PURPOSE)?,
-            ChildNumber::from_hardened_idx(Self::coin_type(chain))?,
-            ChildNumber::from_hardened_idx(0)?,
-        ];
-        let mut account = self.master.derive_priv(&Secp256k1::signing_only(), &path)?;
+        let path = [Self::PURPOSE, Self::coin_type(chain), 0];
+        let mut account = ckd::derive_hardened(&self.master, &path)?;
         account.network = match chain {
             Chain::BitcoinMainnet | Chain::LitecoinMainnet => NetworkKind::Main,
             Chain::BitcoinTestnet4 | Chain::BitcoinRegtest | Chain::LitecoinTestnet => {
