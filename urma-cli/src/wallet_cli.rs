@@ -7,6 +7,7 @@ use clap::Subcommand;
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
 use urma_runtime::{
+    config,
     error::{Context, Error},
     transfer::{self, TransferRequest},
     wallet::WalletView,
@@ -48,21 +49,15 @@ fn send(
         details.push(json!({"outpoint":outpoint.to_string(),"value":value,
             "path":path,"address":address}));
     }
-    let change = match &prepared.change {
-        Some(change) => {
-            let path = format!("{}/1/{}", account_path(account.chain()), change.path.index);
-            let address = account.address(change.path)?;
-            lines.push(format!(
-                "Change {} base units to {path} ({address})",
-                change.value
-            ));
-            json!({"value":change.value,"path":path,"address":address})
-        }
-        None => {
-            lines.push("No change output; the remainder is part of the fee".into());
-            Value::Null
-        }
-    };
+    let mut change = Value::Null;
+    let mut note = String::from("No change output; the remainder is part of the fee");
+    for output in prepared.change.iter() {
+        let path = format!("{}/1/{}", account_path(account.chain()), output.path.index);
+        let address = account.address(output.path)?;
+        note = format!("Change {} base units to {path} ({address})", output.value);
+        change = json!({"value":output.value,"path":path,"address":address});
+    }
+    lines.push(note);
     approve_publication(
         &format!("Send {} base units to {to}", request.amount),
         &txid.to_string(),
@@ -93,15 +88,12 @@ fn balance(view: &WalletView) -> Result<u64, Error> {
 fn status(account: &Account, node: &NodeArgs, utxos: bool) -> Result<Value, Error> {
     let runtime = node.connect()?;
     let view = runtime.wallet(account)?;
-    let verification = match view.verified {
-        true => "each output checked live against the source",
-        false => "reported unspents only; the set exceeds the per-output verification bound",
-    };
     let mut report = json!({"chain":chain_name(account.chain())?,
         "path":account_path(account.chain()),"designated_address":account.receive_address()?,
         "spendable_confirmed_balance":balance(&view)?,"outputs":view.coins.len(),
         "next_change_index":view.next_change,"reported_outputs":view.reported,
-        "outputs_verified":view.verified,"verification":verification,
+        "outputs_verified":view.verified,"skipped_outputs":view.skipped,
+        "verification":format!("the largest {} outputs are checked live against the source; smaller ones are skipped and never spent", config::WALLET_VERIFY_OUTPUTS),
         "discovery":"BIP84 external and internal chains, gap limit 20",
         "chain_evidence":runtime.inclusion_evidence(),"providers":runtime.provider_labels(),
         "network_verified":true,"broadcast":false});
@@ -120,9 +112,6 @@ fn status(account: &Account, node: &NodeArgs, utxos: bool) -> Result<Value, Erro
     Ok(report)
 }
 
-/// Next external index after the highest one still holding a confirmed coin.
-/// Spent history is not visible to the wallet scan, so a spent-out address can
-/// be offered again; 0/0 stays the designated address and is never "next".
 fn next_receive(account: &Account, node: &NodeArgs) -> Result<Value, Error> {
     let view = node.connect()?.wallet(account)?;
     let index = view

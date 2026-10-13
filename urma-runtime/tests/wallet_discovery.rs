@@ -1,14 +1,15 @@
 #[path = "support/wallet_electrum.rs"]
 mod wallet_electrum;
 
-use bitcoin::CompressedPublicKey;
-use std::num::NonZeroU64;
+use bitcoin::{CompressedPublicKey, OutPoint, Txid, hashes::Hash};
+use std::{cmp::Reverse, num::NonZeroU64};
 use urma_chain::observation::Chain;
 use urma_identity::{phrase::IdentityPhrase, root::Root};
 use urma_runtime::{
+    config,
     error::Error,
     transfer::{TransferRequest, prepare},
-    wallet::{Coin, Selection},
+    wallet::{Candidates, Coin, Selection},
 };
 use urma_wallet::account::{Account, Branch, KeyPath};
 use wallet_electrum::{Fixture, PHRASE, funder, scripthash, start};
@@ -69,11 +70,86 @@ fn wallet_view_discovers_coins_across_a_gap_of_twenty() {
     assert!(view.coins.iter().all(|coin| coin.height == 1));
     assert_eq!(view.next_change, 6);
     assert_eq!(view.reported, 3);
-    assert!(view.verified);
+    assert_eq!(view.skipped, 0);
     assert!(listed(&fixture, &account, external(40)));
     assert!(!listed(&fixture, &account, external(41)));
     assert!(listed(&fixture, &account, internal(25)));
     assert!(!listed(&fixture, &account, internal(26)));
+}
+
+#[test]
+fn candidates_keep_only_the_largest_coins_within_the_check_bound() {
+    let mut candidates = Candidates::new();
+    let mut all = Vec::new();
+    for index in 0..100_000u32 {
+        let coin = Coin {
+            outpoint: OutPoint::new(Txid::from_byte_array([9; 32]), index),
+            value: u64::from(index) * 7_919 % 100_003,
+            height: 1,
+            path: external(index % 20),
+        };
+        all.push((Reverse(coin.value), coin.outpoint));
+        candidates.add(coin);
+        assert!(candidates.retained() <= config::WALLET_CHECKS);
+    }
+    assert_eq!(candidates.reported(), 100_000);
+    assert_eq!(candidates.retained(), config::WALLET_CHECKS);
+    all.sort();
+    let kept: Vec<_> = candidates
+        .largest()
+        .iter()
+        .map(|coin| (Reverse(coin.value), coin.outpoint))
+        .collect();
+    assert_eq!(kept, all[..config::WALLET_CHECKS]);
+}
+
+#[test]
+fn candidates_count_and_keep_each_outpoint_once() {
+    let coin = |value| Coin {
+        outpoint: OutPoint::new(Txid::from_byte_array([4; 32]), 7),
+        value,
+        height: 1,
+        path: external(0),
+    };
+    let mut candidates = Candidates::default();
+    candidates.add(coin(5_000));
+    candidates.add(coin(5_000));
+    candidates.add(coin(9_000));
+    assert_eq!(candidates.reported(), 1);
+    let kept = candidates.largest();
+    assert_eq!(values(&kept), [5_000]);
+}
+
+#[test]
+fn dust_at_the_receive_address_is_skipped_and_never_blocks_spending() {
+    let account = funder();
+    let mut coins = vec![(external(0), 1_000); 1_500];
+    coins.push((external(0), 80_000));
+    coins.push((internal(1), 50_000));
+    let (fixture, mock) = start(&account, &coins);
+    let node = mock.node();
+    let view = node.wallet(&account).unwrap();
+    assert_eq!(view.reported, 1_502);
+    assert_eq!(view.coins.len(), 64);
+    assert_eq!(view.skipped, 1_502 - 64);
+    assert_eq!(view.coins[0].value, 80_000);
+    assert_eq!(view.coins[1].value, 50_000);
+    assert_eq!(view.next_change, 2);
+    let chosen = node.select_coins(&account, 100_000, 0).unwrap();
+    assert_eq!(paths(&chosen), [external(0), internal(1)]);
+    assert_eq!(chosen.total, 130_000);
+    let spent: Vec<_> = chosen
+        .inputs
+        .iter()
+        .map(|input| input.funding.prevout().unwrap().0)
+        .collect();
+    assert_eq!(spent, [fixture.outpoint(1_500), fixture.outpoint(1_501)]);
+    let paid = prepare(&node, &account, &request(&account, 60_000, 10_000)).unwrap();
+    assert_eq!(paid.transaction.input.len(), 1);
+    assert_eq!(
+        paid.transaction.input[0].previous_output,
+        fixture.outpoint(1_500)
+    );
 }
 
 #[test]

@@ -88,7 +88,6 @@ pub const LITECOIN_MAX_JOURNAL_BYTES: usize = 4_000_000;
 pub const RELAY_MAX_BUDGET_SATS: u64 = 500_000;
 pub const SOURCE_MAX_BLOCK_BYTES: usize = 4_000_000;
 pub const SOURCE_MAX_JSON_BYTES: usize = 1_000_000;
-pub const SOURCE_MAX_UTXOS: usize = 1_000;
 pub const SOURCE_MAX_SCAN_BLOCKS: u64 = 10_000;
 pub const SOURCE_MAX_SCAN_BYTES: usize = 256 * 1024 * 1024;
 pub const BITCOIN_RETURN_SATS: u64 = 1_000;
@@ -124,9 +123,19 @@ pub const ELECTRUM_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::f
 pub const ELECTRUM_MAX_LINE_BYTES: usize = 4 * 1024 * 1024;
 pub const ELECTRUM_UNSPENT_CACHE: std::time::Duration = std::time::Duration::from_secs(30);
 pub const WALLET_VERIFY_OUTPUTS: usize = 64;
+pub const WALLET_CHECKS: usize = 2 * WALLET_VERIFY_OUTPUTS;
+#[deprecated(
+    since = "0.3.2",
+    note = "no longer caps anything: wallets keep their largest WALLET_CHECKS coins and skip the rest"
+)]
+pub const WALLET_MAX_COINS: usize = 1000;
+#[deprecated(
+    since = "0.3.2",
+    note = "no longer caps anything: provider UTXO listings are bounded by response bytes"
+)]
+pub const SOURCE_MAX_UTXOS: usize = 1_000;
 pub const WALLET_GAP: u32 = 20;
 pub const WALLET_RANGE: u32 = 1000;
-pub const WALLET_MAX_COINS: usize = 1000;
 pub const WALLET_MAX_INPUTS: usize = 50;
 pub const SUBMISSION_ACK_WINDOW: std::time::Duration = std::time::Duration::from_secs(180);
 pub const AWAITING_PARENT: &str = "awaiting parent propagation across sources";

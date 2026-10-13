@@ -25,6 +25,52 @@ pub struct WalletView {
     pub next_change: u32,
     pub reported: usize,
     pub verified: bool,
+    pub skipped: usize,
+}
+
+pub struct Candidates {
+    coins: Vec<Coin>,
+    reported: usize,
+}
+
+impl Candidates {
+    pub fn new() -> Self {
+        Self {
+            coins: Vec::new(),
+            reported: 0,
+        }
+    }
+
+    pub fn add(&mut self, coin: Coin) {
+        if self.coins.iter().any(|held| held.outpoint == coin.outpoint) {
+            return;
+        }
+        self.reported += 1;
+        let rank = |held: &Coin| (Reverse(held.value), held.outpoint);
+        let position = self.coins.partition_point(|held| rank(held) < rank(&coin));
+        if position < config::WALLET_CHECKS {
+            self.coins.insert(position, coin);
+            self.coins.truncate(config::WALLET_CHECKS);
+        }
+    }
+
+    pub fn retained(&self) -> usize {
+        self.coins.len()
+    }
+
+    pub fn reported(&self) -> usize {
+        self.reported
+    }
+
+    pub fn largest(self) -> Vec<Coin> {
+        self.coins
+    }
+}
+
+impl Default for Candidates {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[derive(Clone)]
@@ -57,48 +103,47 @@ fn covered(total: u64, inputs: usize, minimum: u64, per_input: u64) -> Result<bo
 }
 
 impl Node {
-    /// Unspent-only discovery: `next_change` is fresh until the change coin is
-    /// spent; history-based discovery is a follow-up.
     pub fn wallet(&self, account: &Account) -> Result<WalletView, Error> {
         self.verify_network()?;
         ensure!(
             account.chain().genesis()? == self.chain().genesis()?,
             "funding account belongs to another chain"
         );
-        let mut coins = match self.is_public() {
+        let candidates = match self.is_public() {
             true => self.routed_coins(account)?,
             false => self.local_coins(account)?,
         };
-        coins.sort_by_key(|coin| (Reverse(coin.value), coin.outpoint));
-        let next_change = coins
-            .iter()
-            .filter(|coin| coin.path.branch == Branch::Internal)
-            .fold(0, |next, coin| next.max(coin.path.index + 1));
-        let reported = coins.len();
-        if reported > config::WALLET_VERIFY_OUTPUTS {
-            tracing::warn!(
-                reported,
-                bound = config::WALLET_VERIFY_OUTPUTS,
-                "wallet exceeds the per-output verification bound; view follows the provider's unspent rows"
-            );
-            return Ok(WalletView {
-                coins,
-                next_change,
-                reported,
-                verified: false,
-            });
-        }
+        let reported = candidates.reported();
         let mut live = Vec::new();
-        for coin in coins {
+        let mut checked = 0;
+        for coin in candidates.largest() {
+            if live.len() == config::WALLET_VERIFY_OUTPUTS {
+                break;
+            }
+            checked += 1;
             if self.live(account, &coin)? {
                 live.push(coin);
             }
         }
+        let skipped = reported - checked;
+        if skipped > 0 {
+            tracing::warn!(
+                reported,
+                skipped,
+                bound = config::WALLET_VERIFY_OUTPUTS,
+                "wallet keeps only its largest coins; smaller ones are skipped unverified"
+            );
+        }
+        let next_change = live
+            .iter()
+            .filter(|coin| coin.path.branch == Branch::Internal)
+            .fold(0, |next, coin| next.max(coin.path.index + 1));
         Ok(WalletView {
             coins: live,
             next_change,
             reported,
             verified: true,
+            skipped,
         })
     }
 
@@ -120,9 +165,6 @@ impl Node {
                 "funding needs more than {} inputs; consolidate the wallet first",
                 config::WALLET_MAX_INPUTS
             );
-            if !view.verified && !self.live(account, &coin)? {
-                continue;
-            }
             total = total.checked_add(coin.value).context("funding overflow")?;
             chosen.push(coin);
         }
@@ -145,7 +187,7 @@ impl Node {
         })
     }
 
-    fn local_coins(&self, account: &Account) -> Result<Vec<Coin>, Error> {
+    fn local_coins(&self, account: &Account) -> Result<Candidates, Error> {
         let mut paths = HashMap::new();
         let mut descriptors = Vec::new();
         for branch in [Branch::External, Branch::Internal] {
@@ -159,11 +201,7 @@ impl Node {
         let scan = self.call("scantxoutset", &[json!("start"), Value::Array(descriptors)])?;
         ensure!(scan["success"] == true, "UTXO scan did not complete");
         let rows = scan["unspents"].as_array().context("missing UTXO scan")?;
-        ensure!(
-            rows.len() <= config::WALLET_MAX_COINS,
-            "UTXO client capacity exceeded"
-        );
-        let mut coins = Vec::new();
+        let mut coins = Candidates::new();
         for row in rows {
             let script = row["scriptPubKey"]
                 .as_str()
@@ -171,7 +209,7 @@ impl Node {
             let path = *paths
                 .get(script)
                 .context("UTXO scan returned a foreign script")?;
-            coins.push(Coin {
+            coins.add(Coin {
                 outpoint: OutPoint {
                     txid: row["txid"].as_str().context("missing UTXO txid")?.parse()?,
                     vout: u32::try_from(row["vout"].as_u64().context("missing UTXO vout")?)?,
@@ -184,8 +222,8 @@ impl Node {
         Ok(coins)
     }
 
-    fn routed_coins(&self, account: &Account) -> Result<Vec<Coin>, Error> {
-        let mut coins = Vec::new();
+    fn routed_coins(&self, account: &Account) -> Result<Candidates, Error> {
+        let mut coins = Candidates::new();
         for branch in [Branch::External, Branch::Internal] {
             let mut empty = 0;
             let mut index = 0;
@@ -195,11 +233,9 @@ impl Node {
                     true => empty + 1,
                     false => 0,
                 };
-                coins.extend(found);
-                ensure!(
-                    coins.len() <= config::WALLET_MAX_COINS,
-                    "UTXO client capacity exceeded"
-                );
+                for coin in found {
+                    coins.add(coin);
+                }
                 index += 1;
             }
         }

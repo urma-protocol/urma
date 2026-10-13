@@ -383,10 +383,6 @@ fn validate_shape(method: &str, value: &Value) -> Result<(), Error> {
 
 fn validate_utxos(value: &Value) -> Result<(), Error> {
     let rows = value.as_array().context("invalid public UTXO list")?;
-    ensure!(
-        rows.len() <= config::SOURCE_MAX_UTXOS,
-        "UTXO client capacity exceeded"
-    );
     for row in rows {
         row["txid"]
             .as_str()

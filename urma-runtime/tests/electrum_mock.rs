@@ -35,7 +35,6 @@ struct Fixture {
     funding: Transaction,
     header: Header,
     funder: Account,
-    flood: AtomicBool,
     close_after: AtomicUsize,
 }
 
@@ -84,19 +83,12 @@ impl Fixture {
             funding,
             header,
             funder,
-            flood: AtomicBool::new(false),
             close_after: AtomicUsize::new(0),
         }
     }
 
     fn unspent_rows(&self) -> Value {
         let txid = self.funding.compute_txid().to_string();
-        if self.flood.load(Ordering::Acquire) {
-            let rows: Vec<Value> = (0..65)
-                .map(|index| json!({"tx_hash":txid,"tx_pos":index,"height":1,"value":1_000}))
-                .collect();
-            return Value::Array(rows);
-        }
         json!([
             {"tx_hash":txid,"tx_pos":0,"height":1,"value":100_000_000},
             {"tx_hash":txid,"tx_pos":1,"height":1,"value":5_000},
@@ -510,27 +502,17 @@ fn transfer_change_goes_internal_or_folds_dust_into_the_fee() {
 }
 
 #[test]
-fn wallet_view_is_verified_per_output_only_within_the_bound() {
+fn wallet_view_verifies_each_kept_output() {
     let fixture = Arc::new(Fixture::new());
     let mock = Mock::start(fixture.clone());
     let node =
         Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
     let small = node.wallet(&fixture.funder).unwrap();
-    assert!(small.verified);
+    assert_eq!(small.skipped, 0);
     assert_eq!(small.reported, 2);
     assert_eq!(small.coins.len(), 2);
     assert_eq!(small.coins[0].value, 100_000_000);
     assert_eq!(count(&mock.methods(), "blockchain.transaction.get"), 2);
-    drop(node);
-    fixture.flood.store(true, Ordering::Release);
-    let node =
-        Node::with_providers(Chain::BitcoinRegtest, vec![Box::new(mock.provider())]).unwrap();
-    let before = count(&mock.methods(), "blockchain.transaction.get");
-    let large = node.wallet(&fixture.funder).unwrap();
-    assert!(!large.verified);
-    assert_eq!(large.reported, 65);
-    assert_eq!(large.coins.len(), 65);
-    assert_eq!(count(&mock.methods(), "blockchain.transaction.get"), before);
 }
 
 #[test]

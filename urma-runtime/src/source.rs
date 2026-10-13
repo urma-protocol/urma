@@ -1,7 +1,6 @@
 use crate::config::Limits;
 use crate::config::{
     SOURCE_MAX_BLOCK_BYTES, SOURCE_MAX_JSON_BYTES, SOURCE_MAX_SCAN_BLOCKS, SOURCE_MAX_SCAN_BYTES,
-    SOURCE_MAX_UTXOS,
 };
 use crate::error::{Context, Error, bail, ensure};
 use crate::http;
@@ -315,7 +314,6 @@ impl Source {
         let tip_height = self.height()?;
         let tip_hash = self.block_hash(tip_height)?;
         let mut utxos: Vec<Utxo> = self.json(&format!("/address/{address}/utxo"))?;
-        ensure!(utxos.len() <= SOURCE_MAX_UTXOS, "source UTXO limit reached");
         utxos.retain(|u| u.status.confirmed || allow_unconfirmed);
         utxos.sort_by_key(|u| std::cmp::Reverse(u.value));
         let utxo = utxos.first().context(

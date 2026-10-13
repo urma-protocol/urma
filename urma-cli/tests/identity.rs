@@ -413,6 +413,7 @@ fn wallet_commands_scan_select_and_send_from_the_bip84_account() {
     assert_eq!(status["spendable_confirmed_balance"], 100_000_000);
     assert_eq!(status["outputs"], 1);
     assert_eq!(status["outputs_verified"], true);
+    assert_eq!(status["skipped_outputs"], 0);
     assert_eq!(status.get("utxos"), None);
     let utxos = with_node(&mock, &vault, &pass, &["wallet", "utxos"]);
     assert_eq!(utxos["utxos"][0]["path"], "m/84'/1'/0'/0/0");

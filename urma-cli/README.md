@@ -47,6 +47,16 @@ urma names resolve --help
 
 These help commands do not publish records or spend funds. Defaults and limits are documented by the installed command's help, so this README does not duplicate values that can change.
 
+### Wallet addresses and coins
+
+`urma wallet address` prints the account's designated receive address `0/0`
+(offline). `urma wallet address --next` scans the account and offers the first
+external index above every address that still holds a confirmed coin. The scan
+sees unspent coins only, so an address whose coins were all spent can be offered
+again; `0/0` is never offered as "next". `urma wallet status` and `wallet utxos`
+check only the largest coins live and report the rest as `skipped_outputs`, so
+dust sent to the public address never blocks the wallet or a publication.
+
 ### Optional local Names projection (development checkout)
 
 This checkout can accelerate `names resolve` and `names pending` with the

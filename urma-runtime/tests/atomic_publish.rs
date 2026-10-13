@@ -52,7 +52,7 @@ fn local_wallet_reads_a_publication_return_sized_coin_exactly() {
     let directory = tempfile::tempdir().unwrap();
     let mock = Mock::funded(directory.path(), 1_000);
     let view = mock.node().wallet(&mock.funder).unwrap();
-    assert!(view.verified);
+    assert_eq!(view.skipped, 0);
     assert_eq!(view.coins.len(), 1);
     assert_eq!(view.coins[0].value, 1_000);
 }

@@ -367,10 +367,6 @@ impl Electrum {
         let timeout = config::method_timeout("addressutxos");
         let rows = session.request("blockchain.scripthash.listunspent", json!([key]), timeout)?;
         let rows = rows.as_array().context("electrum unspent list missing")?;
-        ensure!(
-            rows.len() <= config::SOURCE_MAX_UTXOS,
-            "UTXO client capacity exceeded"
-        );
         session.unspent.insert(key, (now, rows.clone()));
         Ok(rows.clone())
     }

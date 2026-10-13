@@ -56,6 +56,7 @@ struct Ledger {
     chain: Chain,
     funding: Transaction,
     submissions: Vec<String>,
+    spent: Vec<u64>,
 }
 
 impl Ledger {
@@ -83,6 +84,11 @@ impl Ledger {
                     })
                     .collect();
                 Ok(json!({"success":true,"unspents":rows}))
+            }
+            "gettxout"
+                if args[0] == json!(txid) && self.spent.contains(&args[1].as_u64().unwrap()) =>
+            {
+                Ok(Value::Null)
             }
             "gettxout" if args[0] == json!(txid) => {
                 let vout = usize::try_from(args[1].as_u64().unwrap()).unwrap();
@@ -140,6 +146,7 @@ impl Mock {
             chain: account.chain(),
             funding,
             submissions: Vec::new(),
+            spent: Vec::new(),
         }));
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let url = format!("http://{}", listener.local_addr().unwrap());
@@ -162,6 +169,10 @@ impl Mock {
             stopped,
             thread: Some(thread),
         }
+    }
+
+    fn spend(&self, vouts: std::ops::Range<u64>) {
+        self.ledger.lock().unwrap().spent.extend(vouts);
     }
 
     fn outpoint(&self, vout: u32) -> String {
@@ -315,6 +326,50 @@ fn spread() -> Vec<(KeyPath, u64)> {
         .iter()
         .map(|(branch, index, value)| (KeyPath::new(*branch, *index), *value))
         .collect()
+}
+
+#[test]
+fn dust_at_the_receive_address_neither_blocks_status_nor_send() {
+    let chain = Chain::BitcoinRegtest;
+    let funder = account(chain);
+    let vault = Vault::valid();
+    let mut coins = vec![(external(0), 1_000); 1_500];
+    coins.push((external(0), 80_000));
+    coins.push((internal(1), 50_000));
+    let mock = Mock::start(vault.dir(), &funder, &coins);
+    let status = vault.json(chain, Some(&mock), &["wallet", "status"]);
+    assert_eq!(status["reported_outputs"], 1_502);
+    assert_eq!(status["outputs"], 64);
+    assert_eq!(status["skipped_outputs"], 1_502 - 64);
+    assert_eq!(status["spendable_confirmed_balance"], 130_000 + 62 * 1_000);
+    let to = funder.address(external(9)).unwrap();
+    let sent = vault.json(chain, Some(&mock), &send(&to, "100000", "10000"));
+    assert_eq!(
+        sent["inputs"],
+        json!([mock.outpoint(1_500), mock.outpoint(1_501)])
+    );
+    let [tx] = mock.submissions().try_into().unwrap();
+    assert_eq!(tx.input.len(), 2);
+    assert_eq!(tx.output[0].value.to_sat(), 100_000);
+}
+
+#[test]
+fn stale_listed_coins_are_backfilled_and_never_move_change() {
+    let chain = Chain::BitcoinRegtest;
+    let funder = account(chain);
+    let vault = Vault::valid();
+    let mut coins = vec![(external(0), 1_000_000); 10];
+    coins.push((internal(999), 2_000_000));
+    coins.extend(vec![(external(0), 2_000); 70]);
+    let mock = Mock::start(vault.dir(), &funder, &coins);
+    mock.spend(0..11);
+    let status = vault.json(chain, Some(&mock), &["wallet", "status"]);
+    assert_eq!(status["reported_outputs"], 81);
+    assert_eq!(status["outputs"], 64);
+    assert_eq!(status["skipped_outputs"], 81 - 75);
+    assert_eq!(status["spendable_confirmed_balance"], 64 * 2_000);
+    assert_eq!(status["next_change_index"], 0);
+    assert_eq!(status["outputs_verified"], true);
 }
 
 #[test]
