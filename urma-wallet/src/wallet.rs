@@ -33,10 +33,14 @@ pub struct SpendRequest<'a> {
 pub enum WalletError {
     AddressPrefix(bech32::primitives::hrp::Error),
     AddressEncoding(bech32::segwit::EncodeError),
-    AddressDecoding(bech32::segwit::DecodeError),
     AddressParse(bitcoin::address::ParseError),
+    LitecoinAddress {
+        bech32: bech32::segwit::DecodeError,
+        legacy: bitcoin::base58::Error,
+    },
     WitnessVersion(bitcoin::witness_version::TryFromError),
     WitnessProgram(bitcoin::witness_program::Error),
+    Derivation(bitcoin::bip32::Error),
     WrongNetwork,
     Identity(urma_identity::error::IdentityError),
     InvalidFunding,
@@ -56,10 +60,11 @@ impl std::error::Error for WalletError {
         match self {
             Self::AddressPrefix(cause) => Some(cause),
             Self::AddressEncoding(cause) => Some(cause),
-            Self::AddressDecoding(cause) => Some(cause),
             Self::AddressParse(cause) => Some(cause),
+            Self::LitecoinAddress { bech32, .. } => Some(bech32),
             Self::WitnessVersion(cause) => Some(cause),
             Self::WitnessProgram(cause) => Some(cause),
+            Self::Derivation(cause) => Some(cause),
             Self::Identity(cause) => Some(cause),
             Self::Protocol(cause) => Some(cause),
             _ => None,

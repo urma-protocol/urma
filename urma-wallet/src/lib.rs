@@ -5,6 +5,7 @@
     unused_variables,
     unused_assignments
 )]
+pub mod account;
 pub mod address;
 pub mod funding;
 pub mod signing;
