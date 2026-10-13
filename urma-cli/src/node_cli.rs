@@ -23,7 +23,10 @@ impl NodeArgs {
 pub(crate) fn connect(chain: Chain) -> Result<Node, Error> {
     match config::connection(chain)? {
         config::Connection::Local(local) => Node::connect(local),
-        config::Connection::Public(cache_dir) => Node::public_in(chain, &cache_dir),
+        config::Connection::Public {
+            cache_dir,
+            endpoints,
+        } => Node::public_in_with_endpoints(chain, &cache_dir, endpoints),
     }
 }
 

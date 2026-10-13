@@ -100,22 +100,37 @@ impl Node {
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn public_in(chain: Chain, cache_dir: &std::path::Path) -> Result<Self, Error> {
-        Self::public_in_with_providers(chain, cache_dir, Vec::new())
+        Self::public_in_with_endpoints(chain, cache_dir, endpoints::defaults(chain))
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    pub fn public_in_with_endpoints(
+        chain: Chain,
+        cache_dir: &std::path::Path,
+        public: Vec<endpoints::PublicEndpoint>,
+    ) -> Result<Self, Error> {
+        Self::public_from(chain, cache_dir, public, Vec::new())
     }
 
     #[cfg(not(target_arch = "wasm32"))]
     pub fn public_in_with_providers(
         chain: Chain,
         cache_dir: &std::path::Path,
+        additional: Vec<Box<dyn Provider>>,
+    ) -> Result<Self, Error> {
+        Self::public_from(chain, cache_dir, endpoints::defaults(chain), additional)
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    fn public_from(
+        chain: Chain,
+        cache_dir: &std::path::Path,
+        public: Vec<endpoints::PublicEndpoint>,
         mut additional: Vec<Box<dyn Provider>>,
     ) -> Result<Self, Error> {
         let pins = std::sync::Arc::new(Pins::in_directory(cache_dir)?);
         let light = providers::light_clients(chain, cache_dir)?;
-        additional.extend(providers::assemble(
-            endpoints::defaults(chain),
-            pins,
-            &light,
-        )?);
+        additional.extend(providers::assemble(public, pins, &light)?);
         let mut node = Self::with_providers(chain, additional)?;
         node.light = light;
         Ok(node)

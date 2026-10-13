@@ -6,6 +6,7 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 use urma_chain::observation::Chain;
+use urma_runtime::endpoints::{self, PublicEndpoint};
 use urma_runtime::error::{Context, Error, ensure};
 use urma_runtime::node::NodeConfig;
 use urma_web::config::Limits;
@@ -19,6 +20,27 @@ pub(crate) struct Settings {
     pub(crate) vault: Option<PathBuf>,
     pub(crate) unlock_file: Option<PathBuf>,
     pub(crate) archive: Option<ArchiveSettings>,
+    pub(crate) public_endpoints: Option<Vec<EndpointSetting>>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "lowercase", deny_unknown_fields)]
+pub(crate) enum EndpointSetting {
+    Rpc(String),
+    Esplora(String),
+    Electrum(String),
+}
+
+impl EndpointSetting {
+    fn endpoint(self) -> Result<PublicEndpoint, Error> {
+        let endpoint = match self {
+            Self::Rpc(url) => PublicEndpoint::Rpc(url),
+            Self::Esplora(url) => PublicEndpoint::Esplora(url),
+            Self::Electrum(url) => PublicEndpoint::Electrum(url),
+        };
+        endpoint.validate()?;
+        Ok(endpoint)
+    }
 }
 
 /// Optional local archive reader, separate from chain RPC and signing.
@@ -284,7 +306,10 @@ pub(crate) fn connection(chain: Chain) -> Result<Connection, Error> {
             rpc_url,
             cookie_file,
         })),
-        (None, None) => Ok(Connection::Public(data_directory()?.join("urma"))),
+        (None, None) => Ok(Connection::Public {
+            cache_dir: data_directory()?.join("urma"),
+            endpoints: public_endpoints(chain, settings.public_endpoints)?,
+        }),
         (Some(rpc), None) => Err(Error::Invalid(format!(
             "local node {rpc} needs node_auth_file in config"
         ))),
@@ -316,7 +341,35 @@ pub(crate) fn credentials() -> Result<(PathBuf, PathBuf), Error> {
 
 pub(crate) enum Connection {
     Local(NodeConfig),
-    Public(PathBuf),
+    Public {
+        cache_dir: PathBuf,
+        endpoints: Vec<PublicEndpoint>,
+    },
+}
+
+fn public_endpoints(
+    chain: Chain,
+    configured: Option<Vec<EndpointSetting>>,
+) -> Result<Vec<PublicEndpoint>, Error> {
+    let from_env = match std::env::var_os("URMA_PUBLIC_ENDPOINTS") {
+        Some(value) => Some(serde_json::from_str::<Vec<EndpointSetting>>(
+            value
+                .to_str()
+                .context("URMA_PUBLIC_ENDPOINTS must be UTF-8")?,
+        )?),
+        None => None,
+    };
+    let Some(settings) = select(from_env, configured) else {
+        return Ok(endpoints::defaults(chain));
+    };
+    ensure!(
+        !settings.is_empty(),
+        "public_endpoints must name at least one provider"
+    );
+    settings
+        .into_iter()
+        .map(EndpointSetting::endpoint)
+        .collect()
 }
 
 fn select<T>(first: Option<T>, second: Option<T>) -> Option<T> {
@@ -345,7 +398,7 @@ pub(crate) fn git_limits() -> Result<urma_git::inventory::Limits, Error> {
 pub(crate) fn expert_node() -> Result<NodeConfig, Error> {
     match connection(chain(false)?)? {
         Connection::Local(node) => Ok(node),
-        Connection::Public(cache_dir) => Err(Error::Missing(format!(
+        Connection::Public { cache_dir, .. } => Err(Error::Missing(format!(
             "this expert command needs a local node configured with rpc_url and node_auth_file; public mode would pin into {}",
             cache_dir.display()
         ))),
