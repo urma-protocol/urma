@@ -1,5 +1,6 @@
-//! Test-side v3 codec peer for peer_inventory.rs: a raw client, or a proxy to
-//! an upstream node that drops every inventory entry mentioning one string.
+//! Test-side codec peer for peer_inventory.rs and peer_discovery.rs: a raw
+//! client, a proxy to an upstream node that drops every inventory entry
+//! mentioning one string, or a responder answering Peers with a fixed list.
 //! Loaded with #[path]; it is not part of the shared common module.
 use libp2p::{
     Multiaddr, StreamProtocol, Swarm, SwarmBuilder,
@@ -25,7 +26,7 @@ use tokio::sync::mpsc as async_mpsc;
 use urma_chain::observation::Chain;
 use urma_node::{
     peer_codec::Codec,
-    peer_protocol::{Kind, PROTOCOL, Reply, Request, Response},
+    peer_protocol::{GossipPeer, Kind, PROTOCOL, Reply, Request, Response},
     peerbook::PeerAddress,
 };
 
@@ -50,6 +51,7 @@ pub struct RawPeer {
 
 struct RawState {
     upstream: Option<(PeerAddress, String)>,
+    gossip: Option<Vec<GossipPeer>>,
     seen: Arc<Mutex<Vec<Request>>>,
     ready: mpsc::SyncSender<Multiaddr>,
     pending: HashMap<OutboundRequestId, Answer>,
@@ -93,7 +95,15 @@ fn raw_message(
             request, channel, ..
         } => {
             state.seen.lock().unwrap().push(request.clone());
-            if let Some((upstream, _)) = &state.upstream {
+            if let (Some(peers), Kind::Peers { .. }) = (&state.gossip, request.kind) {
+                let response = Response {
+                    version: request.version,
+                    chain_genesis: request.chain_genesis,
+                    kind: request.kind,
+                    result: Reply::Peers(peers.clone()),
+                };
+                let _ = swarm.behaviour_mut().send_response(channel, response);
+            } else if let Some((upstream, _)) = &state.upstream {
                 let id = swarm.behaviour_mut().send_request_with_addresses(
                     &upstream.peer_id(),
                     request,
@@ -166,6 +176,15 @@ async fn raw_loop(
 
 impl RawPeer {
     pub fn start(upstream: Option<(PeerAddress, String)>) -> Self {
+        Self::spawn(upstream, None)
+    }
+
+    /// Answers every Peers request with `peers`; other requests go unanswered.
+    pub fn gossiping(peers: Vec<GossipPeer>) -> Self {
+        Self::spawn(None, Some(peers))
+    }
+
+    fn spawn(upstream: Option<(PeerAddress, String)>, gossip: Option<Vec<GossipPeer>>) -> Self {
         let key = Keypair::generate_ed25519();
         let id = key.public().to_peer_id();
         let (calls, receiver) = async_mpsc::channel(4);
@@ -174,6 +193,7 @@ impl RawPeer {
         let stop = Arc::new(AtomicBool::new(false));
         let state = RawState {
             upstream,
+            gossip,
             seen: seen.clone(),
             ready,
             pending: HashMap::new(),
@@ -205,6 +225,10 @@ impl RawPeer {
 
     pub fn asked(&self) -> usize {
         self.seen.lock().unwrap().len()
+    }
+
+    pub fn requests(&self) -> Vec<Request> {
+        self.seen.lock().unwrap().clone()
     }
 
     pub fn call(&self, to: &PeerAddress, version: u32, kind: Kind) -> Reply {

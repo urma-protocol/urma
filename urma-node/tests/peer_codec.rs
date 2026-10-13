@@ -1,12 +1,14 @@
 use bitcoin::{BlockHash, Txid, Wtxid, hashes::Hash};
 use libp2p::{
-    StreamProtocol,
+    Multiaddr, StreamProtocol,
     futures::{
         executor::block_on,
         io::{AsyncRead, AsyncWrite, Cursor},
     },
+    identity::Keypair,
     request_response::Codec as _,
 };
+use serde_json::json;
 use std::{
     io,
     pin::Pin,
@@ -17,8 +19,9 @@ use urma_node::{
     model::{ChainPoint, RecordPackage},
     peer_codec::Codec,
     peer_protocol::{
-        INVENTORY_ENTRIES, INVENTORY_LIMIT, INVENTORY_SPAN, InventoryPage, Kind, PARENT_LIMIT,
-        PROTOCOL, Placement, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
+        GossipPeer, INVENTORY_ENTRIES, INVENTORY_LIMIT, INVENTORY_SPAN, InventoryPage, Kind,
+        PARENT_LIMIT, PROTOCOL, Placement, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
+        VERSION,
     },
 };
 
@@ -531,5 +534,119 @@ fn inventory_frames_have_their_own_smaller_bound_on_both_sides() {
             .await
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    });
+}
+
+fn gossip_peers() -> Vec<GossipPeer> {
+    let addrs: Vec<Multiaddr> = ["/ip4/8.8.8.8/tcp/4001", "/ip6/2a01:4f8:1::1/tcp/4001"]
+        .map(|text| text.parse().unwrap())
+        .to_vec();
+    vec![GossipPeer {
+        peer_id: Keypair::generate_ed25519().public().to_peer_id(),
+        addrs,
+        last_seen: 1_800_000_000,
+    }]
+}
+
+// v4 adds address exchange: a Peers request carries only its limit, and the
+// reply lists identified peers with bare addresses and a unix last-seen time.
+#[test]
+fn v4_peers_request_and_reply_have_stable_shapes_and_round_trip() {
+    assert_eq!(PROTOCOL, "/urma/node/record/4");
+    assert_eq!(VERSION, 4);
+    block_on(async {
+        let protocol = StreamProtocol::new(PROTOCOL);
+        let asked = Request {
+            kind: Kind::Peers { limit: 32 },
+            ..request()
+        };
+        let value = serde_json::to_value(&asked).unwrap();
+        assert_eq!(value["kind"], json!({"kind":"peers","limit":32}));
+        let mut wire = Stream::new(vec![]);
+        Codec
+            .write_request(&protocol, &mut wire, asked)
+            .await
+            .unwrap();
+        let decoded = Codec
+            .read_request(&protocol, &mut Stream::new(wire.output))
+            .await
+            .unwrap();
+        assert_eq!(serde_json::to_value(&decoded).unwrap(), value);
+        let peers = gossip_peers();
+        let id = peers[0].peer_id.to_string();
+        for listed in [peers, Vec::new()] {
+            let answer = response(Reply::Peers(listed));
+            let expected = serde_json::to_vec(&answer).unwrap();
+            let mut wire = Stream::new(vec![]);
+            Codec
+                .write_response(&protocol, &mut wire, answer)
+                .await
+                .unwrap();
+            assert!(wire.closed);
+            assert_eq!(wire.output, frame(&expected));
+            let decoded = Codec
+                .read_response(&protocol, &mut Stream::new(wire.output))
+                .await
+                .unwrap();
+            assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
+        }
+        let shaped = serde_json::to_value(response(Reply::Peers(gossip_peers()))).unwrap();
+        let entry = &shaped["result"]["package"][0];
+        assert_eq!(shaped["result"]["status"], "peers");
+        assert_eq!(
+            entry["addrs"],
+            json!(["/ip4/8.8.8.8/tcp/4001", "/ip6/2a01:4f8:1::1/tcp/4001"])
+        );
+        assert_eq!(entry["last_seen"], 1_800_000_000);
+        assert!(
+            entry["peer_id"]
+                .as_str()
+                .is_some_and(|text| text.len() == id.len())
+        );
+    });
+}
+
+#[test]
+fn malformed_peers_requests_and_replies_are_rejected() {
+    block_on(async {
+        let protocol = StreamProtocol::new(PROTOCOL);
+        let asked = Request {
+            kind: Kind::Peers { limit: 32 },
+            ..request()
+        };
+        let mut extra = serde_json::to_value(asked).unwrap();
+        extra["kind"]["extra"] = true.into();
+        let mut negative = extra.clone();
+        negative["kind"] = json!({"kind":"peers","limit":-1});
+        let mut absent = extra.clone();
+        absent["kind"] = json!({"kind":"peers"});
+        for body in [extra, negative, absent] {
+            let body = serde_json::to_vec(&body).unwrap();
+            let error = Codec
+                .read_request(&protocol, &mut Cursor::new(frame(&body)))
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
+        let good = serde_json::to_value(response(Reply::Peers(gossip_peers()))).unwrap();
+        let mut unknown = good.clone();
+        unknown["result"]["package"][0]["extra"] = true.into();
+        let mut bad_id = good.clone();
+        bad_id["result"]["package"][0]["peer_id"] = "bad".into();
+        let mut bad_addr = good.clone();
+        bad_addr["result"]["package"][0]["addrs"] = json!(["not a multiaddr"]);
+        let mut missing = good.clone();
+        missing["result"]["package"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("last_seen");
+        for body in [unknown, bad_id, bad_addr, missing] {
+            let body = serde_json::to_vec(&body).unwrap();
+            let error = Codec
+                .read_response(&protocol, &mut Cursor::new(frame(&body)))
+                .await
+                .unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+        }
     });
 }
