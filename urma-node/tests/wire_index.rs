@@ -37,7 +37,7 @@ fn exact(
     height: u64,
 ) {
     let record = &page.records[index];
-    let expected = urma_wire::index::entry_from_verified(&pair.verified, height, position)
+    let expected = urma_wire::index::entry_from_verified(&pair.verified, None, height, position)
         .unwrap()
         .unwrap();
     assert_eq!(

@@ -77,6 +77,7 @@ impl Archive {
                 author
                     .parse()
                     .map_err(|e| Error::Invalid(format!("stored Wire author: {e}")))?,
+                None,
                 block.height,
                 position,
             )

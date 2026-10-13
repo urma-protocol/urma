@@ -205,13 +205,25 @@ fn standalone_projection_matches_scanner_and_existing_wire_verification_for_all_
         .enumerate()
     {
         let verified = proof.verified();
-        let direct = entry_from_verified(&verified, MemoryReader::HEIGHT, scanned.position)
-            .unwrap()
-            .unwrap();
+        let returned = proof.reveal.output[0].script_pubkey.as_script();
+        assert_eq!(
+            scanned.return_script,
+            Some(hex::encode(returned.as_bytes())),
+            "the scanner keeps the reveal return script"
+        );
+        let direct = entry_from_verified(
+            &verified,
+            Some(returned),
+            MemoryReader::HEIGHT,
+            scanned.position,
+        )
+        .unwrap()
+        .unwrap();
         let primitive = entry_from_record(
             verified.record_bytes(),
             verified.txid(),
             verified.author(),
+            Some(returned),
             MemoryReader::HEIGHT,
             scanned.position,
         )
@@ -233,7 +245,7 @@ fn standalone_projection_matches_scanner_and_existing_wire_verification_for_all_
         assert_eq!(scanned.height, MemoryReader::HEIGHT);
         assert_eq!(scanned.position, 1 + u32::try_from(position).unwrap());
 
-        let metadata = entry_from_verified(&verified, u64::MAX, u32::MAX)
+        let metadata = entry_from_verified(&verified, None, u64::MAX, u32::MAX)
             .unwrap()
             .unwrap();
         assert_eq!((metadata.height, metadata.position), (u64::MAX, u32::MAX));
@@ -255,12 +267,17 @@ fn non_wire_kinds_are_omitted_including_kind_0c() {
     ] {
         let proof = Proof::signed(&kind.prefix());
         let verified = proof.verified();
-        assert!(entry_from_verified(&verified, 1, 2).unwrap().is_none());
+        assert!(
+            entry_from_verified(&verified, None, 1, 2)
+                .unwrap()
+                .is_none()
+        );
         assert!(
             entry_from_record(
                 verified.record_bytes(),
                 verified.txid(),
                 verified.author(),
+                None,
                 1,
                 2
             )
@@ -285,12 +302,17 @@ fn non_wire_kinds_are_omitted_including_kind_0c() {
     let reader = MemoryReader::new(records.iter().map(|raw| Proof::signed(raw)).collect());
     for proof in &reader.proofs {
         let verified = proof.verified();
-        assert!(entry_from_verified(&verified, 1, 2).unwrap().is_none());
+        assert!(
+            entry_from_verified(&verified, None, 1, 2)
+                .unwrap()
+                .is_none()
+        );
         assert!(
             entry_from_record(
                 verified.record_bytes(),
                 verified.txid(),
                 verified.author(),
+                None,
                 1,
                 2
             )
@@ -322,11 +344,11 @@ fn authenticated_malformed_wire_payloads_are_errors_and_never_scanned() {
         assert_eq!(verified.record_bytes(), raw);
         assert!(PublicRecord::decode(&raw).is_err());
         assert!(matches!(
-            entry_from_verified(&verified, 42, 1),
+            entry_from_verified(&verified, None, 42, 1),
             Err(Error::Protocol(_))
         ));
         assert!(matches!(
-            entry_from_record(&raw, verified.txid(), verified.author(), 42, 1),
+            entry_from_record(&raw, verified.txid(), verified.author(), None, 42, 1),
             Err(Error::Protocol(_))
         ));
         if kind == RecordKind::Profile || raw.len() == Urma::PREFIX_BYTES + 512 {
@@ -350,7 +372,7 @@ fn record_projection_preserves_caller_metadata_without_authenticating_identity()
     assert_ne!(caller_txid, verified.txid());
     assert_ne!(caller_author, verified.author());
 
-    let projected = entry_from_record(&raw, caller_txid, caller_author, u64::MAX, u32::MAX)
+    let projected = entry_from_record(&raw, caller_txid, caller_author, None, u64::MAX, u32::MAX)
         .unwrap()
         .unwrap();
     assert_eq!(projected.txid, caller_txid.to_string());
@@ -358,13 +380,15 @@ fn record_projection_preserves_caller_metadata_without_authenticating_identity()
     assert_eq!((projected.height, projected.position), (u64::MAX, u32::MAX));
     assert_eq!(hex::decode(&projected.record).unwrap(), raw);
 
-    let authenticated = entry_from_verified(&verified, 42, 1).unwrap().unwrap();
+    let authenticated = entry_from_verified(&verified, None, 42, 1)
+        .unwrap()
+        .unwrap();
     assert_eq!(authenticated.txid, verified.txid().to_string());
     assert_eq!(authenticated.author, verified.author().to_string());
     assert_eq!(authenticated.record, projected.record);
     for malformed in [&[][..], b"junk".as_slice()] {
         assert!(matches!(
-            entry_from_record(malformed, caller_txid, caller_author, 42, 1),
+            entry_from_record(malformed, caller_txid, caller_author, None, 42, 1),
             Err(Error::Protocol(_))
         ));
     }

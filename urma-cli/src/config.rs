@@ -253,6 +253,7 @@ pub(crate) fn chain(testnet: bool) -> Result<Chain, Error> {
         None => return Ok(Chain::LitecoinMainnet),
     };
     match name.to_str().context("URMA_NETWORK must be UTF-8")? {
+        "bitcoin-mainnet" => Ok(Chain::BitcoinMainnet),
         "litecoin-mainnet" => Ok(Chain::LitecoinMainnet),
         "litecoin-testnet" => Ok(Chain::LitecoinTestnet),
         "bitcoin-regtest" => Ok(Chain::BitcoinRegtest),

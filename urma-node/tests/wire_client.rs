@@ -263,6 +263,7 @@ fn record(height: u64, position: u32, payload: PublicRecord) -> WireRecord {
         "79be667ef9dcbbac55a06295ce870b07029bfcdb2dce28d959f2815b16f81798"
             .parse()
             .unwrap(),
+        None,
         height,
         position,
     )

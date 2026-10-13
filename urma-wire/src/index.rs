@@ -1,7 +1,7 @@
 use crate::cached::decode_cached;
 use crate::config::FETCH_WORKERS;
 use crate::{Error, SyncError, ensure, reader::Reader};
-use bitcoin::{Block, BlockHash, Transaction, Txid, XOnlyPublicKey};
+use bitcoin::{Block, BlockHash, Script, Transaction, Txid, XOnlyPublicKey};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -21,6 +21,8 @@ pub struct Entry {
     pub txid: String,
     pub author: String,
     pub record: String,
+    /// Hex script of the reveal's single return output, when it has one.
+    pub return_script: Option<String>,
 }
 
 /// Projects an authenticated record into a Wire entry without I/O.
@@ -35,6 +37,7 @@ pub struct Entry {
 /// inclusion in a block nor establishes confirmation or active-chain membership.
 pub fn entry_from_verified(
     record: &VerifiedRecord,
+    return_script: Option<&Script>,
     height: u64,
     position: u32,
 ) -> Result<Option<Entry>, Error> {
@@ -42,6 +45,7 @@ pub fn entry_from_verified(
         record.record_bytes(),
         record.txid(),
         record.author(),
+        return_script,
         height,
         position,
     )
@@ -62,6 +66,7 @@ pub fn entry_from_record(
     record: &[u8],
     txid: Txid,
     author: XOnlyPublicKey,
+    return_script: Option<&Script>,
     height: u64,
     position: u32,
 ) -> Result<Option<Entry>, Error> {
@@ -75,6 +80,7 @@ pub fn entry_from_record(
         txid: txid.to_string(),
         author: author.to_string(),
         record: hex::encode(record),
+        return_script: return_script.map(|script| hex::encode(script.as_bytes())),
     }))
 }
 
@@ -115,12 +121,13 @@ pub struct SyncReport {
 }
 impl Index {
     pub const MAX_BYTES: usize = 64 * 1024 * 1024;
+    pub const FORMAT: &'static str = "URMA-WIRE-INDEX-3";
     pub fn load(path: &Path) -> Result<Self, Error> {
         let bytes = urma_io::read_bounded(path, Self::MAX_BYTES)?;
         let index: Self = serde_json::from_slice(&bytes)?;
         ensure!(
-            index.format == "URMA-WIRE-INDEX-1" || index.format == "URMA-WIRE-INDEX-2",
-            "unsupported Wire index"
+            index.format == Self::FORMAT,
+            "unsupported Wire index format; delete it and resync"
         );
         ensure!(index.blocks.len() <= 500_000, "Wire checkpoint capacity");
         ensure!(index.entries.len() <= 50_000, "Wire record capacity");
@@ -139,6 +146,9 @@ impl Index {
             decode_cached(&hex::decode(&entry.record)?)?;
             entry.txid.parse::<bitcoin::Txid>()?;
             entry.author.parse::<bitcoin::XOnlyPublicKey>()?;
+            for script in entry.return_script.iter() {
+                hex::decode(script)?;
+            }
         }
         Ok(index)
     }
@@ -209,11 +219,11 @@ where
 
 fn opened<R: Reader>(reader: &R, path: &Path, start: u64) -> Result<Index, SyncError<R::Error>> {
     let genesis = reader.genesis().map_err(SyncError::Source)?.to_string();
-    let mut index = if path.exists() {
+    let index = if path.exists() {
         Index::load(path)?
     } else {
         Index {
-            format: "URMA-WIRE-INDEX-2".into(),
+            format: Index::FORMAT.into(),
             genesis: genesis.clone(),
             start,
             blocks: Vec::new(),
@@ -222,11 +232,6 @@ fn opened<R: Reader>(reader: &R, path: &Path, start: u64) -> Result<Index, SyncE
     };
     if index.genesis != genesis || index.start != start {
         return Err(Error::Invalid("index chain/start mismatch".into()).into());
-    }
-    if index.format == "URMA-WIRE-INDEX-1" {
-        index.blocks.clear();
-        index.entries.clear();
-        index.format = "URMA-WIRE-INDEX-2".into();
     }
     Ok(index)
 }
@@ -438,5 +443,9 @@ fn verified_entry(
     position: u32,
 ) -> Result<Option<Entry>, Error> {
     let record = VerifiedRecord::verify(tx.compute_txid(), tx, commit)?;
-    entry_from_verified(&record, height, position)
+    let return_script = tx
+        .output
+        .first()
+        .map(|output| output.script_pubkey.as_script());
+    entry_from_verified(&record, return_script, height, position)
 }

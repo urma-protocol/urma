@@ -1,7 +1,12 @@
-use crate::{approve_publication, key_cli::VaultAccess, node_cli::NodeArgs};
+use crate::{
+    approve_publication,
+    key_cli::{VaultAccess, account_path},
+    node_cli::{NodeArgs, chain_name},
+};
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
+use urma_identity::root::Branch;
 use urma_runtime::{
     error::Error,
     transfer::{self, TransferRequest},
@@ -54,8 +59,15 @@ pub(crate) enum WalletCommand {
         #[command(flatten)]
         node: NodeArgs,
     },
-    #[command(about = "Show your receiving address (offline)")]
+    #[command(about = "Show your designated receiving address (offline)")]
     Address {
+        #[command(flatten)]
+        access: VaultAccess,
+        #[command(flatten)]
+        node: NodeArgs,
+    },
+    #[command(about = "Export the account xpub and output descriptors (offline, no secrets)")]
+    Export {
         #[command(flatten)]
         access: VaultAccess,
         #[command(flatten)]
@@ -95,9 +107,24 @@ pub(crate) fn run(command: WalletCommand) -> Result<Value, Error> {
     match command {
         WalletCommand::Address { access, node } => {
             let vault = access.open()?;
-            let signer = vault.keyring().active()?;
+            let chain = node.chain()?;
+            let root = vault.keyring().root();
             Ok(
-                json!({"author":signer.author().0.to_string(), "receive_address":urma_wallet::address::receive_address(&signer, node.chain()?)?, "balance_checked":false}),
+                json!({"chain":chain_name(chain)?,"path":format!("{}/0/0", account_path(chain)),
+                "designated_address":root.address(chain, Branch::External, 0)?,
+                "balance_checked":false}),
+            )
+        }
+        WalletCommand::Export { access, node } => {
+            let vault = access.open()?;
+            let chain = node.chain()?;
+            let root = vault.keyring().root();
+            let [external, internal] = root.descriptors(chain)?;
+            Ok(
+                json!({"chain":chain_name(chain)?,"path":account_path(chain),
+                "fingerprint":root.fingerprint().to_string(),
+                "account_xpub":root.account_xpub(chain)?.to_string(),
+                "descriptors":{"external":external,"internal":internal},"secrets":false}),
             )
         }
         WalletCommand::Status { access, node } | WalletCommand::Utxos { access, node } => {

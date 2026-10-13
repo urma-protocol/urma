@@ -1,11 +1,13 @@
-use crate::{archive_cli, config};
+use crate::{archive_cli, config, node_cli::chain_name};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::PathBuf;
 use urma_chain::observation::Chain;
 use urma_identity::{
-    identity::{IdentitySigner, IdentitySlot},
+    error::IdentityError,
+    identity::IdentitySlot,
     phrase::IdentityPhrase,
+    root::{Branch, Root},
     vault::{UnlockCredential, UnlockedVault},
 };
 use urma_runtime::error::Error;
@@ -90,18 +92,43 @@ pub(crate) enum KeyCommand {
     },
 }
 
+/// Chain contexts with a BIP84 account, in display order.
+pub(crate) const WALLET_CHAINS: [Chain; 5] = [
+    Chain::BitcoinMainnet,
+    Chain::LitecoinMainnet,
+    Chain::BitcoinTestnet4,
+    Chain::BitcoinRegtest,
+    Chain::LitecoinTestnet,
+];
+
+pub(crate) fn account_path(chain: Chain) -> String {
+    format!("m/{}'/{}'/0'", Root::PURPOSE, Root::coin_type(chain))
+}
+
+/// Identities sign as authors and hold no funds; each chain's BIP84 account
+/// funds and receives at its designated external address 0/0.
 pub(crate) fn public_summary(vault: &UnlockedVault) -> Result<Value, Error> {
     let keyring = vault.keyring();
     let mut identities = Vec::new();
     for entry in keyring.identities() {
-        let signer = keyring.identity(entry.slot)?;
+        let (author, error) = match keyring.identity(entry.slot) {
+            Ok(identity) => (Some(identity.author().0.to_string()), None),
+            Err(cause @ IdentityError::InvalidSlot(_)) => (None, Some(cause.to_string())),
+            Err(cause) => return Err(cause.into()),
+        };
         identities.push(json!({"slot": entry.slot.index(), "name": entry.name,
-            "active":entry.slot == keyring.active_slot(), "author":signer.author().0.to_string(),
-            "funding_public_key": signer.public_key().to_string(),
-            "bitcoin_testnet4_address":urma_wallet::address::receive_address(&signer, Chain::BitcoinTestnet4)?,
-            "litecoin_testnet_address":urma_wallet::address::receive_address(&signer, Chain::LitecoinTestnet)?}));
+            "active":entry.slot == keyring.active_slot(), "author":author, "error":error}));
     }
-    Ok(json!({"identities":identities,"broadcast":false}))
+    let mut wallets = serde_json::Map::new();
+    for chain in WALLET_CHAINS {
+        wallets.insert(
+            chain_name(chain)?,
+            json!({"path":account_path(chain),
+                "designated_address":keyring.root().address(chain, Branch::External, 0)?}),
+        );
+    }
+    Ok(json!({"identities":identities,"wallets":wallets,
+        "fingerprint":keyring.root().fingerprint().to_string(),"broadcast":false}))
 }
 
 fn modify(access: VaultAccess, change: VaultChange<'_>, output: PathBuf) -> Result<Value, Error> {

@@ -222,12 +222,19 @@ fn cli_recovers_without_vault_and_never_prints_secrets() {
         public["identities"][1]["author"],
         selected_public["identities"][1]["author"]
     );
+    assert_eq!(words.split_whitespace().count(), 12);
     let address = success(unlocked(
         &recovered,
         &pass,
         &["wallet", "address", "--testnet"],
     ));
     assert_eq!(address["balance_checked"], false);
+    assert_eq!(address["path"], "m/84'/1'/0'/0/0");
+    assert_eq!(
+        address["designated_address"],
+        public["wallets"]["litecoin-testnet"]["designated_address"]
+    );
+    assert_eq!(public["identities"][0].get("funding_public_key"), None);
     std::fs::write(&pass, "another private wrong password").unwrap();
     let denied = unlocked(&recovered, &pass, &["key", "list"]);
     assert!(!denied.status.success());
@@ -236,4 +243,128 @@ fn cli_recovers_without_vault_and_never_prints_secrets() {
     let json = public.to_string();
     assert!(!json.contains(&words));
     assert!(!json.contains(password));
+}
+
+fn vectors() -> (std::path::PathBuf, serde_json::Value) {
+    let directory =
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../tests/vectors/identity-vault-v2");
+    let json = std::fs::read(directory.join("vectors.json")).unwrap();
+    (directory, serde_json::from_slice(&json).unwrap())
+}
+
+fn private_file(path: &Path, text: &str) {
+    std::fs::write(path, text).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600)).unwrap();
+}
+
+fn on_network(vault: &Path, password: &Path, network: &str, args: &[&str]) -> serde_json::Value {
+    success(
+        Command::new(env!("CARGO_BIN_EXE_urma"))
+            .env("URMA_OUTPUT", "json")
+            .env("URMA_VAULT", vault)
+            .env("URMA_UNLOCK_FILE", password)
+            .env("URMA_CONFIG", vault.with_extension("no-config"))
+            .env("URMA_NETWORK", network)
+            .args(args)
+            .output()
+            .unwrap(),
+    )
+}
+
+#[test]
+fn recovered_v2_vault_reproduces_public_authors_addresses_and_descriptors() {
+    let (_, v) = vectors();
+    let temp = tempfile::tempdir().unwrap();
+    let (phrase, pass, vault) = (
+        temp.path().join("phrase"),
+        temp.path().join("password"),
+        temp.path().join("recovered.vault"),
+    );
+    private_file(&phrase, v["phrase"].as_str().unwrap());
+    private_file(&pass, v["vault"]["password"].as_str().unwrap());
+    let args = ["key", "recover", "--phrase-file", path(&phrase)];
+    let mut args = args.to_vec();
+    args.extend(["--password-file", path(&pass), "--output", path(&vault)]);
+    success(cli(&args));
+    let listed = success(unlocked(&vault, &pass, &["key", "list"]));
+    assert_eq!(listed["fingerprint"], v["fingerprint"]);
+    for slot in v["slots"].as_array().unwrap() {
+        let index = usize::try_from(slot["slot"].as_u64().unwrap()).unwrap();
+        assert_eq!(listed["identities"][index]["author"], slot["author"]);
+    }
+    for chain in v["chains"].as_array().unwrap() {
+        let name = chain["chain"].as_str().unwrap();
+        let wallet = &listed["wallets"][name];
+        assert_eq!(wallet["path"], chain["path"], "{name}");
+        assert_eq!(wallet["designated_address"], chain["external_0"], "{name}");
+        let exported = on_network(&vault, &pass, name, &["wallet", "export"]);
+        assert_eq!(exported["chain"], name);
+        assert_eq!(exported["path"], chain["path"]);
+        assert_eq!(exported["fingerprint"], v["fingerprint"]);
+        assert_eq!(exported["account_xpub"], chain["account_xpub"]);
+        assert_eq!(exported["descriptors"]["external"], chain["descriptors"][0]);
+        assert_eq!(exported["descriptors"]["internal"], chain["descriptors"][1]);
+        assert_eq!(exported["secrets"], false);
+        let address = on_network(&vault, &pass, name, &["wallet", "address"]);
+        assert_eq!(address["designated_address"], chain["external_0"], "{name}");
+        let text = format!("{listed}{exported}{address}");
+        assert!(!text.contains(v["phrase"].as_str().unwrap()));
+        assert!(!text.contains(v["master_xprv"].as_str().unwrap()));
+        assert!(!text.contains(v["seed"].as_str().unwrap()));
+    }
+}
+
+#[test]
+fn v2_vault_vector_unlocks_and_v1_vaults_and_wrong_lengths_are_refused() {
+    let (directory, v) = vectors();
+    let temp = tempfile::tempdir().unwrap();
+    let pass = temp.path().join("password");
+    private_file(&pass, v["vault"]["password"].as_str().unwrap());
+    let valid = directory.join("valid.vault");
+    let listed = success(unlocked(&valid, &pass, &["key", "list"]));
+    let names: Vec<&str> = v["vault"]["names"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|name| name.as_str().unwrap())
+        .collect();
+    for (slot, name) in names.iter().enumerate() {
+        assert_eq!(listed["identities"][slot]["name"], *name);
+        assert_eq!(
+            listed["identities"][slot]["author"],
+            v["slots"][slot]["author"]
+        );
+    }
+    let active = usize::try_from(v["vault"]["active_slot"].as_u64().unwrap()).unwrap();
+    assert_eq!(listed["identities"][active]["active"], true);
+    let old = unlocked(&directory.join("version-1.vault"), &pass, &["key", "list"]);
+    assert!(!old.status.success());
+    assert!(old.stdout.is_empty());
+    let stderr = String::from_utf8_lossy(&old.stderr);
+    assert!(
+        stderr.contains("unsupported identity vault version"),
+        "{stderr}"
+    );
+    for (label, words) in v["invalid_phrases"].as_object().unwrap() {
+        let phrase = temp.path().join(label);
+        private_file(&phrase, words.as_str().unwrap());
+        let output = temp.path().join(format!("{label}.vault"));
+        let refused = cli(&[
+            "key",
+            "recover",
+            "--phrase-file",
+            path(&phrase),
+            "--password-file",
+            path(&pass),
+            "--output",
+            path(&output),
+        ]);
+        assert!(!refused.status.success(), "{label} phrase accepted");
+        let stderr = String::from_utf8_lossy(&refused.stderr);
+        assert!(
+            stderr.contains("expected 12 English BIP39 words"),
+            "{label}: {stderr}"
+        );
+        assert!(!output.exists(), "{label} wrote a vault");
+    }
 }

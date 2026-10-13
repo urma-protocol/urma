@@ -621,9 +621,15 @@ fn validate_wire_page(
         }
         let raw = hex::decode(&entry.record)
             .map_err(|_| invalid("local Wire entry has invalid record hex"))?;
-        let parsed =
-            urma_wire::index::entry_from_record(&raw, txid, author, entry.height, entry.position)
-                .map_err(|error| invalid(format!("invalid local Wire record: {error}")))?;
+        let parsed = urma_wire::index::entry_from_record(
+            &raw,
+            txid,
+            author,
+            None,
+            entry.height,
+            entry.position,
+        )
+        .map_err(|error| invalid(format!("invalid local Wire record: {error}")))?;
         if parsed.is_none() {
             return Err(invalid("local Wire entry is not a Wire record kind"));
         }

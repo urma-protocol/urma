@@ -29,12 +29,13 @@ fn entry(at: u8, bytes: &[u8]) -> Entry {
         txid: Txid::from_byte_array([at; 32]).to_string(),
         author: author().to_string(),
         record: hex::encode(bytes),
+        return_script: None,
     }
 }
 
 fn mixed_index() -> Index {
     Index {
-        format: "URMA-WIRE-INDEX-2".into(),
+        format: Index::FORMAT.into(),
         genesis: BlockHash::all_zeros().to_string(),
         start: 0,
         blocks: Vec::new(),

@@ -42,7 +42,7 @@ fn index_persistence_round_trips() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("wire-index.json");
     let index = Index {
-        format: "URMA-WIRE-INDEX-1".into(),
+        format: Index::FORMAT.into(),
         genesis: BlockHash::all_zeros().to_string(),
         start: 42,
         blocks: Vec::new(),
@@ -53,6 +53,30 @@ fn index_persistence_round_trips() {
     let loaded = Index::load(&path).unwrap();
     assert_eq!(loaded.genesis, index.genesis);
     assert_eq!(loaded.start, 42);
+}
+
+#[test]
+fn older_index_formats_are_refused_without_migration() {
+    let directory = tempfile::tempdir().unwrap();
+    for format in ["URMA-WIRE-INDEX-1", "URMA-WIRE-INDEX-2"] {
+        let path = directory.path().join(format!("{format}.json"));
+        let old = Index {
+            format: format.into(),
+            genesis: BlockHash::all_zeros().to_string(),
+            start: 42,
+            blocks: Vec::new(),
+            entries: Vec::new(),
+        };
+        old.persist(&path).unwrap();
+        let error = match Index::load(&path) {
+            Ok(_) => panic!("{format} index loaded"),
+            Err(error) => error,
+        };
+        assert!(
+            error.to_string().contains("unsupported Wire index format"),
+            "{error}"
+        );
+    }
 }
 
 #[test]
