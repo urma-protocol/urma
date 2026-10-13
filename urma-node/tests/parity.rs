@@ -380,8 +380,9 @@ impl Daemon {
     /// Poll status, taking each case's verdict once it settles. With
     /// `Mode::Release` a settled peer is then stopped, freeing its connection
     /// slot; with `Mode::Keep` every peer stays up and the daemon must free
-    /// slots itself. A refusal settles only once the peer is backed off, so a
-    /// quiet transport retry is never read as a verdict.
+    /// slots itself. A refusal settles only once the peer is backed off with a
+    /// recorded error, so a quiet transport retry or an eviction hold-off is
+    /// never read as a verdict.
     fn settle(
         &mut self,
         corpus: &Corpus,
@@ -401,7 +402,9 @@ impl Daemon {
                 let entry = peer_status(&status, peer);
                 let settled = match want {
                     Verdict::Stored(_) => entry["synced_through"] == json!(FIRST_HEIGHT),
-                    Verdict::Invalid(_) => !entry["backoff_until"].is_null(),
+                    Verdict::Invalid(_) => {
+                        !entry["backoff_until"].is_null() && entry["last_error"].is_string()
+                    }
                     // Stale leaves no error: a second fetch proves a completed turn.
                     Verdict::Stale => peer.served() >= 2,
                 };

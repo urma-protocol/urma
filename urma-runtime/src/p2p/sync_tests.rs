@@ -162,8 +162,8 @@ fn an_empty_answer_proves_nothing_and_a_tip_answer_proves_the_tip() {
     let holders = peers.order_for_block(5, 6);
     assert_eq!(
         holders,
-        vec![1],
-        "a lagging peer that answered empty holds no block above its height"
+        vec![1, 2],
+        "the lagging peer (index 0) holds nothing above its height; the inflated peer stays an unproven candidate up to tip-1"
     );
 }
 
