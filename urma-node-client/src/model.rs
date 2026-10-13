@@ -1,4 +1,5 @@
 use bitcoin::BlockHash;
+use bitcoin::hashes::Hash;
 use serde::{Deserialize, Serialize};
 use urma_chain::observation::Chain;
 
@@ -85,10 +86,11 @@ pub struct ChainPoint {
     pub hash: BlockHash,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum Retention {
     Pruned,
+    #[default]
     Unpruned,
 }
 
@@ -102,7 +104,10 @@ pub struct ArchiveConfig {
     pub retention: Retention,
 }
 
+/// Status structs are `non_exhaustive`: build them from `Default` and assign
+/// fields, so additive fields stay non-breaking.
 #[derive(Clone, Debug, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ArchiveStatus {
     pub api_version: u32,
     pub chain_genesis: BlockHash,
@@ -125,10 +130,36 @@ pub struct ArchiveStatus {
     pub unaudited_records: u64,
 }
 
+impl Default for ArchiveStatus {
+    fn default() -> Self {
+        let zero = BlockHash::all_zeros();
+        Self {
+            api_version: API_VERSION,
+            chain_genesis: zero,
+            application_start: ChainPoint {
+                height: 0,
+                hash: zero,
+            },
+            retention: Retention::default(),
+            generation: 0,
+            selected_tip: None,
+            indexed_through: None,
+            scanned_blocks: 0,
+            unresolved_dependencies: 0,
+            stored_transactions: 0,
+            scan_rules_version: SCAN_RULES_VERSION,
+            peer_synced_through: None,
+            peer_omissions: 0,
+            unaudited_records: 0,
+        }
+    }
+}
+
 /// Historical receipt of one atomic cache maintenance step. Later admissions,
 /// pins and reorgs can change usage. Protected evidence and SQLite/WAL overhead
 /// are outside this metric; disabled enforcement does not imply an empty archive.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CacheReceipt {
     pub enabled: bool,
     pub limit_bytes: u64,
@@ -141,7 +172,8 @@ pub struct CacheReceipt {
 
 /// Operator-reported service state. Every `last_*_error` describes the latest
 /// attempt of that worker; `*_at` is when it was recorded, in Unix seconds.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct ServiceStatus {
     pub archive: ArchiveStatus,
     pub last_sync_error: Option<String>,
@@ -165,12 +197,18 @@ pub struct ServiceStatus {
     /// Litecoin P2P peers the light client holds now; 0 when offline.
     #[serde(default)]
     pub chain_peers: u64,
+    /// Absolute height header sync heads for: the best height chain peers
+    /// announced, never below the local tip. Announced, not proven; null while
+    /// unknown (no chain peer yet, or offline).
+    #[serde(default)]
+    pub chain_target: Option<u64>,
     pub retention_configured: bool,
     pub record_sources_configured: u64,
     pub capabilities: Vec<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct CommitSourceStatus {
     pub label: String,
     pub last_error: Option<String>,
@@ -178,7 +216,8 @@ pub struct CommitSourceStatus {
 }
 
 /// Public overlay facts; never secrets. Counters cover this service run.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct OverlayStatus {
     pub peer_id: String,
     #[serde(default)]
@@ -196,7 +235,8 @@ pub struct OverlayStatus {
 /// Peer book and discovery counters. `reached` counts entries whose last dial
 /// succeeded, `reached_ever` entries with any past successful dial; a dial
 /// proves an identity answered, not honesty.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct DiscoveryStatus {
     pub seeds: u64,
     pub book: u64,
@@ -242,7 +282,8 @@ pub struct BookEntry {
     pub banned_until: Option<u64>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct OverlayPeerStatus {
     pub label: String,
     pub cursor: u64,
@@ -254,3 +295,7 @@ pub struct OverlayPeerStatus {
     /// Unix second of this peer's last turn with an admission or coverage.
     pub last_progress_at: Option<u64>,
 }
+
+#[cfg(test)]
+#[path = "model_tests.rs"]
+mod model_tests;

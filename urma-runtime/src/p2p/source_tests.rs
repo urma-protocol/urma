@@ -86,6 +86,23 @@ fn typed_source_returns_tip_header_and_original_block() {
 }
 
 #[test]
+fn target_height_is_absolute_and_unknown_without_peers() {
+    let (provider, _commands, _dir, _blocks) = regtest_source();
+    assert_eq!(provider.target_height(), None, "no announced height yet");
+    locked(&provider.shared.status, "status").target = 2;
+    assert_eq!(
+        provider.target_height(),
+        Some(3),
+        "never below the local tip"
+    );
+    locked(&provider.shared.status, "status").target = 4_913_600;
+    assert_eq!(provider.target_height(), Some(4_913_600));
+    assert_eq!(provider.progress().headers_target, 4_913_600);
+    locked(&provider.shared.status, "status").peers = 0;
+    assert_eq!(provider.target_height(), None, "offline");
+}
+
+#[test]
 fn typed_refresh_preserves_local_context_error_without_freshening_status() {
     let (provider, commands, _dir, _blocks) = regtest_source();
     locked(&provider.shared.status, "status").refreshed = Freshness::Never;

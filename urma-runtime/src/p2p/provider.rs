@@ -132,6 +132,15 @@ impl P2pProvider {
         }
     }
 
+    /// Absolute height header sync heads for: the best height connected peers
+    /// announced, never below the local tip. Announced, not proven. `None`
+    /// while no peer is connected or none has announced a height.
+    pub fn target_height(&self) -> Option<u64> {
+        let headers = locked(&self.shared.headers, "headers");
+        let status = locked(&self.shared.status, "status");
+        (status.peers > 0 && status.target > 0).then(|| status.target.max(headers.tip_height()))
+    }
+
     pub fn state(&self) -> LightSync {
         let progress = self.progress();
         match &*locked(&self.engine, "engine") {
