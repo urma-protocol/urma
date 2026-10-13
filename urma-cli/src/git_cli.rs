@@ -221,7 +221,8 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
 }
 
 fn resume(args: ResumeArgs) -> Result<Value, Error> {
-    git_publish_cli::require_git_funder(&args.plan, &args.access, args.node.chain()?)?;
+    let funder = funding_account(&args.access.open()?, args.node.chain()?)?;
+    git_publish_cli::require_git_funder(&args.plan, &funder)?;
     let node = args.node.connect()?;
     let reviewed = workflows::inspect_plan(&args.plan).map_err(boundary)?;
     approve_publication(

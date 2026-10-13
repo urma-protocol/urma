@@ -3,7 +3,7 @@ use crate::error::{Context, Error, bail, ensure};
 use crate::node::Node;
 use crate::publish::{MempoolCheck, test_accept};
 use crate::transaction::{signed_vsize, spending};
-use crate::wallet::Selection;
+use crate::wallet::{FundingInput, Selection};
 use bitcoin::{Amount, OutPoint, ScriptBuf, Transaction, TxOut, Txid, consensus::serialize};
 use serde_json::json;
 use std::num::NonZeroU64;
@@ -28,6 +28,7 @@ pub struct Transfer {
     pub transaction: Transaction,
     pub fee: u64,
     pub change: Option<Change>,
+    pub inputs: Vec<FundingInput>,
 }
 
 fn output(value: u64, script: &ScriptBuf) -> TxOut {
@@ -138,6 +139,7 @@ pub fn prepare(
         transaction: signed,
         fee,
         change,
+        inputs: selection.inputs,
     })
 }
 

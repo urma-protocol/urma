@@ -3,6 +3,7 @@
 use crate::config::ArchiveSettings;
 use serde_json::{Value, json};
 use std::time::{Duration, Instant};
+use urma_chain::observation::Chain;
 use urma_node_client::{Client, model::ArchiveStatus, projection::WireCursor};
 use urma_runtime::error::{Error, ensure};
 use urma_wire::index::Index;
@@ -40,7 +41,10 @@ pub(crate) fn client(settings: &ArchiveSettings) -> Result<Client, Error> {
 
 /// Full snapshot only, in selected height/position order. Time checks are
 /// cooperative; an in-flight HTTP call keeps the client's own budget.
-pub(crate) fn read(settings: &ArchiveSettings) -> Result<(Index, Value), Error> {
+pub(crate) fn read(
+    settings: &ArchiveSettings,
+    expected: Option<Chain>,
+) -> Result<(Index, Value), Error> {
     let deadline = Instant::now() + TRAVERSAL_TIME;
     let client = client(settings)?;
     let mut cursor: Option<WireCursor> = None;
@@ -54,6 +58,17 @@ pub(crate) fn read(settings: &ArchiveSettings) -> Result<(Index, Value), Error> 
         let page = client
             .wire_page(cursor.as_ref(), PAGE)
             .map_err(|_| refused())?;
+        for chain in expected.iter() {
+            ensure!(
+                page.archive.chain_genesis == chain.genesis()?.0,
+                "operator archive belongs to another network"
+            );
+        }
+        let added = entries.len().checked_add(page.records.len());
+        ensure!(
+            added.is_some_and(|rows| rows <= MAX_ROWS),
+            "optional Wire archive row bound"
+        );
         let snapshot = serde_json::to_string(&page.snapshot)?;
         match &first {
             Some((previous, _)) if *previous != snapshot => return Err(refused()),
@@ -61,13 +76,12 @@ pub(crate) fn read(settings: &ArchiveSettings) -> Result<(Index, Value), Error> 
             None => first = Some((snapshot, page.archive.clone())),
         }
         entries.extend(page.records.into_iter().map(|record| record.entry));
-        ensure!(entries.len() <= MAX_ROWS, "optional Wire archive row bound");
         let Some(next) = page.next else {
             let Some((_, archive)) = first else {
                 return Err(refused());
             };
             let index = Index {
-                format: "URMA-WIRE-INDEX-2".into(),
+                format: Index::FORMAT.into(),
                 genesis: archive.chain_genesis.to_string(),
                 start: archive.application_start.height,
                 blocks: Vec::new(),

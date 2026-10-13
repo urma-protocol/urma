@@ -266,6 +266,14 @@ pub(crate) fn load() -> Result<Settings, Error> {
     )?)
 }
 
+/// The network named by URMA_NETWORK, or none when it is not set.
+pub(crate) fn explicit_chain() -> Result<Option<Chain>, Error> {
+    match std::env::var_os("URMA_NETWORK") {
+        Some(_named) => Ok(Some(chain(false)?)),
+        None => Ok(None),
+    }
+}
+
 pub(crate) fn chain(testnet: bool) -> Result<Chain, Error> {
     if testnet {
         return Ok(Chain::LitecoinTestnet);

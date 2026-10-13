@@ -131,16 +131,34 @@ pub(crate) fn index(args: IndexArgs) -> Result<Value, Error> {
 /// with its coverage; any failure warns and falls back to the local index.
 fn open_index(source: &ReadSource) -> Result<(Index, Value), Error> {
     if !source.local {
-        for settings in config::load()?.archive.iter() {
-            match wire_archive::read(settings) {
-                Ok(view) => return Ok(view),
-                Err(cause) => tracing::warn!(target: "urma_cli", error = %cause,
-                    "optional Wire archive unavailable; reading the local index"),
-            }
+        if let Some(view) = operator_index() {
+            return Ok(view);
         }
     }
     let index = wire_result(Index::load(&source.index))?;
     Ok((index, wire_archive::autonomous_source()))
+}
+
+/// The operator archive's view, or nothing: an unreadable configuration, a
+/// network mismatch or an unavailable archive all leave the local index.
+fn operator_index() -> Option<(Index, Value)> {
+    let attempt = || -> Result<Option<(Index, Value)>, Error> {
+        let Some(settings) = config::load()?.archive else {
+            return Ok(None);
+        };
+        Ok(Some(wire_archive::read(
+            &settings,
+            config::explicit_chain()?,
+        )?))
+    };
+    match attempt() {
+        Ok(view) => view,
+        Err(cause) => {
+            tracing::warn!(target: "urma_cli", error = %cause,
+                "optional Wire archive unavailable; reading the local index");
+            None
+        }
+    }
 }
 
 pub(crate) fn read(command: ReadCommand) -> Result<Value, Error> {
@@ -149,7 +167,7 @@ pub(crate) fn read(command: ReadCommand) -> Result<Value, Error> {
             let (index, source) = open_index(&source)?;
             Ok(json!({"genesis":index.genesis,
                 "records":wire_result(urma_wire::view::records(&index, limit))?,
-                "start_height":index.start,"locally_cached":true,"source":source}))
+                "start_height":index.start,"source":source}))
         }
         ReadCommand::Record { source, txid } => {
             let (index, source) = open_index(&source)?;

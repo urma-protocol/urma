@@ -9,8 +9,10 @@ use clap::Args;
 use serde_json::Value;
 use std::path::PathBuf;
 use urma_git::{plans::GitPlan, review, workflows};
+use urma_identity::vault::UnlockedVault;
 use urma_runtime::error::{Context, Error, ensure};
 use urma_runtime::{node::Node, plan::PlanLimits, quote};
+use urma_wallet::account::Account;
 
 #[derive(Args)]
 pub(crate) struct PublishArgs {
@@ -102,6 +104,7 @@ fn report_funding_check() {
 
 fn prepare(
     args: &PublishArgs,
+    vault: &UnlockedVault,
     directory: &std::path::Path,
 ) -> Result<workflows::PreparedReport, Error> {
     let guard = urma_git::workspace::lock(directory).map_err(boundary)?;
@@ -113,10 +116,9 @@ fn prepare(
         urma_git::workspace::snapshot(&args.repo, directory, &limits, &name)
     })
     .map_err(boundary)?;
-    let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;
     let length = directory.join("object.bin").metadata()?.len();
-    let funder = funding_account(&vault, args.node.chain()?)?;
+    let funder = funding_account(vault, args.node.chain()?)?;
     let quote = quote::multipart(length, &signer, &funder, args.fee_rate)?;
     report_snapshot(directory, &snapshot, &quote);
     let ceiling =
@@ -242,11 +244,10 @@ fn describe(
 /// Refuses a prepared Git publication whose return output is not this vault's account.
 pub(crate) fn require_git_funder(
     directory: &std::path::Path,
-    access: &VaultAccess,
-    chain: urma_chain::observation::Chain,
+    funder: &Account,
 ) -> Result<(), Error> {
     let (_, _, publication) = GitPlan::load_with_publication(directory).map_err(boundary)?;
-    publication.require_funder(&funding_account(&access.open()?, chain)?)
+    publication.require_funder(funder)
 }
 
 /// Approval lines for a prepared Git publication directory.
@@ -268,6 +269,7 @@ pub(crate) fn run(args: PublishArgs) -> Result<Value, Error> {
             args.node.chain()?.label()
         ));
     }
+    let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let (directory, report) = match &args.plan {
         Some(path) => (
             path.clone(),
@@ -278,11 +280,11 @@ pub(crate) fn run(args: PublishArgs) -> Result<Value, Error> {
                 &args.repo,
                 config::PublicationOutput(args.output.clone()),
             )?;
-            let report = prepare(&args, &directory)?;
+            let report = prepare(&args, &vault, &directory)?;
             (directory, report)
         }
     };
-    require_git_funder(&directory, &args.access, args.node.chain()?)?;
+    require_git_funder(&directory, &funding_account(&vault, args.node.chain()?)?)?;
     let node = args.node.connect()?;
     describe(&node, &directory, &report)?;
     for maximum in args.max_fee.iter() {

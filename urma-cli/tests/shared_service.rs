@@ -376,6 +376,7 @@ impl Fixture {
             &self.post.bytes,
             self.post.id(),
             author,
+            Some(self.post.reveal.output[0].script_pubkey.as_script()),
             FIRST_HEIGHT + 5,
             2,
         )
@@ -395,7 +396,7 @@ impl Fixture {
             })
             .collect();
         let index = Index {
-            format: "URMA-WIRE-INDEX-2".into(),
+            format: Index::FORMAT.into(),
             genesis: self.config.chain.genesis().unwrap().0.to_string(),
             start: FIRST_HEIGHT,
             blocks,

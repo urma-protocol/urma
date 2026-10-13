@@ -28,16 +28,26 @@ fn send(
     let runtime = node.connect()?;
     let prepared = transfer::prepare(&runtime, &account, &request)?;
     let txid = prepared.transaction.compute_txid();
-    let inputs: Vec<String> = prepared
-        .transaction
-        .input
-        .iter()
-        .map(|input| input.previous_output.to_string())
-        .collect();
-    let mut lines: Vec<String> = inputs
-        .iter()
-        .map(|outpoint| format!("Input {outpoint}"))
-        .collect();
+    let mut inputs = Vec::new();
+    let mut details = Vec::new();
+    let mut lines = Vec::new();
+    for input in &prepared.inputs {
+        let (outpoint, previous) = input.funding.prevout()?;
+        let path = format!(
+            "{}/{}/{}",
+            account_path(account.chain()),
+            input.path.branch.index(),
+            input.path.index
+        );
+        let address = account.address(input.path)?;
+        let value = previous.value.to_sat();
+        lines.push(format!(
+            "Input {outpoint}: {value} base units from {path} ({address})"
+        ));
+        inputs.push(outpoint.to_string());
+        details.push(json!({"outpoint":outpoint.to_string(),"value":value,
+            "path":path,"address":address}));
+    }
     let change = match &prepared.change {
         Some(change) => {
             let path = format!("{}/1/{}", account_path(account.chain()), change.path.index);
@@ -68,6 +78,7 @@ fn send(
         "amount": request.amount,
         "fee": prepared.fee,
         "inputs": inputs,
+        "input_details": details,
         "change": change,
         "chain": chain_name(account.chain())?,
     }))
