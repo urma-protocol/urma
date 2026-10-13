@@ -8,6 +8,10 @@ optional.
 
 ## Open it
 
+- Litecoin Core first (it is not started automatically):
+  `systemctl --user start litecoin-testnet`. Within about 10 seconds the
+  daemon's `local-rpc` entry turns from the "cookie file missing" error to
+  `null`. The daemon runs either way; without Core it only lacks that source.
 - App: **URMA Node** in the application menu (`~/.local/bin/urma-node-app`).
 - Daemon state: `systemctl --user status urma-node`
 - Daemon logs: `journalctl --user -u urma-node -f`
