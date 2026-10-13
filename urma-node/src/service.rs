@@ -714,9 +714,11 @@ fn wire_query(query: &str) -> Result<(u32, Option<crate::projection::WireCursor>
 fn control_error(stream: &mut TcpStream, error: Error) -> Result<(), Error> {
     match error {
         Error::Invalid(message) => respond(stream, 422, json!({"error":message})),
-        error @ (Error::Busy(_) | Error::PeerBusy | Error::Transport(_) | Error::Stale) => {
-            respond(stream, 409, json!({"error":error.to_string()}))
-        }
+        error @ (Error::Busy(_)
+        | Error::PeerBusy
+        | Error::Transport(_)
+        | Error::DialDenied(_)
+        | Error::Stale) => respond(stream, 409, json!({"error":error.to_string()})),
         // Do not expose database internals or local filesystem paths over HTTP.
         _ => respond(
             stream,

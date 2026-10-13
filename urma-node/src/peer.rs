@@ -4,13 +4,13 @@
 //! explicitly dialed `/dns*` addresses resolve through the system resolver.
 pub use crate::peer_parent::OverlayCommitSource;
 use crate::{
-    Error,
+    DialLimit, Error,
     engine::Engine,
     model::RecordPackage,
     peer_codec::Codec,
     peer_gossip::{Dial, Dials, Shared, is_loopback, validate_announce, validate_peers},
     peer_inventory::{lookup, validate_inventory},
-    peer_limits::{LimitDenied, Limits, dial_denied},
+    peer_limits::{LimitDenied, Limits},
     peer_parent::{Parent, validate_parent},
     peer_protocol::{GossipPeer, InventoryPage, Kind, PROTOCOL, Reply, Request, Response, VERSION},
     peer_rate::{Bucket, Count, peer_rate},
@@ -544,7 +544,7 @@ async fn run(
                 SwarmEvent::OutgoingConnectionError { connection_id, peer_id, error } => {
                     // Queued before request-response reports the same DialFailure.
                     if let (Some(peer), DialError::Denied { cause }) = (peer_id, &error) {
-                        if cause.downcast_ref::<LimitDenied>().is_some() { release_denied(&mut pending, peer); }
+                        if let Some(LimitDenied(limit)) = cause.downcast_ref::<LimitDenied>() { release_denied(&mut pending, peer, *limit); }
                     }
                     dials.failed(connection_id, &error);
                 }
@@ -660,13 +660,18 @@ fn serve(
     }
 }
 
-/// A dial refused by our own limits is local capacity, answered as Busy.
-fn release_denied(pending: &mut HashMap<OutboundRequestId, Pending>, peer: PeerId) {
+/// A dial refused by our own limits is local capacity: the waiting requests
+/// fail with which limit refused it, never blaming the peer.
+fn release_denied(
+    pending: &mut HashMap<OutboundRequestId, Pending>,
+    peer: PeerId,
+    limit: DialLimit,
+) {
     pending.retain(|_, value| {
         if value.peer != peer {
             return true;
         }
-        value.answer.fail(dial_denied());
+        value.answer.fail(Error::DialDenied(limit));
         false
     });
 }

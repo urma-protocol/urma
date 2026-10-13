@@ -2,7 +2,7 @@
 use crate::{
     Error,
     peer::{PeerSource, Pending, bind_response},
-    peer_limits::{ESTABLISHED_PER_DIRECTION, is_dial_denied},
+    peer_limits::ESTABLISHED_PER_DIRECTION,
     peer_protocol::{PARENT_LIMIT, Reply, Response},
     source::{CommitSource, check_cancelled, verify_parent},
 };
@@ -105,7 +105,7 @@ impl CommitSource for OverlayCommitSource {
                 },
                 Ok(Parent::Absent) => answered = true,
                 Ok(Parent::Busy) | Err(Error::Busy(_)) => (),
-                Err(denied) if is_dial_denied(&denied) => (),
+                Err(Error::DialDenied(_local_capacity)) => (),
                 Err(error) => {
                     peer.disconnect();
                     failure = Some(error);

@@ -6,7 +6,7 @@ use crate::{
     peer::{
         Answer, Behaviour, CALL_TIMEOUT, Command, PeerNetwork, Pending, bind_response, request,
     },
-    peer_limits::{LimitDenied, dial_denied},
+    peer_limits::LimitDenied,
     peer_protocol::{
         GossipPeer, Kind, PEER_ADDRESSES_MAX, PEERS_LIMIT, PEERS_MAX, Reply, Response,
     },
@@ -483,9 +483,10 @@ impl Dials {
 
 fn dial_error(error: &DialError) -> Error {
     match error {
-        DialError::Denied { cause } if cause.downcast_ref::<LimitDenied>().is_some() => {
-            dial_denied()
-        }
+        DialError::Denied { cause } => match cause.downcast_ref::<LimitDenied>() {
+            Some(LimitDenied(limit)) => Error::DialDenied(*limit),
+            None => Error::Invalid(format!("peer dial: {error}")),
+        },
         DialError::DialPeerConditionFalse(condition) => {
             Error::Busy(format!("peer dial already pending ({condition:?})"))
         }

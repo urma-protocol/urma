@@ -12,7 +12,30 @@ pub enum Error {
     /// A peer request failed in transport (dial, timeout, closed connection,
     /// I/O, unsupported protocol): no statement about the peer's honesty.
     Transport(String),
+    /// Our own connection admission refused a dial, before reaching the peer.
+    DialDenied(DialLimit),
     Stale,
+}
+
+/// Which local admission limit refused a connection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DialLimit {
+    /// Too many connections still handshaking in that direction.
+    Pending,
+    /// Every established slot in that direction (or in total) is taken.
+    Established,
+    /// The peer already holds an established connection.
+    Duplicate,
+}
+
+impl std::fmt::Display for DialLimit {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Pending => "pending connection limit",
+            Self::Established => "established connection limit",
+            Self::Duplicate => "peer already connected",
+        })
+    }
 }
 
 impl std::fmt::Display for Error {
@@ -27,6 +50,7 @@ impl std::fmt::Display for Error {
             Self::Busy(e) => write!(f, "archive busy: {e}"),
             Self::PeerBusy => f.write_str("remote peer busy"),
             Self::Transport(e) => write!(f, "peer transport: {e}"),
+            Self::DialDenied(limit) => write!(f, "dial denied by local connection limit ({limit})"),
             Self::Stale => f.write_str("result belongs to a superseded chain view"),
         }
     }

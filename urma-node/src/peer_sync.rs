@@ -10,11 +10,10 @@
 //! and a peer refused by the local connection limit gets the slot of the
 //! connected peer that progressed longest ago.
 use crate::{
-    Error,
+    DialLimit, Error,
     engine::Engine,
     model::{OverlayPeerStatus, OverlayStatus, RecordReceipt},
     peer::PeerSource,
-    peer_limits::is_dial_denied,
     peer_protocol::{InventoryPage, Placement},
     recorded::{RecordedError, unix_seconds},
 };
@@ -69,6 +68,8 @@ struct Peer {
     busy_turns: AtomicU32,
     idle_turns: AtomicU32,
     last_progress: Mutex<Option<u64>>,
+    /// Scheduler step at which this peer was first seen connected, if it is.
+    connected_since: Mutex<Option<u64>>,
 }
 
 /// Sync backoff after peer errors: consecutive blamed turns and the Unix
@@ -86,6 +87,28 @@ impl Peer {
 
     fn last_progress(&self) -> Result<Option<u64>, Error> {
         Ok(*self.last_progress.lock().map_err(|_| poisoned())?)
+    }
+
+    /// Skip this peer until at least `now + seconds`, unblamed: failures and
+    /// the book are untouched, and a longer backoff is never shortened.
+    fn hold_off(&self, now: u64, seconds: u64) -> Result<(), Error> {
+        let until = now.checked_add(seconds).unwrap_or(u64::MAX);
+        let mut backoff = self.backoff.lock().map_err(|_| poisoned())?;
+        backoff.until = Some(backoff.until.map_or(until, |current| current.max(until)));
+        Ok(())
+    }
+
+    /// Wait for an evicted connection to close so its slot is really free,
+    /// bounded by `EVICT_WAIT`, the step deadline and cancellation.
+    fn wait_closed(&self, stop: &AtomicBool, deadline: Instant) -> bool {
+        let until = deadline.min(Instant::now() + Scheduler::EVICT_WAIT);
+        while self.source.connected() {
+            if stop.load(Ordering::Acquire) || Instant::now() >= until {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(25));
+        }
+        true
     }
 }
 
@@ -111,9 +134,11 @@ enum Turn {
 /// capacity (ours or theirs), transport failure or our reorg.
 fn blame(error: Error) -> Pause {
     match error {
-        Error::Busy(_) | Error::PeerBusy | Error::Transport(_) | Error::Stale => {
-            Pause::Error(error)
-        }
+        Error::Busy(_)
+        | Error::PeerBusy
+        | Error::Transport(_)
+        | Error::DialDenied(_)
+        | Error::Stale => Pause::Error(error),
         other => Pause::Blame(other),
     }
 }
@@ -152,11 +177,25 @@ pub(crate) struct Scheduler {
     admitted: AtomicU64,
     rejected: AtomicU64,
     penalized: Mutex<Vec<PeerId>>,
-    starved: Mutex<Option<PeerId>>,
+    steps: AtomicU64,
 }
 
 fn poisoned() -> Error {
     Error::Invalid("peer synchronization state poisoned".into())
+}
+
+/// A connected peer that has held its slot for more than one step without
+/// progress for `IDLE_BACKOFF` seconds, or ever.
+fn evictable(peer: &Peer, step: u64, now: u64) -> Result<bool, Error> {
+    let settled = peer
+        .connected_since
+        .lock()
+        .map_err(|_| poisoned())?
+        .is_some_and(|since| step >= since.saturating_add(2));
+    let idle = peer
+        .last_progress()?
+        .is_none_or(|at| now >= at.saturating_add(Scheduler::IDLE_BACKOFF));
+    Ok(settled && idle && peer.source.connected())
 }
 
 fn inventory_peer(label: String, source: PeerSource) -> Result<Peer, Error> {
@@ -181,6 +220,7 @@ fn inventory_peer(label: String, source: PeerSource) -> Result<Peer, Error> {
         busy_turns: AtomicU32::new(0),
         idle_turns: AtomicU32::new(0),
         last_progress: Mutex::new(None),
+        connected_since: Mutex::new(None),
     })
 }
 
@@ -202,10 +242,14 @@ impl Scheduler {
     pub const BUSY_TURNS: u32 = 10;
     /// Consecutive Missing answers for advertised records that blame a peer.
     pub const MISSING_ANSWERS: u32 = 2;
-    /// Consecutive answered turns without an admission or coverage after
-    /// which a peer's slot is released for `IDLE_BACKOFF` seconds, unblamed.
+    /// Consecutive answered turns without progress after which a peer's slot
+    /// is released for `IDLE_BACKOFF` seconds, unblamed. The same span guards
+    /// eviction: only a peer without progress for that long can be evicted,
+    /// and an evicted peer is held off for it too.
     pub const IDLE_TURNS: u32 = 3;
     pub const IDLE_BACKOFF: u64 = 60;
+    /// Longest wait for an evicted connection to close before the retry.
+    pub const EVICT_WAIT: Duration = Duration::from_secs(2);
     const MAX_PEERS: usize = 1024;
 
     pub(crate) fn new(sync: PeerSync) -> Result<Self, Error> {
@@ -227,7 +271,7 @@ impl Scheduler {
             admitted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             penalized: Mutex::new(Vec::new()),
-            starved: Mutex::new(None),
+            steps: AtomicU64::new(0),
         })
     }
 
@@ -237,13 +281,32 @@ impl Scheduler {
     pub(crate) fn step(&self, engine: &Engine, stop: &AtomicBool) -> Result<(), Error> {
         let omitting = engine.omitting_peers()?;
         let now = unix_seconds()?;
+        let step = self.steps.fetch_add(1, Ordering::Relaxed);
+        self.observe_connections(step)?;
         let Some(peer) = self.next_peer(&omitting, now)? else {
             return Ok(());
         };
-        let peer = peer.as_ref();
+        let deadline = Instant::now() + Self::ROUND_TIME;
+        let denied = self.turn(&peer, engine, stop, deadline, now)?;
+        if denied && self.free_slot_for(&peer, step, stop, deadline, now)? {
+            self.turn(&peer, engine, stop, deadline, now)?;
+        }
+        Ok(())
+    }
+
+    /// One turn with `peer`. Returns whether our established-connection
+    /// limit refused its dial, the only refusal an eviction can cure.
+    fn turn(
+        &self,
+        peer: &Peer,
+        engine: &Engine,
+        stop: &AtomicBool,
+        deadline: Instant,
+        now: u64,
+    ) -> Result<bool, Error> {
         let mut round = Round {
             stop,
-            deadline: Instant::now() + Self::ROUND_TIME,
+            deadline,
             fetched: 0,
             requested_page: false,
             contacted: false,
@@ -251,21 +314,46 @@ impl Scheduler {
         };
         let outcome = self.advance(peer, engine, &mut round);
         if stop.load(Ordering::Acquire) {
-            return Ok(());
+            return Ok(false);
         }
         self.track_progress(peer, &outcome, &round, now)?;
-        let denied = matches!(&outcome, Ok(Turn::Retry(error)) if is_dial_denied(error));
+        let denied = matches!(
+            &outcome,
+            Ok(Turn::Retry(Error::DialDenied(DialLimit::Established)))
+        );
         let result = self.judge(peer, outcome, now)?;
         *peer.last_error.lock().map_err(|_| poisoned())? = RecordedError::from_result(&result);
-        if denied {
-            self.free_slot_for(peer)?;
+        Ok(denied)
+    }
+
+    /// Note at which step each inventory peer was first seen connected.
+    fn observe_connections(&self, step: u64) -> Result<(), Error> {
+        for peer in self.snapshot()? {
+            let mut since = peer.connected_since.lock().map_err(|_| poisoned())?;
+            *since = match (peer.source.connected(), *since) {
+                (true, Some(first)) => Some(first),
+                (true, None) => Some(step),
+                (false, _gone) => None,
+            };
         }
         Ok(())
     }
 
-    /// An admission or coverage resets the idle streak. `IDLE_TURNS` quiet
-    /// turns in a row that asked the peer and got nothing usable release its
-    /// slot for `IDLE_BACKOFF`: no blame, no book penalty, failures untouched.
+    /// Peers sync is currently skipping, for discovery not to redial them.
+    pub(crate) fn backed_off(&self, now: u64) -> Result<Vec<String>, Error> {
+        let mut skipped = Vec::new();
+        for peer in self.snapshot()? {
+            if peer.backoff_until(now)?.is_some() {
+                skipped.push(peer.id.clone());
+            }
+        }
+        Ok(skipped)
+    }
+
+    /// An admission, coverage or an already-held listed record is progress
+    /// and resets the idle streak. `IDLE_TURNS` quiet turns in a row that
+    /// asked the peer and got nothing usable release its slot for
+    /// `IDLE_BACKOFF`: no blame, no book penalty, failures untouched.
     fn track_progress(
         &self,
         peer: &Peer,
@@ -287,20 +375,29 @@ impl Scheduler {
         }
         peer.idle_turns.store(0, Ordering::Relaxed);
         peer.source.disconnect();
-        let until = now.checked_add(Self::IDLE_BACKOFF).unwrap_or(u64::MAX);
-        let mut backoff = peer.backoff.lock().map_err(|_| poisoned())?;
-        backoff.until = Some(backoff.until.map_or(until, |current| current.max(until)));
-        Ok(())
+        peer.hold_off(now, Self::IDLE_BACKOFF)
     }
 
-    /// Our outbound limit refused a dial to `starved`: disconnect the
-    /// connected inventory peer that progressed longest ago (never first),
-    /// and give `starved` the next turn. One eviction per step; the scheduler
-    /// runs one request at a time, so no other inventory peer is mid-request.
-    fn free_slot_for(&self, starved: &Peer) -> Result<(), Error> {
+    /// Our established-connection limit refused `starved`: evict the
+    /// connected inventory peer that progressed longest ago, but only one
+    /// without progress for `IDLE_BACKOFF` (or ever) that has stayed connected
+    /// for more than one step. The victim is held off for `IDLE_BACKOFF`, in
+    /// sync and in discovery, so nothing redials it into the freed slot.
+    /// Returns whether its connection closed in time for `starved` to retry
+    /// in this step. One eviction per step, and no second one for `starved`
+    /// before that retry; the scheduler runs one request at a time, so no
+    /// other inventory peer is mid-request.
+    fn free_slot_for(
+        &self,
+        starved: &Peer,
+        step: u64,
+        stop: &AtomicBool,
+        deadline: Instant,
+        now: u64,
+    ) -> Result<bool, Error> {
         let mut oldest: Option<(Arc<Peer>, Option<u64>)> = None;
         for peer in self.snapshot()? {
-            if peer.id == starved.id || !peer.source.connected() {
+            if peer.id == starved.id || !evictable(&peer, step, now)? {
                 continue;
             }
             let progress = peer.last_progress()?;
@@ -308,11 +405,12 @@ impl Scheduler {
                 oldest = Some((peer, progress));
             }
         }
-        if let Some((victim, _)) = oldest {
-            victim.source.disconnect();
-            *self.starved.lock().map_err(|_| poisoned())? = Some(starved.peer_id);
-        }
-        Ok(())
+        let Some((victim, _progress)) = oldest else {
+            return Ok(false);
+        };
+        victim.source.disconnect();
+        victim.hold_off(now, Self::IDLE_BACKOFF)?;
+        Ok(victim.wait_closed(stop, deadline))
     }
 
     /// A blamed turn disconnects the peer and backs it off; remote Busy turns
@@ -399,20 +497,8 @@ impl Scheduler {
         Ok(self.peers.lock().map_err(|_| poisoned())?.clone())
     }
 
-    /// A peer starved by the connection limit goes first; otherwise rotation.
     fn next_peer(&self, omitting: &[String], now: u64) -> Result<Option<Arc<Peer>>, Error> {
         let peers = self.snapshot()?;
-        let starved = self.starved.lock().map_err(|_| poisoned())?.take();
-        if let Some(peer_id) = starved {
-            for peer in &peers {
-                if peer.peer_id == peer_id
-                    && !omitting.contains(&peer.id)
-                    && peer.backoff_until(now)?.is_none()
-                {
-                    return Ok(Some(Arc::clone(peer)));
-                }
-            }
-        }
         let count = peers.len();
         for _ in 0..count {
             let peer = &peers[self.turn.fetch_add(1, Ordering::Relaxed) % count];
@@ -437,9 +523,9 @@ impl Scheduler {
                 Ok(Turn::Quiet)
             }
             Err(Pause::Error(Error::PeerBusy)) => Ok(Turn::Busy(Error::PeerBusy)),
-            Err(Pause::Error(retry @ (Error::Busy(_) | Error::Transport(_)))) => {
-                Ok(Turn::Retry(retry))
-            }
+            Err(Pause::Error(
+                retry @ (Error::Busy(_) | Error::Transport(_) | Error::DialDenied(_)),
+            )) => Ok(Turn::Retry(retry)),
             Err(Pause::Blame(error)) => {
                 *slot = None;
                 Ok(Turn::Blamed(error))
@@ -473,6 +559,8 @@ impl Scheduler {
                     let missing = &mut range.missing;
                     round.progressed |=
                         self.acquire(peer, engine, &entry, missing, round.deadline)?;
+                } else {
+                    round.progressed = true;
                 }
                 range.next += 1;
             } else if range.more {

@@ -29,4 +29,4 @@ mod scan;
 pub mod service;
 pub mod source;
 
-pub use error::Error;
+pub use error::{DialLimit, Error};

@@ -6,7 +6,7 @@ use crate::{
     model::OverlayStatus,
     peer_discovery::Discovery,
     peer_sync::{PeerSync, Scheduler},
-    recorded::record,
+    recorded::{record, unix_seconds},
 };
 use serde_json::Value;
 use std::sync::atomic::Ordering;
@@ -33,11 +33,22 @@ impl Service {
         if self.stop.load(Ordering::Acquire) {
             return;
         }
-        let result = discovery.step(&self.engine, &self.stop);
+        let result = self
+            .share_sync_backoff(discovery)
+            .and_then(|()| discovery.step(&self.engine, &self.stop));
         if self.stop.load(Ordering::Acquire) {
             return;
         }
         record(&self.discovery_error, &result);
+    }
+
+    /// Discovery must not redial a peer sync is holding off, or it would
+    /// refill the slot an eviction or idle release just freed.
+    fn share_sync_backoff(&self, discovery: &Discovery) -> Result<(), Error> {
+        let Some(scheduler) = &self.peer_sync else {
+            return Ok(());
+        };
+        discovery.hold_off(scheduler.backed_off(unix_seconds()?)?)
     }
 
     pub(super) fn sync_next_inventory(&self) {

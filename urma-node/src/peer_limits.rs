@@ -1,7 +1,7 @@
 //! Fixed connection admission limits for the public record transport.
 //! Compose this behaviour before request-response so denial precedes its setup.
 //! Only pending and established connection IDs are retained, never peer history.
-use crate::Error;
+use crate::DialLimit;
 use libp2p::{
     Multiaddr, PeerId,
     core::{ConnectedPoint, Endpoint, transport::PortUse},
@@ -23,27 +23,15 @@ const ESTABLISHED_TOTAL: usize = 16;
 
 /// Typed local admission refusal, recognisable by downcast instead of text.
 #[derive(Debug)]
-pub(crate) struct LimitDenied(&'static str);
+pub(crate) struct LimitDenied(pub(crate) DialLimit);
 
 impl fmt::Display for LimitDenied {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter.write_str(self.0)
+        write!(formatter, "peer {} reached", self.0)
     }
 }
 
 impl std::error::Error for LimitDenied {}
-
-const DIAL_DENIED: &str = "dial denied by local connection limit";
-
-/// A request or dial refused by our own outbound limit: transport, not the
-/// peer's fault, and a signal that a slot must be freed for it.
-pub(crate) fn dial_denied() -> Error {
-    Error::Transport(DIAL_DENIED.into())
-}
-
-pub(crate) fn is_dial_denied(error: &Error) -> bool {
-    matches!(error, Error::Transport(message) if message == DIAL_DENIED)
-}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Direction {
@@ -58,14 +46,14 @@ pub(crate) struct Limits {
     established: HashMap<ConnectionId, (PeerId, Direction)>,
 }
 
-fn denied(reason: &'static str) -> ConnectionDenied {
-    ConnectionDenied::new(LimitDenied(reason))
+fn denied(limit: DialLimit) -> ConnectionDenied {
+    ConnectionDenied::new(LimitDenied(limit))
 }
 
 fn reserve(pending: &mut HashSet<ConnectionId>, id: ConnectionId) -> Result<(), ConnectionDenied> {
     if !pending.contains(&id) {
         if pending.len() >= PENDING_PER_DIRECTION {
-            return Err(denied("peer pending connection limit reached"));
+            return Err(denied(DialLimit::Pending));
         }
         pending.insert(id);
     }
@@ -91,13 +79,13 @@ impl Limits {
         let mut same_direction = 0;
         for (_, (held_peer, held_direction)) in others {
             if *held_peer == peer {
-                return Err(denied("peer already has an established connection"));
+                return Err(denied(DialLimit::Duplicate));
             }
             total += 1;
             same_direction += usize::from(*held_direction == direction);
         }
         if total >= ESTABLISHED_TOTAL || same_direction >= ESTABLISHED_PER_DIRECTION {
-            return Err(denied("peer established connection limit reached"));
+            return Err(denied(DialLimit::Established));
         }
         // A later behaviour can still deny this connection. Count it only when
         // the Swarm confirms establishment, not while constructing handlers.
@@ -283,7 +271,7 @@ mod tests {
             Direction::Inbound => {
                 let error = if denied_elsewhere {
                     ListenError::Denied {
-                        cause: denied("another behaviour denied"),
+                        cause: denied(DialLimit::Pending),
                     }
                 } else {
                     ListenError::Aborted
@@ -299,7 +287,7 @@ mod tests {
             Direction::Outbound => {
                 let error = if denied_elsewhere {
                     DialError::Denied {
-                        cause: denied("another behaviour denied"),
+                        cause: denied(DialLimit::Pending),
                     }
                 } else {
                     DialError::Aborted

@@ -9,6 +9,8 @@
 #![cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod common;
+#[path = "common/inventory_node.rs"]
+mod inventory_node;
 #[allow(dead_code)]
 #[path = "common/inventory_peer.rs"]
 mod inventory_peer;
@@ -22,48 +24,32 @@ use bitcoin::{
     taproot::{LeafVersion, TapLeafHash},
     transaction::Version,
 };
-use common::{FIRST_HEIGHT, MemorySource, SignedPair, config, profile, witness_block};
+use common::{FIRST_HEIGHT, SignedPair, profile, witness_block};
+use inventory_node::{Client, Running, height, server, tip};
 use inventory_peer::{RawPeer, Rewrite};
-use libp2p::{PeerId, identity::Keypair};
+use libp2p::PeerId;
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
-    io::{self, Read, Write},
-    net::{SocketAddr, TcpStream},
+    io::Read,
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::{Arc, atomic::Ordering},
-    thread::{self, JoinHandle},
+    sync::atomic::Ordering,
+    thread,
     time::{Duration, Instant},
 };
 use urma_core::{envelope, format::PublicRecord, multipart::VerifiedRecord, topics::Topics};
 use urma_node::{
     engine::Engine,
-    model::{ArchiveConfig, Retention},
-    peer::PeerNetwork,
     peer_protocol::{INVENTORY_ENTRIES, INVENTORY_SPAN, Kind, Reply, VERSION},
-    peer_sync::{OverlayInfo, PeerSync},
     peerbook::PeerAddress,
-    service::Service,
 };
 
-const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const CASE_TIMEOUT: Duration = Duration::from_secs(150);
-const SYNC_TIMEOUT: Duration = Duration::from_secs(90);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 
 fn stage(root: &Path, text: &str) {
     fs::write(root.join("stage"), text).unwrap();
-}
-
-// Contract values may be a bare height or a chain point; compare heights.
-fn height(value: &Value) -> Option<u64> {
-    match value {
-        Value::Null => None,
-        Value::Number(number) => number.as_u64(),
-        Value::Object(map) => map.get("height").and_then(Value::as_u64),
-        other => panic!("unexpected height shape: {other}"),
-    }
 }
 
 // Follows pruning_policy.rs: a distinct valid public Wire post per index.
@@ -133,214 +119,6 @@ fn chain(pairs: &[SignedPair], blocks: usize, salt: u32) -> Vec<Block> {
         built.push(block);
     }
     built
-}
-
-fn tip(blocks: &[Block]) -> u64 {
-    FIRST_HEIGHT + u64::try_from(blocks.len()).unwrap() - 1
-}
-
-struct Server {
-    engine: Arc<Engine>,
-    chain: Arc<MemorySource>,
-    network: PeerNetwork,
-    address: PeerAddress,
-}
-
-// Node B: headers to the tip, then `scanned` full-block scans of its own.
-fn server(root: &Path, blocks: &[Block], scanned: usize) -> Server {
-    let directory = root.join("b");
-    fs::create_dir_all(&directory).unwrap();
-    let chain = Arc::new(MemorySource::new(blocks));
-    let config = config(&blocks[0], Retention::Unpruned);
-    let engine = Arc::new(Engine::open(&directory, config, Some(chain.clone())).unwrap());
-    engine.synchronize_headers().unwrap();
-    for _ in 0..scanned {
-        engine.scan_next().unwrap();
-    }
-    let key = Keypair::generate_ed25519();
-    let id = key.public().to_peer_id();
-    let listen = Some("/ip4/127.0.0.1/tcp/0".parse().unwrap());
-    let network = PeerNetwork::start(engine.clone(), key, listen, Vec::new()).unwrap();
-    let address = PeerAddress::new(id, network.listen_address().unwrap()).unwrap();
-    Server {
-        engine,
-        chain,
-        network,
-        address,
-    }
-}
-
-impl Server {
-    // B follows a new branch with its own verifier and scans to the tip.
-    fn follow(&self, blocks: &[Block]) {
-        self.chain.replace_branch(blocks);
-        self.engine.synchronize_headers().unwrap();
-        while self.engine.status().unwrap().scanned_blocks < u64::try_from(blocks.len()).unwrap() {
-            self.engine.scan_next().unwrap();
-        }
-    }
-}
-
-struct Client {
-    directory: PathBuf,
-    config: ArchiveConfig,
-}
-
-impl Client {
-    // Same chain and application start as B; headers only, never a scan.
-    fn new(root: &Path, blocks: &[Block]) -> Self {
-        let directory = root.join("a");
-        fs::create_dir_all(&directory).unwrap();
-        let client = Self {
-            directory,
-            config: config(&blocks[0], Retention::Unpruned),
-        };
-        client.select(blocks);
-        client
-    }
-
-    fn select(&self, blocks: &[Block]) {
-        let source = Arc::new(MemorySource::new(blocks));
-        let engine = Engine::open(&self.directory, self.config.clone(), Some(source)).unwrap();
-        let status = engine.synchronize_headers().unwrap();
-        assert_eq!(height(&json!(status.selected_tip)), Some(tip(blocks)));
-    }
-
-    fn offline(&self) -> Arc<Engine> {
-        Arc::new(Engine::open(&self.directory, self.config.clone(), None).unwrap())
-    }
-
-    fn scan_all(&self, blocks: &[Block]) -> Engine {
-        let source = Arc::new(MemorySource::new(blocks));
-        let engine = Engine::open(&self.directory, self.config.clone(), Some(source)).unwrap();
-        while engine.scan_next().unwrap().scanned_blocks < u64::try_from(blocks.len()).unwrap() {}
-        engine
-    }
-}
-
-fn http_status(address: SocketAddr, path: &str) -> io::Result<Value> {
-    let mut stream = TcpStream::connect_timeout(&address, Duration::from_secs(2))?;
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(2)))?;
-    let request = format!(
-        "GET {path} HTTP/1.1\r\nHost: loopback\r\nConnection: close\r\nAuthorization: Bearer {TOKEN}\r\n\r\n"
-    );
-    stream.write_all(request.as_bytes())?;
-    let mut raw = Vec::new();
-    stream.take(4 * 1024 * 1024).read_to_end(&mut raw)?;
-    let split = raw
-        .windows(4)
-        .position(|window| window == b"\r\n\r\n")
-        .ok_or_else(|| io::Error::other("no header end"))?;
-    if !raw.starts_with(b"HTTP/1.1 200") {
-        return Err(io::Error::other(String::from_utf8_lossy(&raw).into_owned()));
-    }
-    serde_json::from_slice(&raw[split + 4..]).map_err(io::Error::other)
-}
-
-// The client network outlives the Service: PeerSource handles do not keep it
-// alive, so it is dropped only after the Service has joined.
-struct Running {
-    address: SocketAddr,
-    handle: urma_node::service::ShutdownHandle,
-    worker: Option<JoinHandle<Result<(), urma_node::Error>>>,
-    network: Option<PeerNetwork>,
-}
-
-impl Running {
-    // A's Service with its own client network and the given inventory peers.
-    fn start(engine: Arc<Engine>, peers: Vec<PeerAddress>) -> Self {
-        let network = PeerNetwork::start(
-            engine.clone(),
-            Keypair::generate_ed25519(),
-            None,
-            Vec::new(),
-        )
-        .unwrap();
-        let peers = peers
-            .into_iter()
-            .map(|address| (address.peer_id().to_string(), network.source(address)))
-            .collect();
-        let info = OverlayInfo {
-            peer_id: network.peer_id().to_string(),
-            listen: None,
-            peer_book: 0,
-            connected: Arc::new(|| 0),
-        };
-        let service = Service::bind("127.0.0.1:0".parse().unwrap(), TOKEN.into(), engine)
-            .unwrap()
-            .with_peer_sync(PeerSync { peers, info })
-            .unwrap();
-        let address = service.address().unwrap();
-        let handle = service.shutdown_handle();
-        let worker = Some(thread::spawn(move || service.run(true)));
-        Self {
-            address,
-            handle,
-            worker,
-            network: Some(network),
-        }
-    }
-
-    fn status(&self) -> Value {
-        http_status(self.address, "/v1/status").unwrap()
-    }
-
-    // Poll until the predicate holds, keeping every observed status.
-    fn until(&self, ready: impl Fn(&Value) -> bool) -> Vec<Value> {
-        let deadline = Instant::now() + SYNC_TIMEOUT;
-        let mut seen = Vec::new();
-        loop {
-            let status = self.status();
-            let done = ready(&status);
-            seen.push(status);
-            if done {
-                return seen;
-            }
-            assert!(Instant::now() < deadline, "sync bound: {:?}", seen.last());
-            thread::sleep(Duration::from_millis(200));
-        }
-    }
-
-    fn stop(mut self) {
-        self.join().unwrap();
-    }
-
-    fn connected(&self) -> Vec<PeerId> {
-        self.network.as_ref().unwrap().connected_peer_ids()
-    }
-
-    // A step checks stop between requests; one in-flight peer call may still
-    // take its own 10 s bound before the worker returns.
-    fn join(&mut self) -> Result<(), String> {
-        self.handle.request();
-        let Some(worker) = self.worker.take() else {
-            return Ok(());
-        };
-        let deadline = Instant::now() + Duration::from_secs(15);
-        while !worker.is_finished() {
-            if Instant::now() >= deadline {
-                return Err("service join exceeded bound".into());
-            }
-            thread::sleep(Duration::from_millis(10));
-        }
-        let joined = match worker.join() {
-            Ok(Ok(())) => Ok(()),
-            other => Err(format!("service ended abnormally: {other:?}")),
-        };
-        if let Some(network) = self.network.take() {
-            network.shutdown().map_err(|error| error.to_string())?;
-        }
-        joined
-    }
-}
-
-impl Drop for Running {
-    fn drop(&mut self) {
-        if let Err(error) = self.join() {
-            eprintln!("{error}");
-        }
-    }
 }
 
 fn synced_through(status: &Value) -> Option<u64> {
@@ -450,8 +228,10 @@ fn peer_status<'a>(status: &'a Value, id: &PeerId) -> &'a Value {
 }
 
 /// Three proxies list every entry in an unselected block (a stale fork) ahead
-/// of one honest peer. Stale turns are never blamed, but three of them in a
-/// row release the stale peer's slot; the honest peer syncs within 60 s.
+/// of one honest peer and an honest mirror listing records already held.
+/// Stale turns are never blamed, but three of them in a row release the
+/// stale peer's slot; the honest peer syncs within 60 s, and the mirror's
+/// held-record listing counts as progress, so it is never released.
 fn stale_crowd(root: &Path) -> Value {
     let pairs = vectors();
     let blocks = chain(&pairs, 4, 1);
@@ -459,12 +239,13 @@ fn stale_crowd(root: &Path) -> Value {
     let stale: Vec<RawPeer> = (0..3)
         .map(|_| RawPeer::start(Some((b.address.clone(), Rewrite::Stale))))
         .collect();
+    let mirror = RawPeer::start(Some((b.address.clone(), Rewrite::Hide(String::new()))));
     let stale_ids: Vec<PeerId> = stale.iter().map(|p| p.address().peer_id()).collect();
-    let honest_id = b.address.peer_id();
+    let (honest_id, mirror_id) = (b.address.peer_id(), mirror.address().peer_id());
     let a = Client::new(root, &blocks);
     stage(root, "a stale crowd releases its slots to the honest peer");
     let mut peers: Vec<PeerAddress> = stale.iter().map(RawPeer::address).collect();
-    peers.push(b.address.clone());
+    peers.extend([b.address.clone(), mirror.address()]);
     let began = Instant::now();
     let running = Running::start(a.offline(), peers);
     let seen = running
@@ -483,11 +264,59 @@ fn stale_crowd(root: &Path) -> Value {
         assert!(entry["last_progress_at"].is_null(), "{entry}");
         assert!(entry["last_error"].is_null(), "stale turns blamed: {entry}");
     }
+    let kept = running.until(|s| peer_status(s, &mirror_id)["last_progress_at"].is_u64());
+    let entry = peer_status(kept.last().unwrap(), &mirror_id);
+    assert!(entry["backoff_until"].is_null(), "mirror released: {entry}");
+    assert!(entry["last_error"].is_null(), "{entry}");
     running.stop();
     for pair in &pairs {
         assert_record(&a.offline(), pair);
     }
     json!({"honest_synced":true,"stale_released":stale_ids.len(),"seconds":synced_in.as_secs()})
+}
+
+/// Ten honest proxies against eight outbound slots: the first eight sync and
+/// progressed within the last minute, so the two refused by the established
+/// limit evict nobody. For ten samples after both starved peers had their
+/// turn no peer is evicted or held off (every eviction holds its victim off)
+/// and the slots never overflow: no eviction ping-pong. A held peer may still
+/// leave through the 20 s idle timeout and a starved one take its slot; that
+/// is the transport freeing a slot, not churn caused by sync.
+fn starved(root: &Path) -> Value {
+    let pairs: Vec<SignedPair> = vectors().into_iter().take(1).collect();
+    let blocks = chain(&pairs, 1, 1);
+    let b = server(root, &blocks, 1);
+    let proxies: Vec<RawPeer> = (0..10)
+        .map(|_| RawPeer::start(Some((b.address.clone(), Rewrite::Hide(String::new())))))
+        .collect();
+    let ids: Vec<PeerId> = proxies.iter().map(|p| p.address().peer_id()).collect();
+    let a = Client::new(root, &blocks);
+    stage(
+        root,
+        "two peers starved by the connection limit evict nobody",
+    );
+    let running = Running::start(a.offline(), proxies.iter().map(RawPeer::address).collect());
+    running.until(|s| {
+        ids[8..].iter().all(|id| {
+            let error = peer_status(s, id)["last_error"]
+                .as_str()
+                .unwrap_or_default();
+            error.contains("established connection limit")
+        })
+    });
+    let held = running.connected();
+    assert_eq!(held.len(), 8, "{held:?}");
+    for _ in 0..10 {
+        thread::sleep(Duration::from_millis(300));
+        let status = running.status();
+        assert!(running.connected().len() <= 8, "{}", status["overlay"]);
+        for id in &ids {
+            let entry = peer_status(&status, id);
+            assert!(entry["backoff_until"].is_null(), "evicted: {entry}");
+        }
+    }
+    running.stop();
+    json!({"stable_samples":10,"held":held.len()})
 }
 
 fn rejecting(root: &Path) -> Value {
@@ -658,6 +487,7 @@ fn peer_inventory_host() {
         "omission" => omission(&root),
         "rejecting" => rejecting(&root),
         "stale" => stale_crowd(&root),
+        "starved" => starved(&root),
         "paging" => paging(&root),
         "reorg" => reorg(&root),
         "limits" => limits(&root),
@@ -766,6 +596,13 @@ fn a_stale_crowd_releases_its_slots_and_the_honest_peer_syncs() {
     let checks = run("stale");
     assert_eq!(checks["honest_synced"], true);
     assert_eq!(checks["stale_released"], 3);
+}
+
+#[test]
+fn peers_starved_by_the_connection_limit_do_not_evict_progressing_peers() {
+    let checks = run("starved");
+    assert_eq!(checks["stable_samples"], 10);
+    assert_eq!(checks["held"], 8);
 }
 
 #[test]

@@ -31,6 +31,7 @@ pub struct Discovery {
     round: AtomicU64,
     seed_error: Mutex<Option<RecordedError>>,
     gossip_error: Mutex<Option<RecordedError>>,
+    sync_backoff: Mutex<Vec<String>>,
 }
 
 /// Network operations left in this round; stop ends the round early.
@@ -77,7 +78,15 @@ impl Discovery {
             round: AtomicU64::new(0),
             seed_error: Mutex::new(None),
             gossip_error: Mutex::new(None),
+            sync_backoff: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Peers inventory sync is holding off (evicted, idle or blamed): neither
+    /// seed passes nor candidate dials reconnect them until they leave this set.
+    pub fn hold_off(&self, peers: Vec<String>) -> Result<(), Error> {
+        *self.sync_backoff.lock().map_err(|_| poisoned())? = peers;
+        Ok(())
     }
 
     fn lock(&self) -> Result<MutexGuard<'_, PeerBook>, Error> {
@@ -105,10 +114,18 @@ impl Discovery {
             left: Self::OPERATIONS_PER_ROUND,
             stop,
         };
+        let mut avoid = omitting.clone();
+        avoid.extend(
+            self.sync_backoff
+                .lock()
+                .map_err(|_| poisoned())?
+                .iter()
+                .cloned(),
+        );
         if self.seeds_due(round)? {
-            changed |= self.dial_seeds(&omitting, &mut budget, round == 0)?;
+            changed |= self.dial_seeds(&avoid, &mut budget, round == 0)?;
         }
-        changed |= self.dial_candidates(&omitting, &mut budget)?;
+        changed |= self.dial_candidates(&avoid, &mut budget)?;
         if round % Self::GOSSIP_EVERY == Self::GOSSIP_EVERY - 1 {
             changed |= self.ask_for_peers(&omitting, &mut budget)?;
         }
