@@ -106,16 +106,15 @@ struct Counters {
 }
 
 async fn serve(
-    key: Keypair,
+    (key, port): (Keypair, u16),
     offer: Offer,
     ready: mpsc::SyncSender<Multiaddr>,
     counters: Arc<Counters>,
     stop: Arc<AtomicBool>,
 ) {
     let mut swarm = swarm(key);
-    swarm
-        .listen_on("/ip4/127.0.0.1/tcp/0".parse().unwrap())
-        .unwrap();
+    let listen = format!("/ip4/127.0.0.1/tcp/{port}");
+    swarm.listen_on(listen.parse().unwrap()).unwrap();
     let mut tick = tokio::time::interval(Duration::from_millis(50));
     while !stop.load(Ordering::Acquire) {
         tokio::select! {
@@ -153,7 +152,12 @@ async fn serve(
 
 impl ServingPeer {
     pub fn start(offer: Offer) -> Self {
-        let key = Keypair::generate_ed25519();
+        Self::start_at(offer, Keypair::generate_ed25519(), 0)
+    }
+
+    /// Listen with a known identity on a chosen port (0 for ephemeral), so
+    /// the address can be configured before the peer comes up.
+    pub fn start_at(offer: Offer, key: Keypair, port: u16) -> Self {
         let id = key.public().to_peer_id();
         let (ready, listening) = mpsc::sync_channel(1);
         let counters = Arc::new(Counters::default());
@@ -164,7 +168,7 @@ impl ServingPeer {
                 .enable_all()
                 .build()
                 .unwrap();
-            runtime.block_on(serve(key, offer, ready, count, flag));
+            runtime.block_on(serve((key, port), offer, ready, count, flag));
         });
         let listen = listening
             .recv_timeout(START_TIMEOUT)

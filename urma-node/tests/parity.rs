@@ -58,6 +58,9 @@ const CROWD: usize = 8;
 /// Peers serving a package proven in an orphaned block, never blamed.
 const STALE_CROWD: usize = 8;
 const STALE_TIMEOUT: Duration = Duration::from_secs(120);
+/// Longest wait for every stale peer to hold a connection before the honest
+/// peer comes up anyway.
+const STALE_CROWD_WAIT: Duration = Duration::from_secs(30);
 
 /// Whether a serving peer is stopped once its verdict settles.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -286,7 +289,7 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn start(root: &Path, main: &Block, peers: &[&ServingPeer]) -> Self {
+    fn start(root: &Path, main: &Block, peers: &[PeerAddress]) -> Self {
         let data = root.join("daemon");
         drop(selected(&data, main));
         let config_path = root.join("config.json");
@@ -321,7 +324,7 @@ impl Daemon {
             .arg(root.join("peer.key"))
             .args(["--urma-listen", &format!("127.0.0.1:{port}")]);
         for peer in peers {
-            command.args(["--urma-peer", &peer.address().address().to_string()]);
+            command.args(["--urma-peer", &peer.address().to_string()]);
         }
         let child = command
             .stdin(Stdio::null())
@@ -553,7 +556,11 @@ fn parity(root: &Path, mode: Mode) -> Value {
         .map(|c| ServingPeer::start(c.offer.clone()))
         .collect();
     let crowd = crowd(&corpus, mode);
-    let everyone: Vec<&ServingPeer> = started.iter().chain(&crowd).collect();
+    let everyone: Vec<PeerAddress> = started
+        .iter()
+        .chain(&crowd)
+        .map(|peer| peer.address().clone())
+        .collect();
     let mut daemon = Daemon::start(root, &corpus.main, &everyone);
     let mut peers: Vec<Option<ServingPeer>> = started.into_iter().map(Some).collect();
     let (verdicts, status) = daemon.settle(&corpus, &mut peers, &expected, mode);
@@ -604,36 +611,63 @@ fn offer(corpus: &Corpus, name: &str) -> Offer {
 }
 
 /// One observation of the stale crowd and the honest peer, from both sides.
-fn sample(status: &Value, honest: &ServingPeer, crowd: &[ServingPeer]) -> Value {
-    let entry = peer_status(status, honest);
+fn sample(
+    status: &Value,
+    honest: (&PeerAddress, Option<&ServingPeer>),
+    crowd: &[ServingPeer],
+) -> Value {
+    let label = json!(honest.0.peer_id().to_string());
+    let peers = status["overlay"]["peers"].as_array().unwrap();
+    let entry = peers.iter().find(|entry| entry["label"] == label).unwrap();
     json!({
         "connected": status["overlay"]["connected"],
         "crowd_connected": crowd.iter().filter(|p| p.connections() > 0).count(),
         "crowd_served": crowd.iter().map(ServingPeer::served).sum::<usize>(),
-        "honest_connected": honest.connections() > 0,
-        "honest_requests": honest.requests(),
+        "honest_up": honest.1.is_some(),
+        "honest_connected": honest.1.is_some_and(|peer| peer.connections() > 0),
+        "honest_requests": honest.1.map_or(0, ServingPeer::requests),
         "honest_error": entry["last_error"],
         "honest_synced": entry["synced_through"],
     })
 }
 
 /// STALE_CROWD peers prove one package in the orphaned fork block at the
-/// selected height, listed before one honest peer. Records each distinct
-/// observation until the honest record syncs or the bound expires.
+/// selected height. The honest peer is configured from the start but only
+/// comes up once every stale peer holds a connection (or after a bound), the
+/// worst case for slots. Records each distinct observation until the honest
+/// record syncs or the bound expires.
 fn stale_crowd(root: &Path) -> Value {
     let corpus = corpus();
     let stale = offer(&corpus, "stale generation");
     let crowd: Vec<ServingPeer> = (0..STALE_CROWD)
         .map(|_| ServingPeer::start(stale.clone()))
         .collect();
-    let honest = ServingPeer::start(offer(&corpus, "valid"));
-    let everyone: Vec<&ServingPeer> = crowd.iter().chain([&honest]).collect();
+    let key = Keypair::generate_ed25519();
+    let port = TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let at = format!(
+        "/ip4/127.0.0.1/tcp/{port}/p2p/{}",
+        key.public().to_peer_id()
+    );
+    let address = PeerAddress::new(key.public().to_peer_id(), at.parse().unwrap()).unwrap();
+    let mut everyone: Vec<PeerAddress> = crowd.iter().map(|p| p.address().clone()).collect();
+    everyone.push(address.clone());
     let mut daemon = Daemon::start(root, &corpus.main, &everyone);
     let began = Instant::now();
     let (mut timeline, mut last) = (Vec::new(), Value::Null);
+    let (mut pending, mut honest) = (Some(key), None);
     let converged = loop {
+        let full = crowd.iter().all(|peer| peer.connections() > 0);
+        if full || began.elapsed() >= STALE_CROWD_WAIT {
+            if let Some(key) = pending.take() {
+                honest = Some(ServingPeer::start_at(offer(&corpus, "valid"), key, port));
+            }
+        }
         let (_, status) = daemon.get("/v1/status");
-        let state = sample(&status, &honest, &crowd);
+        let state = sample(&status, (&address, honest.as_ref()), &crowd);
         let synced = state["honest_synced"] == json!(FIRST_HEIGHT);
         if state != last {
             let at = began.elapsed().as_millis();
