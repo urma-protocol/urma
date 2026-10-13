@@ -95,12 +95,13 @@ fn raw_message(
             request, channel, ..
         } => {
             state.seen.lock().unwrap().push(request.clone());
-            if let (Some(peers), Kind::Peers { .. }) = (&state.gossip, request.kind) {
+            if let (Some(peers), Kind::Peers { limit }) = (&state.gossip, request.kind) {
+                let limit = usize::try_from(limit).unwrap();
                 let response = Response {
                     version: request.version,
                     chain_genesis: request.chain_genesis,
                     kind: request.kind,
-                    result: Reply::Peers(peers.clone()),
+                    result: Reply::Peers(peers.iter().take(limit).cloned().collect()),
                 };
                 let _ = swarm.behaviour_mut().send_response(channel, response);
             } else if let Some((upstream, _)) = &state.upstream {

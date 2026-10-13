@@ -44,7 +44,7 @@ const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789a
 const PUBLIC: [&str; 3] = ["11.0.0.2", "12.0.0.3", "13.0.0.4"];
 const CASE_TIMEOUT: Duration = Duration::from_secs(150);
 const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
-const BACKOFF_FIRST: u64 = 120;
+const BACKOFF_FIRST: u64 = 60;
 
 fn stage(root: &Path, text: &str) {
     fs::write(root.join("stage"), text).unwrap();
@@ -138,7 +138,7 @@ impl Node {
     }
 
     fn connected(&self) -> Vec<PeerId> {
-        self.network.connected_peers()
+        self.network.connected_peer_ids()
     }
 
     fn genesis(&self) -> BlockHash {
@@ -172,12 +172,11 @@ fn node(root: &Path, name: &str, ip: Option<&str>) -> Node {
     node_on(offline(root, name), ip)
 }
 
-/// Discovery over `book`, saved at `<root>/<name>/peers.json`; the same book
-/// answers this node's inbound Peers requests.
+/// Discovery over `book`, saved at `<root>/<name>/peers.json`. Each step
+/// hands the network its gossip snapshot from the same book.
 fn discover(root: &Path, name: &str, node: &Node, book: PeerBook) -> (Discovery, PathBuf) {
     let path = root.join(name).join("peers.json");
     let book = Arc::new(Mutex::new(book));
-    node.network.set_gossip(book.clone());
     (
         Discovery::new(node.network.clone(), book, path.clone()),
         path,
@@ -258,10 +257,15 @@ fn private(root: &Path) -> Value {
     let d = node(root, "d", Some(PUBLIC[2]));
     let a = node(root, "a", Some(PUBLIC[0]));
     let at = |text: &str| -> Multiaddr { text.parse().unwrap() };
-    let other = || Keypair::generate_ed25519().public().to_peer_id();
+    let other = || {
+        Keypair::generate_ed25519()
+            .public()
+            .to_peer_id()
+            .to_string()
+    };
     let listed = vec![
         GossipPeer {
-            peer_id: d.id,
+            peer_id: d.id.to_string(),
             addrs: vec![bare(&d.listening())],
             last_seen: now(),
         },
@@ -281,14 +285,14 @@ fn private(root: &Path) -> Value {
             addrs: [
                 "/ip6/::1/tcp/1",
                 "/ip6/fd00::1/tcp/1",
-                "/dns4/peer.example/tcp/1",
+                "/ip4/169.254.1.1/tcp/1",
             ]
             .map(at)
             .to_vec(),
             last_seen: now(),
         },
         GossipPeer {
-            peer_id: a.id,
+            peer_id: a.id.to_string(),
             addrs: vec![bare(&a.listening())],
             last_seen: now(),
         },
@@ -301,7 +305,11 @@ fn private(root: &Path) -> Value {
     let (discovery, path) = discover(root, "a", &a, book);
     rounds(&discovery, &a, Discovery::GOSSIP_EVERY + 1);
     let asked: Vec<Kind> = g.requests().iter().map(|request| request.kind).collect();
-    assert_eq!(asked, vec![Kind::Peers { limit: 32 }]);
+    // The dial's zero-limit chain probe, then one bounded gossip request.
+    assert_eq!(
+        asked,
+        vec![Kind::Peers { limit: 0 }, Kind::Peers { limit: 32 }]
+    );
     assert!(
         g.requests()
             .iter()
@@ -415,8 +423,8 @@ fn omitting(root: &Path) -> Value {
     let Reply::Peers(listed) = client.call(&to, VERSION, Kind::Peers { limit: 32 }) else {
         panic!("Peers refused");
     };
-    let ids: Vec<PeerId> = listed.iter().map(|peer| peer.peer_id).collect();
-    assert_eq!(ids, vec![honest.id]);
+    let ids: Vec<&str> = listed.iter().map(|peer| peer.peer_id.as_str()).collect();
+    assert_eq!(ids, vec![honest.id.to_string()]);
     json!({"gossiped":ids.len(),"liar_dialed":false})
 }
 

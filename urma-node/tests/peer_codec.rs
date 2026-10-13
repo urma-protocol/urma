@@ -20,8 +20,8 @@ use urma_node::{
     peer_codec::Codec,
     peer_protocol::{
         GossipPeer, INVENTORY_ENTRIES, INVENTORY_LIMIT, INVENTORY_SPAN, InventoryPage, Kind,
-        PARENT_LIMIT, PROTOCOL, Placement, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
-        VERSION,
+        PARENT_LIMIT, PEERS_LIMIT, PEERS_MAX, PROTOCOL, Placement, REQUEST_LIMIT, RESPONSE_LIMIT,
+        Reply, Request, Response, VERSION,
     },
 };
 
@@ -537,15 +537,22 @@ fn inventory_frames_have_their_own_smaller_bound_on_both_sides() {
     });
 }
 
-fn gossip_peers() -> Vec<GossipPeer> {
+fn gossip_peer() -> GossipPeer {
     let addrs: Vec<Multiaddr> = ["/ip4/8.8.8.8/tcp/4001", "/ip6/2a01:4f8:1::1/tcp/4001"]
         .map(|text| text.parse().unwrap())
         .to_vec();
-    vec![GossipPeer {
-        peer_id: Keypair::generate_ed25519().public().to_peer_id(),
+    GossipPeer {
+        peer_id: Keypair::generate_ed25519()
+            .public()
+            .to_peer_id()
+            .to_string(),
         addrs,
         last_seen: 1_800_000_000,
-    }]
+    }
+}
+
+fn gossip_peers() -> Vec<GossipPeer> {
+    vec![gossip_peer()]
 }
 
 // v4 adds address exchange: a Peers request carries only its limit, and the
@@ -573,7 +580,7 @@ fn v4_peers_request_and_reply_have_stable_shapes_and_round_trip() {
             .unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), value);
         let peers = gossip_peers();
-        let id = peers[0].peer_id.to_string();
+        let id = peers[0].peer_id.clone();
         for listed in [peers, Vec::new()] {
             let answer = response(Reply::Peers(listed));
             let expected = serde_json::to_vec(&answer).unwrap();
@@ -590,19 +597,43 @@ fn v4_peers_request_and_reply_have_stable_shapes_and_round_trip() {
                 .unwrap();
             assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
         }
-        let shaped = serde_json::to_value(response(Reply::Peers(gossip_peers()))).unwrap();
-        let entry = &shaped["result"]["package"][0];
-        assert_eq!(shaped["result"]["status"], "peers");
+        let mut listed = gossip_peers();
+        listed[0].peer_id = id.clone();
+        let shaped = serde_json::to_value(response(Reply::Peers(listed))).unwrap();
         assert_eq!(
-            entry["addrs"],
-            json!(["/ip4/8.8.8.8/tcp/4001", "/ip6/2a01:4f8:1::1/tcp/4001"])
+            shaped["result"],
+            json!({"status":"peers","package":[{"peer_id":id,
+                "addrs":["/ip4/8.8.8.8/tcp/4001","/ip6/2a01:4f8:1::1/tcp/4001"],
+                "last_seen":1_800_000_000}]})
         );
-        assert_eq!(entry["last_seen"], 1_800_000_000);
-        assert!(
-            entry["peer_id"]
-                .as_str()
-                .is_some_and(|text| text.len() == id.len())
-        );
+    });
+}
+
+// A full gossip reply fits PEERS_LIMIT; a larger Peers frame is refused by the
+// writer before I/O and by the reader, though far below RESPONSE_LIMIT.
+#[test]
+fn peers_frames_have_their_own_smaller_bound_on_both_sides() {
+    block_on(async {
+        let protocol = StreamProtocol::new(PROTOCOL);
+        let full: Vec<GossipPeer> = (0..PEERS_MAX).map(|_| gossip_peer()).collect();
+        let body = serde_json::to_vec(&response(Reply::Peers(full))).unwrap();
+        assert!(body.len() <= PEERS_LIMIT, "{}", body.len());
+        let oversized: Vec<GossipPeer> = (0..16 * PEERS_MAX).map(|_| gossip_peer()).collect();
+        let oversized = response(Reply::Peers(oversized));
+        let body = serde_json::to_vec(&oversized).unwrap();
+        assert!(body.len() > PEERS_LIMIT && body.len() < RESPONSE_LIMIT);
+        let mut wire = Stream::new(vec![]);
+        let error = Codec
+            .write_response(&protocol, &mut wire, oversized)
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidInput);
+        assert_eq!(wire.write_polls, 0);
+        let error = Codec
+            .read_response(&protocol, &mut Cursor::new(frame(&body)))
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::InvalidData);
     });
 }
 
@@ -631,8 +662,8 @@ fn malformed_peers_requests_and_replies_are_rejected() {
         let good = serde_json::to_value(response(Reply::Peers(gossip_peers()))).unwrap();
         let mut unknown = good.clone();
         unknown["result"]["package"][0]["extra"] = true.into();
-        let mut bad_id = good.clone();
-        bad_id["result"]["package"][0]["peer_id"] = "bad".into();
+        let mut numeric_id = good.clone();
+        numeric_id["result"]["package"][0]["peer_id"] = 7.into();
         let mut bad_addr = good.clone();
         bad_addr["result"]["package"][0]["addrs"] = json!(["not a multiaddr"]);
         let mut missing = good.clone();
@@ -640,7 +671,8 @@ fn malformed_peers_requests_and_replies_are_rejected() {
             .as_object_mut()
             .unwrap()
             .remove("last_seen");
-        for body in [unknown, bad_id, bad_addr, missing] {
+        // Base58 identity checks belong to the client's reply validation.
+        for body in [unknown, numeric_id, bad_addr, missing] {
             let body = serde_json::to_vec(&body).unwrap();
             let error = Codec
                 .read_response(&protocol, &mut Cursor::new(frame(&body)))
