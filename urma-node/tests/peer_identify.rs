@@ -15,6 +15,7 @@ use std::{path::Path, time::Duration};
 const HOST: &str = "peer_identify_host";
 /// Long enough for identify to exchange on a fresh loopback connection.
 const SETTLE: Duration = Duration::from_secs(3);
+const IDLE_CLOSE: Duration = Duration::from_secs(40);
 
 fn witnesses(root: &Path) -> Value {
     let a = node(root, "a", Some(PUBLIC[0]));
@@ -23,11 +24,16 @@ fn witnesses(root: &Path) -> Value {
     let own = bare(&a.listening());
     stage(root, "one outbound witness, reporting twice");
     assert_eq!(a.dial(b.listening()), b.id);
+    // One connection per peer: B reports again only on a fresh connection,
+    // after the idle one (20 s idle timeout) has closed.
+    let closed = until(IDLE_CLOSE, || !a.connected().contains(&b.id));
+    assert!(closed, "idle connection to B never closed");
     assert_eq!(a.dial(bare(&b.listening())), b.id);
     let confirmed = until(SETTLE, || !a.network.observed_addrs().is_empty());
     assert!(!confirmed, "{:?}", a.network.observed_addrs());
     stage(root, "an inbound connection is no witness");
-    assert_eq!(c.dial(a.listening()), a.id);
+    let d = node(root, "d", None);
+    assert_eq!(d.dial(a.listening()), a.id);
     let confirmed = until(SETTLE, || !a.network.observed_addrs().is_empty());
     assert!(!confirmed, "{:?}", a.network.observed_addrs());
     stage(root, "a second distinct outbound witness confirms");
