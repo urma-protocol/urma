@@ -947,7 +947,7 @@ impl ScriptedOperator {
                     }
                     OperatorMode::ChangedPage { prefix, changed } => {
                         if let Some(hex) = target.split("&cursor=").nth(1) {
-                            let cursor: urma_node::names::NamesCursor =
+                            let cursor: urma_node_client::names::NamesCursor =
                                 serde_json::from_slice(&hex::decode(hex).unwrap()).unwrap();
                             assert_eq!(Some(&cursor), prefix.next.as_ref());
                             (200, json!(changed))

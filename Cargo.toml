@@ -34,6 +34,7 @@ urma-core = { path = "urma-core" }
 urma-identity = { path = "urma-identity" }
 urma-io = { path = "urma-io" }
 urma-names = { path = "urma-names" }
+urma-node-client = { path = "urma-node-client" }
 urma-profiles = { path = "urma-profiles" }
 urma-runtime = { path = "urma-runtime" }
 urma-wallet = { path = "urma-wallet" }
