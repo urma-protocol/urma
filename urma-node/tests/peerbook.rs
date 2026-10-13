@@ -425,6 +425,36 @@ fn merge_skips_self_omitting_and_mismatched_identities() {
 }
 
 #[test]
+fn merge_stores_every_admissible_address_of_a_new_peer_in_one_entry() {
+    let mut book = empty();
+    let (id, local_id) = (peer(1), peer(99));
+    book.add(addr("/ip4/11.0.9.1/tcp/4001"), Origin::Seed)
+        .unwrap();
+    let addrs = [
+        "/ip4/11.0.1.1/tcp/4001",
+        "/ip4/11.0.2.1/tcp/4001",
+        "/ip4/11.0.2.1/tcp/4001",
+        "/ip4/11.0.9.1/tcp/4001",
+        "/ip4/10.0.0.1/tcp/4001",
+    ];
+    let claim = [GossipPeer {
+        peer_id: id,
+        addrs: addrs.iter().map(|text| addr(text)).collect(),
+        last_seen: 1,
+    }];
+    assert_eq!(book.merge(&claim, local_id, &[]), 2);
+    assert_eq!(
+        entry(&book, id).addrs,
+        vec![
+            addr("/ip4/11.0.1.1/tcp/4001"),
+            addr("/ip4/11.0.2.1/tcp/4001")
+        ]
+    );
+    assert_eq!(book.entries().len(), 2);
+    assert_eq!(book.merge(&claim, local_id, &[]), 0);
+}
+
+#[test]
 fn saved_book_round_trips_sorted_with_every_field() {
     let temp = tempfile::tempdir().unwrap();
     let path = temp.path().join("peers.json");

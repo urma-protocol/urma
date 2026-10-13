@@ -300,13 +300,23 @@ impl PeerBook {
             if id == local || omitting.contains(&id.to_string()) {
                 continue;
             }
+            let mut addresses = Vec::new();
             for address in peer.addrs.iter().take(Self::ADDRESSES) {
                 let Ok((address, named)) = split(address.clone()) else {
                     continue;
                 };
-                if named.is_some_and(|named| named != id) {
-                    continue;
+                if named.is_none_or(|named| named == id) && !addresses.contains(&address) {
+                    addresses.push(address);
                 }
+            }
+            if self.position_of_peer(id).is_none() {
+                changed += self.insert_learned_peer(id, addresses);
+                continue;
+            }
+            if learned != Learned::Identify {
+                continue;
+            }
+            for address in addresses {
                 let address = address.with(Protocol::P2p(id));
                 if let Ok(true) = self.insert(address, Origin::Gossip, learned) {
                     changed += 1;
@@ -314,6 +324,30 @@ impl PeerBook {
             }
         }
         changed
+    }
+
+    /// A peer new to the book enters once with every learned address that
+    /// passes the gossip filter and group cap and is not already in the book.
+    fn insert_learned_peer(&mut self, id: PeerId, addresses: Vec<Multiaddr>) -> usize {
+        let mut admitted = Vec::new();
+        for address in addresses {
+            if self.position_of_address(&address).is_none() && self.admit_gossip(&address).is_ok() {
+                admitted.push(address);
+            }
+        }
+        if admitted.is_empty() || self.make_room(Origin::Gossip).is_err() {
+            return 0;
+        }
+        let count = admitted.len();
+        self.entries.push(BookEntry {
+            peer_id: Some(id),
+            addrs: admitted,
+            origin: Origin::Gossip,
+            last_success: None,
+            failures: 0,
+            banned_until: None,
+        });
+        count
     }
 
     /// A dial through `address` reached `peer`. Resets failures and records

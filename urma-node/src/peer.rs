@@ -544,7 +544,7 @@ async fn run(
                 SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { connection_id, peer_id, info })) => {
                     // Inbound peers could steer our address; only dialed peers witness it.
                     if remotes.outbound(connection_id) {
-                        for confirmed in shared.observe(info.observed_addr, peer_id) { swarm.add_external_address(confirmed); }
+                        if let Some(confirmed) = shared.observe(info.observed_addr, peer_id) { swarm.add_external_address(confirmed); }
                     }
                     shared.identified(peer_id, info.listen_addrs);
                 }
