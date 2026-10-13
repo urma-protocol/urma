@@ -50,7 +50,12 @@ fn spending(inputs: u32, destination: ScriptBuf) -> Transaction {
     }
 }
 
-fn refused(account: &Account, tx: &Transaction, prevouts: &[TxOut], paths: &[KeyPath]) -> WalletError {
+fn refused(
+    account: &Account,
+    tx: &Transaction,
+    prevouts: &[TxOut],
+    paths: &[KeyPath],
+) -> WalletError {
     let request = SpendRequest {
         transaction: tx,
         prevouts,
@@ -173,7 +178,10 @@ fn each_witness_key_hashes_to_its_own_path_script() {
         .iter()
         .map(|path| prevout(account.script(*path).unwrap()))
         .collect();
-    let tx = spending(3, account.script(KeyPath::new(Branch::Internal, 10)).unwrap());
+    let tx = spending(
+        3,
+        account.script(KeyPath::new(Branch::Internal, 10)).unwrap(),
+    );
     let request = SpendRequest {
         transaction: &tx,
         prevouts: &prevouts,

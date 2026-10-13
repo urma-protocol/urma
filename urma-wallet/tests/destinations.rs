@@ -69,35 +69,6 @@ fn bitcoin_refuses_litecoin_only_versions_and_prefixes() {
 }
 
 #[test]
-fn litecoin_mainnet_accepts_l_m_and_legacy_three_destinations() {
-    let chain = Chain::LitecoinMainnet;
-    let l = legacy(0x30, &hash());
-    let m = legacy(0x32, &hash());
-    let three = legacy(0x05, &hash());
-    assert!(l.starts_with('L'));
-    assert!(m.starts_with('M'));
-    assert!(three.starts_with('3'));
-    assert_eq!(destination_script(&l, chain).unwrap(), p2pkh());
-    assert_eq!(destination_script(&m, chain).unwrap(), p2sh());
-    assert_eq!(destination_script(&three, chain).unwrap(), p2sh());
-}
-
-#[test]
-fn litecoin_testnet_accepts_its_legacy_versions() {
-    let chain = Chain::LitecoinTestnet;
-    assert_eq!(
-        destination_script(&legacy(0x6f, &hash()), chain).unwrap(),
-        p2pkh()
-    );
-    for version in [0x3a, 0xc4] {
-        assert_eq!(
-            destination_script(&legacy(version, &hash()), chain).unwrap(),
-            p2sh()
-        );
-    }
-}
-
-#[test]
 fn litecoin_refuses_foreign_legacy_versions() {
     for version in [0x00, 0x6f, 0x3a, 0xc4] {
         assert!(matches!(

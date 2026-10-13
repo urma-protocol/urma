@@ -53,7 +53,11 @@ fn account_reproduces_the_published_xpub_and_addresses_per_chain() {
         let account = Account::new(chain, root.account(chain).unwrap()).unwrap();
         assert_eq!(account.chain().address_hrp(), text(&row["hrp"]));
         assert_eq!(account.xpub().to_string(), text(&row["account_xpub"]));
-        let external = |index| account.address(KeyPath::new(Branch::External, index)).unwrap();
+        let external = |index| {
+            account
+                .address(KeyPath::new(Branch::External, index))
+                .unwrap()
+        };
         assert_eq!(external(0), text(&row["external_0"]));
         assert_eq!(external(1), text(&row["external_1"]));
         assert_eq!(

@@ -28,7 +28,11 @@ pub const PHRASE: &str =
 
 pub fn funder() -> Account {
     let root = Root::from_phrase(&IdentityPhrase::parse(PHRASE).unwrap()).unwrap();
-    Account::new(Chain::BitcoinRegtest, root.account(Chain::BitcoinRegtest).unwrap()).unwrap()
+    Account::new(
+        Chain::BitcoinRegtest,
+        root.account(Chain::BitcoinRegtest).unwrap(),
+    )
+    .unwrap()
 }
 
 pub struct Fixture {
@@ -38,7 +42,7 @@ pub struct Fixture {
     pub listed: Mutex<Vec<String>>,
 }
 
-fn scripthash(script: &ScriptBuf) -> String {
+pub fn scripthash(script: &ScriptBuf) -> String {
     let mut digest = bitcoin::hashes::sha256::Hash::hash(script.as_bytes()).to_byte_array();
     digest.reverse();
     hex::encode(digest)
@@ -67,7 +71,9 @@ impl Fixture {
         for (vout, output) in funding.output.iter().enumerate() {
             rows.entry(scripthash(&output.script_pubkey))
                 .or_default()
-                .push(json!({"tx_hash":txid,"tx_pos":vout,"height":1,"value":output.value.to_sat()}));
+                .push(
+                    json!({"tx_hash":txid,"tx_pos":vout,"height":1,"value":output.value.to_sat()}),
+                );
         }
         let header = Header {
             version: Version::TWO,
@@ -89,11 +95,6 @@ impl Fixture {
 
     pub fn outpoint(&self, vout: u32) -> OutPoint {
         OutPoint::new(self.funding.compute_txid(), vout)
-    }
-
-    pub fn listed(&self, account: &Account, path: KeyPath) -> bool {
-        let key = scripthash(&account.script(path).unwrap());
-        self.listed.lock().unwrap().contains(&key)
     }
 
     fn respond(&self, method: &str, params: &Value) -> Result<Value, Value> {

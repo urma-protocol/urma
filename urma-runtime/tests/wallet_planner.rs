@@ -74,7 +74,10 @@ fn atomic_plan_returns_to_the_designated_address_from_the_largest_coin() {
     let reveal = decode(&pair.reveal);
     assert_eq!(commit.input.len(), 1);
     assert_eq!(commit.input[0].previous_output, fixture.outpoint(1));
-    assert_eq!(witness_script(&commit, 0), account.script(coins[1].0).unwrap());
+    assert_eq!(
+        witness_script(&commit, 0),
+        account.script(coins[1].0).unwrap()
+    );
     assert_eq!(commit.output[1].script_pubkey, receive);
     assert_eq!(reveal.output[0].script_pubkey, receive);
     assert_eq!(
@@ -97,11 +100,24 @@ fn first_commit_spends_every_selected_coin_in_value_order() {
     let pair = &plan.records[0];
     assert_eq!(pair.funding.len(), 2);
     let commit = decode(&pair.commit);
-    let spent: Vec<OutPoint> = commit.input.iter().map(|input| input.previous_output).collect();
+    let spent: Vec<OutPoint> = commit
+        .input
+        .iter()
+        .map(|input| input.previous_output)
+        .collect();
     assert_eq!(spent, [fixture.outpoint(1), fixture.outpoint(0)]);
-    assert_eq!(witness_script(&commit, 0), account.script(coins[1].0).unwrap());
-    assert_eq!(witness_script(&commit, 1), account.script(coins[0].0).unwrap());
-    assert_eq!(commit.output[1].script_pubkey, account.receive_script().unwrap());
+    assert_eq!(
+        witness_script(&commit, 0),
+        account.script(coins[1].0).unwrap()
+    );
+    assert_eq!(
+        witness_script(&commit, 1),
+        account.script(coins[0].0).unwrap()
+    );
+    assert_eq!(
+        commit.output[1].script_pubkey,
+        account.receive_script().unwrap()
+    );
 }
 
 #[test]
