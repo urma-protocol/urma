@@ -11,6 +11,7 @@ use urma_identity::{
     vault::{UnlockCredential, UnlockedVault},
 };
 use urma_runtime::error::Error;
+use urma_wallet::account::Account;
 use urma_workflows::vault::{self, VaultChange};
 
 #[derive(Args)]
@@ -100,6 +101,12 @@ pub(crate) const WALLET_CHAINS: [Chain; 5] = [
     Chain::BitcoinRegtest,
     Chain::LitecoinTestnet,
 ];
+
+/// The chain's BIP84 account: funds publications and payments. The active
+/// identity only signs as author.
+pub(crate) fn funding_account(vault: &UnlockedVault, chain: Chain) -> Result<Account, Error> {
+    Ok(Account::new(chain, vault.keyring().root().account(chain)?)?)
+}
 
 pub(crate) fn account_path(chain: Chain) -> String {
     format!("m/{}'/{}'/0'", Root::PURPOSE, Root::coin_type(chain))

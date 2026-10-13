@@ -9,55 +9,81 @@ use bitcoin::{
 };
 use std::{num::NonZeroU64, os::unix::fs::PermissionsExt, path::Path, process::Command};
 use urma_chain::observation::Chain;
-use urma_identity::{identity::IdentitySigner, keyring::Keyring, phrase::IdentityPhrase};
+use urma_identity::{
+    identity::{IdentitySigner, IdentitySlot},
+    keyring::Keyring,
+    phrase::IdentityPhrase,
+};
+use urma_runtime::wallet::FundingInput;
 use urma_wallet::{
+    account::{Account, KeyPath},
     funding::Funding,
     wallet::{FeeBudget, FeeRate},
 };
 
+#[path = "../../urma-runtime/tests/support/publication_node.rs"]
+#[allow(dead_code)]
+mod publication_node;
+
+fn regtest_budget(maximum: u64) -> FeeBudget {
+    FeeBudget {
+        chain: Chain::BitcoinRegtest.genesis().unwrap(),
+        rate: FeeRate(NonZeroU64::new(1).unwrap()),
+        maximum_base_units: maximum,
+    }
+}
+
 #[test]
-fn publication_verifies_same_author_and_funder_and_fee_bound() {
-    let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
-    let keys = Keyring::recover(&phrase).unwrap();
-    let signer = keys.active().unwrap();
+fn publication_signs_author_with_identity_and_funds_from_the_account() {
+    let (_, v) = vectors();
+    let keys =
+        Keyring::recover(&IdentityPhrase::parse(v["phrase"].as_str().unwrap()).unwrap()).unwrap();
+    let author = keys.identity(IdentitySlot::new(0).unwrap()).unwrap();
+    let chain = Chain::BitcoinRegtest;
+    let funder = Account::new(chain, keys.root().account(chain).unwrap()).unwrap();
     let prev = Transaction {
         version: Version::TWO,
         lock_time: LockTime::ZERO,
         input: vec![],
         output: vec![TxOut {
             value: Amount::from_sat(100_000),
-            script_pubkey: urma_wallet::signing::script(&signer).unwrap(),
+            script_pubkey: funder.receive_script().unwrap(),
         }],
     };
-    let funding = Funding {
-        raw_transaction: hex::encode(serialize(&prev)),
-        vout: 0,
+    let inputs = [FundingInput {
+        funding: Funding {
+            raw_transaction: hex::encode(serialize(&prev)),
+            vout: 0,
+        },
+        path: KeyPath::RECEIVE,
+    }];
+    let record = urma_core::format::PublicRecord::Post("split roles".into())
+        .encode()
+        .unwrap();
+    let prepare = |budget| {
+        urma_runtime::publication::prepare_signed_bytes(&record, &author, &funder, &inputs, budget)
     };
-    let budget = FeeBudget {
-        chain: Chain::BitcoinRegtest.genesis().unwrap(),
-        rate: FeeRate(NonZeroU64::new(1).unwrap()),
-        maximum_base_units: 2_000,
-    };
-    let record = urma_core::format::PublicRecord::Post("shared identity".into());
-    let plan = urma_runtime::publication::prepare_signed_bytes(
-        &record.encode().unwrap(),
-        &signer,
-        funding.clone(),
-        Chain::BitcoinRegtest,
-        budget,
-    )
-    .unwrap()
-    .plan;
+    let plan = prepare(regtest_budget(2_000)).unwrap().plan;
     let commit: Transaction = deserialize(&hex::decode(&plan.commit).unwrap()).unwrap();
     let reveal: Transaction = deserialize(&hex::decode(&plan.reveal).unwrap()).unwrap();
     let proof = urma_core::envelope::verify_reveal(&reveal, &commit).unwrap();
+    assert_eq!(proof.author.to_string(), v["slots"][0]["author"]);
     assert_eq!(
-        proof.author,
-        signer.public_key().inner.x_only_public_key().0
+        reveal.output[0].script_pubkey,
+        funder.receive_script().unwrap()
     );
-    let witness = commit.input[0].witness.to_vec();
-    assert_eq!(witness[1], signer.public_key().to_bytes());
-    let sig = bitcoin::ecdsa::Signature::from_slice(&witness[0]).unwrap();
+    assert_eq!(
+        funder.receive_address().unwrap(),
+        v["chains"][3]["external_0"]
+    );
+    let funding_key = commit.input[0].witness.to_vec()[1].clone();
+    assert_ne!(
+        funding_key,
+        author.public_key().to_bytes(),
+        "roles share a key"
+    );
+    let funding_key = bitcoin::PublicKey::from_slice(&funding_key).unwrap();
+    let sig = bitcoin::ecdsa::Signature::from_slice(&commit.input[0].witness.to_vec()[0]).unwrap();
     let digest = SighashCache::new(&commit)
         .p2wpkh_signature_hash(
             0,
@@ -70,45 +96,15 @@ fn publication_verifies_same_author_and_funder_and_fee_bound() {
         .verify_ecdsa(
             &Message::from_digest(digest.to_byte_array()),
             &sig.signature,
-            &signer.public_key().inner,
+            &funding_key.inner,
         )
         .unwrap();
-    let other = keys
-        .identity(urma_identity::identity::IdentitySlot::new(1).unwrap())
-        .unwrap();
-    assert!(
-        urma_runtime::publication::prepare_signed_bytes(
-            &record.encode().unwrap(),
-            &other,
-            funding.clone(),
-            Chain::BitcoinRegtest,
-            budget
-        )
-        .is_err()
-    );
-    assert!(
-        urma_runtime::publication::prepare_signed_bytes(
-            &record.encode().unwrap(),
-            &signer,
-            funding.clone(),
-            Chain::LitecoinTestnet,
-            budget
-        )
-        .is_err()
-    );
-    assert!(
-        urma_runtime::publication::prepare_signed_bytes(
-            &record.encode().unwrap(),
-            &signer,
-            funding,
-            Chain::BitcoinRegtest,
-            FeeBudget {
-                maximum_base_units: 1,
-                ..budget
-            }
-        )
-        .is_err()
-    );
+    assert!(prepare(regtest_budget(1)).is_err(), "fee bound ignored");
+    let litecoin = FeeBudget {
+        chain: Chain::LitecoinTestnet.genesis().unwrap(),
+        ..regtest_budget(2_000)
+    };
+    assert!(prepare(litecoin).is_err(), "budget chain mismatch accepted");
 }
 
 fn cli(args: &[&str]) -> std::process::Output {
@@ -367,4 +363,79 @@ fn v2_vault_vector_unlocks_and_v1_vaults_and_wrong_lengths_are_refused() {
         );
         assert!(!output.exists(), "{label} wrote a vault");
     }
+}
+
+fn with_node(
+    mock: &publication_node::Mock,
+    vault: &Path,
+    password: &Path,
+    args: &[&str],
+) -> serde_json::Value {
+    let output = Command::new(env!("CARGO_BIN_EXE_urma"))
+        .env("URMA_OUTPUT", "json")
+        .env("URMA_VAULT", vault)
+        .env("URMA_UNLOCK_FILE", password)
+        .env("URMA_CONFIG", vault.with_extension("no-config"))
+        .env("URMA_NETWORK", "bitcoin-regtest")
+        .env("URMA_RPC_URL", &mock.config.rpc_url)
+        .env("URMA_NODE_AUTH_FILE", &mock.config.cookie_file)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn wallet_commands_scan_select_and_send_from_the_bip84_account() {
+    let temp = tempfile::tempdir().unwrap();
+    let mock = publication_node::Mock::new(temp.path());
+    let (phrase, pass, vault) = (
+        temp.path().join("phrase"),
+        temp.path().join("password"),
+        temp.path().join("wallet.vault"),
+    );
+    private_file(&phrase, &format!("{}about", "abandon ".repeat(11)));
+    private_file(&pass, "private wallet test password");
+    let mut recover = vec!["key", "recover", "--phrase-file", path(&phrase)];
+    recover.extend(["--password-file", path(&pass), "--output", path(&vault)]);
+    success(cli(&recover));
+    let funder = &mock.funder;
+    let status = with_node(&mock, &vault, &pass, &["wallet", "status"]);
+    assert_eq!(
+        status["designated_address"],
+        funder.receive_address().unwrap()
+    );
+    assert_eq!(status["spendable_confirmed_balance"], 100_000_000);
+    assert_eq!(status["outputs"], 1);
+    assert_eq!(status["outputs_verified"], true);
+    assert_eq!(status.get("utxos"), None);
+    let utxos = with_node(&mock, &vault, &pass, &["wallet", "utxos"]);
+    assert_eq!(utxos["utxos"][0]["path"], "m/84'/1'/0'/0/0");
+    assert_eq!(
+        utxos["utxos"][0]["address"],
+        funder.receive_address().unwrap()
+    );
+    let next = with_node(&mock, &vault, &pass, &["wallet", "address", "--next"]);
+    let second = KeyPath::new(urma_wallet::account::Branch::External, 1);
+    assert_eq!(next["path"], "m/84'/1'/0'/0/1");
+    assert_eq!(next["address"], funder.address(second).unwrap());
+    let destination = funder.address(second).unwrap();
+    let mut send = vec!["wallet", "send", "--to", destination.as_str()];
+    send.extend(["--amount", "50000", "--max-fee", "10000", "--yes"]);
+    let sent = with_node(&mock, &vault, &pass, &send);
+    assert_eq!(sent["status"], "broadcast");
+    assert_eq!(sent["inputs"].as_array().unwrap().len(), 1);
+    let change = KeyPath::new(urma_wallet::account::Branch::Internal, 0);
+    assert_eq!(sent["change"]["path"], "m/84'/1'/0'/1/0");
+    assert_eq!(sent["change"]["address"], funder.address(change).unwrap());
+    let submissions = mock.state.lock().unwrap().submissions.clone();
+    assert_eq!(submissions.len(), 1);
+    let raw: Transaction = deserialize(&hex::decode(&submissions[0]).unwrap()).unwrap();
+    assert_eq!(raw.compute_txid().to_string(), sent["txid"]);
+    assert_eq!(raw.output[1].script_pubkey, funder.script(change).unwrap());
 }

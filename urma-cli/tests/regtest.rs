@@ -654,10 +654,11 @@ fn public_kinds_are_accepted_and_verified_on_a_separate_node() -> Result<()> {
         let plan = urma_runtime::publication::prepare(
             &record,
             &author,
-            Funding {
+            vec![Funding {
                 raw_transaction: raw.into(),
                 vout,
-            },
+            }],
+            &parsed.script_pubkey(),
             Chain::BitcoinRegtest,
             1,
         )?;
@@ -742,10 +743,11 @@ fn multipart_root_only_recovery_after_publisher_shutdown() -> Result<()> {
         let plan = urma_runtime::publication::prepare_multipart(
             &record,
             &author,
-            Funding {
+            vec![Funding {
                 raw_transaction: raw.into(),
                 vout,
-            },
+            }],
+            &parsed.script_pubkey(),
             Chain::BitcoinRegtest,
             1,
         )?;
@@ -1369,7 +1371,11 @@ fn web_publications_are_fetched_into_the_store_pinned_and_named_on_regtest() -> 
         serde_json::from_slice(&std::fs::read(workdir.join("web-progress.json"))?)?;
     let mut heights = Vec::new();
     for transaction in journal["transactions"].as_array().context("transactions")? {
-        heights.push(transaction["presence"]["height"].as_u64().context("height")?);
+        heights.push(
+            transaction["presence"]["height"]
+                .as_u64()
+                .context("height")?,
+        );
     }
     let first = *heights.iter().min().context("min")?;
     let last = *heights.iter().max().context("max")?;
@@ -1798,7 +1804,13 @@ fn publish_site(owner: &Identity, workdir: &Path, tag: &str, body: &str) -> Resu
         ],
     )?)?;
     let root = planned["root_txid"].as_str().context("root")?.to_owned();
-    publish_until_complete(owner, workdir, "web", &plan, &format!("{tag}-progress.json"))?;
+    publish_until_complete(
+        owner,
+        workdir,
+        "web",
+        &plan,
+        &format!("{tag}-progress.json"),
+    )?;
     Ok(root)
 }
 
@@ -1838,7 +1850,13 @@ fn administered_registry_approves_updates_renews_suspends_restores_and_expires_o
     let encode = |signer: &Signer, args: &[&str]| -> Result<()> {
         let mut full = vec!["names", "encode"];
         full.extend_from_slice(args);
-        successful(names_cli(workdir, node, &signer.vault, &signer.pass, &full)?)?;
+        successful(names_cli(
+            workdir,
+            node,
+            &signer.vault,
+            &signer.pass,
+            &full,
+        )?)?;
         Ok(())
     };
     let publish = |signer: &Signer, record: &str, tag: &str| -> Result<(String, u64)> {
@@ -1966,7 +1984,10 @@ fn administered_registry_approves_updates_renews_suspends_restores_and_expires_o
         pending.len() == 1
             && pending[0]["txid"] == request
             && pending[0]["record"]["kind"] == "Request"
-            && pending[0]["record"]["approvals"].as_array().context("approvals")?.is_empty(),
+            && pending[0]["record"]["approvals"]
+                .as_array()
+                .context("approvals")?
+                .is_empty(),
         "pending before approvals: {pending:?}"
     );
     ensure!(resolve()? == "Unbound", "request alone must not bind");
@@ -2009,7 +2030,10 @@ fn administered_registry_approves_updates_renews_suspends_restores_and_expires_o
         verdict_of(&report, &outsider)? == json!({"Invalid": "NotApprover"}),
         "{report}"
     );
-    ensure!(resolve()? == "Unbound", "repeated and foreign approvals must not bind");
+    ensure!(
+        resolve()? == "Unbound",
+        "repeated and foreign approvals must not bind"
+    );
     let second = approve(&two, &request, "request.record", "approve-two")?;
     let report = scan()?;
     ensure!(verdict_of(&report, &second)? == "Applied", "{report}");
@@ -2022,7 +2046,10 @@ fn administered_registry_approves_updates_renews_suspends_restores_and_expires_o
             && bound["Bound"]["expiry"] == second_height + 60,
         "activation at the threshold: {bound}"
     );
-    ensure!(open_pending()?.is_empty(), "completed request still pending");
+    ensure!(
+        open_pending()?.is_empty(),
+        "completed request still pending"
+    );
     let late = approve(&three, &request, "request.record", "approve-three-late")?;
     let report = scan()?;
     ensure!(
@@ -2115,7 +2142,15 @@ fn administered_registry_approves_updates_renews_suspends_restores_and_expires_o
         let output = format!("{tag}.record");
         encode(
             signer,
-            &[op, "--registry", &genesis, "--name", "atelier", "--output", &output],
+            &[
+                op,
+                "--registry",
+                &genesis,
+                "--name",
+                "atelier",
+                "--output",
+                &output,
+            ],
         )?;
         Ok(publish(signer, &output, tag)?.0)
     };
@@ -2162,10 +2197,16 @@ fn administered_registry_approves_updates_renews_suspends_restores_and_expires_o
         verdict_of(&report, &renew_suspended)? == "Applied",
         "{report}"
     );
-    ensure!(resolve()? == "Suspended", "renewal must not lift a suspension");
+    ensure!(
+        resolve()? == "Suspended",
+        "renewal must not lift a suspension"
+    );
     name_op(&one, "restore", "restore-one")?;
     scan()?;
-    ensure!(resolve()? == "Suspended", "one restore vote of two must not restore");
+    ensure!(
+        resolve()? == "Suspended",
+        "one restore vote of two must not restore"
+    );
     let restore_again = name_op(&one, "restore", "restore-one-again")?;
     let report = scan()?;
     ensure!(
@@ -2185,8 +2226,14 @@ fn administered_registry_approves_updates_renews_suspends_restores_and_expires_o
     ensure!(tip < expiry, "term already over before the expiry check");
     node.call("generatetoaddress", &[json!(expiry - tip), mining.clone()])?;
     let report = scan()?;
-    ensure!(report["height"] == expiry, "scan to the expiry block: {report}");
-    ensure!(resolve()? == "Unbound", "name must be unbound at its expiry height");
+    ensure!(
+        report["height"] == expiry,
+        "scan to the expiry block: {report}"
+    );
+    ensure!(
+        resolve()? == "Unbound",
+        "name must be unbound at its expiry height"
+    );
     encode(
         &three,
         &[

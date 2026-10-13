@@ -100,6 +100,7 @@ fn signed_and_recovered_progress_counts_real_work_without_changing_bytes() {
         DiskPlan::prepare_multipart(
             &mock.node(),
             &mock.signer,
+            &mock.funder,
             &mut payload.as_slice(),
             payload.len() as u64,
             *b"RUNTIME0",
@@ -285,6 +286,7 @@ fn clone_many_files_reuses_validation_and_retains_verifiable_proofs() {
     let plan = DiskPlan::prepare_multipart(
         &node,
         &mock.signer,
+        &mock.funder,
         &mut payload,
         length,
         urma_git::descriptor::Descriptor::PROFILE,

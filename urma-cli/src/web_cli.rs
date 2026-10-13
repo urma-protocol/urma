@@ -1,7 +1,7 @@
 use crate::{
     approve_publication,
     config::{self, StoreChoice},
-    key_cli::VaultAccess,
+    key_cli::{VaultAccess, funding_account},
     node_cli::{NodeArgs, chain_name},
     print_report, progress,
 };
@@ -274,10 +274,12 @@ fn plan(args: PlanArgs) -> Result<Value, Error> {
     let node = args.node.connect()?;
     let vault = args.access.open()?;
     let signer = vault.keyring().active()?;
+    let funder = funding_account(&vault, node.chain())?;
     let mut reader = payload.as_slice();
     let plan = DiskPlan::prepare_multipart(
         &node,
         &signer,
+        &funder,
         &mut reader,
         u64::try_from(payload.len())?,
         Package::PROFILE,

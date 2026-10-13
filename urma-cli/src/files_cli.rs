@@ -1,6 +1,10 @@
 use crate::common_cli::publish_plan;
 use crate::print_report;
-use crate::{config, key_cli::VaultAccess, node_cli::NodeArgs};
+use crate::{
+    config,
+    key_cli::{VaultAccess, funding_account},
+    node_cli::NodeArgs,
+};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
 use std::path::PathBuf;
@@ -186,9 +190,11 @@ pub(crate) fn plan(args: PlanArgs, schema: &str) -> Result<Value, Error> {
     let vault = args.identity.open()?;
     let signer = vault.keyring().active()?;
     let node = args.node.connect()?;
+    let funder = funding_account(&vault, node.chain())?;
     let plan = urma_runtime::plan::prepare_private_records(
         &node,
         &signer,
+        &funder,
         &records,
         urma_runtime::plan::PlanLimits {
             fee_rate: args.fee_rate,

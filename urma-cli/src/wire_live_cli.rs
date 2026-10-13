@@ -1,5 +1,8 @@
 use crate::common_cli::publish_plan;
-use crate::{key_cli::VaultAccess, node_cli::NodeArgs};
+use crate::{
+    key_cli::{VaultAccess, funding_account},
+    node_cli::NodeArgs,
+};
 use bitcoin::{Block, BlockHash, Transaction, Txid, XOnlyPublicKey};
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -70,10 +73,12 @@ pub(crate) fn plan(args: PlanArgs) -> Result<Value, Error> {
     let node = args.node.connect()?;
     let vault = args.access.open()?;
     let signer = vault.keyring().active()?;
+    let funder = funding_account(&vault, node.chain())?;
     let record = PublicRecord::Post(args.text);
     let plan = urma_runtime::plan::prepare_atomic(
         &node,
         &signer,
+        &funder,
         &record,
         PlanLimits {
             fee_rate: args.fee_rate,

@@ -54,6 +54,7 @@ fn persist_retries_after_bounded_poll_and_independent_watch_observes_completion(
     workflows::prepare(
         &mock.node(),
         &mock.signer,
+        &mock.funder,
         &repo,
         &plan_path,
         &Limits::default(),

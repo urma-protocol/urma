@@ -1,8 +1,8 @@
 use crate::{detail, is_terminal, progress, stage};
 use urma_chain::observation::Chain;
-use urma_identity::identity::IdentitySigner;
 use urma_runtime::error::{Context, Error};
 use urma_runtime::{node::Node, quote::Quote};
+use urma_wallet::account::Account;
 
 pub(crate) fn currency(chain: Chain) -> &'static str {
     match chain {
@@ -112,31 +112,25 @@ fn report_balance(unit: &str, balance: u64, count: usize) {
 
 pub(crate) fn check(
     node: &Node,
-    signer: &impl IdentitySigner,
+    funder: &Account,
     quote: &Quote,
     ceiling: u64,
 ) -> Result<(), Error> {
     let unit = currency(node.chain());
-    let address = urma_wallet::address::receive_address(signer, node.chain())?;
-    report_address(node.chain().label(), &address);
-    let outputs = stage("Checking confirmed spendable funds...", || {
-        node.available_utxos(signer)
+    report_address(node.chain().label(), &funder.receive_address()?);
+    let view = stage("Checking confirmed spendable funds...", || {
+        node.wallet(funder)
     })?;
     let mut balance = 0u64;
-    let mut largest = 0u64;
-    for output in &outputs {
+    for coin in &view.coins {
         balance = balance
-            .checked_add(output.value)
+            .checked_add(coin.value)
             .context("balance overflow")?;
-        largest = largest.max(output.value);
     }
-    report_balance(unit, balance, outputs.len());
+    report_balance(unit, balance, view.coins.len());
     detail(
         2,
-        format!(
-            "Largest available payment: {} {unit}. Unconfirmed, immature and spent outputs are excluded.",
-            amount(largest)
-        ),
+        "Account-wide BIP84 balance (gap 20). Unconfirmed, immature and spent outputs are excluded.".into(),
     );
     if balance < quote.funding {
         if is_terminal() {
@@ -154,19 +148,10 @@ pub(crate) fn check(
             ));
         }
     }
-    if largest < quote.funding {
-        if balance >= quote.funding {
-            progress("Your total balance is sufficient, but it is split across payments this version cannot combine.".into());
-        }
-        progress(format!(
-            "This version needs one confirmed payment of at least {} {unit} to the address above. Adding only the shortfall as a separate payment may not suffice.",
-            amount(quote.funding)
-        ));
-    }
     if ceiling < quote.maximum_fee {
         return Err(Error::Capacity("estimated fee exceeds --max-fee; raise the limit or use git publish for an automatically calculated quote. Nothing was broadcast".into()));
     }
-    if largest < quote.funding {
+    if balance < quote.funding {
         return Err(Error::Missing("funding is not ready; the amounts and receiving address are shown above. Nothing was broadcast".into()));
     }
     if is_terminal() {

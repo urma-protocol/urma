@@ -443,7 +443,14 @@ fn offline_public_preparation_and_cli_never_imply_broadcast_or_inclusion() -> Re
         Chain::LitecoinTestnet,
     ] {
         let record = PublicRecord::Post("public text".into());
-        let plan = urma_runtime::publication::prepare(&record, &author, source.clone(), chain, 1)?;
+        let plan = urma_runtime::publication::prepare(
+            &record,
+            &author,
+            vec![source.clone()],
+            &funding.output[0].script_pubkey,
+            chain,
+            1,
+        )?;
         assert_eq!(plan.version, 0);
         let proof = urma_profiles::wire::verify_bytes(
             &hex::decode(plan.commit)?,

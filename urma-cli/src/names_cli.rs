@@ -1,6 +1,6 @@
 use crate::{
     config::{self, IndexChoice},
-    key_cli::VaultAccess,
+    key_cli::{VaultAccess, funding_account},
     names_approval::{self, ApproveArgs, RequestArgs, ReviewArgs},
     names_flow::{self, Publication, names_error, names_record},
     node_cli::{NodeArgs, chain_name},
@@ -89,7 +89,10 @@ pub(crate) struct ScanArgs {
         help = "Height of the block that includes the genesis reveal; read from the node when omitted"
     )]
     genesis_height: Option<u64>,
-    #[arg(long, help = "Names index file; defaults to the registry's local index")]
+    #[arg(
+        long,
+        help = "Names index file; defaults to the registry's local index"
+    )]
     index: Option<PathBuf>,
     #[arg(long, default_value_t = 1000)]
     max_blocks: u64,
@@ -186,7 +189,10 @@ pub(crate) struct PublishArgs {
     yes: bool,
     #[arg(long, default_value = "names-progress.json")]
     journal: PathBuf,
-    #[arg(long, help = "Names index for the reveal window; defaults to the registry's")]
+    #[arg(
+        long,
+        help = "Names index for the reveal window; defaults to the registry's"
+    )]
     index: Option<PathBuf>,
     #[arg(
         long,
@@ -497,8 +503,9 @@ pub(crate) fn plan_record(
     let payload = names_record(&bytes)?;
     let vault = access.open()?;
     let signer = vault.keyring().active()?;
-    let plan =
-        urma_runtime::plan::prepare_atomic(node, &signer, &PublicRecord::decode(&bytes)?, limits)?;
+    let funder = funding_account(&vault, node.chain())?;
+    let record = PublicRecord::decode(&bytes)?;
+    let plan = urma_runtime::plan::prepare_atomic(node, &signer, &funder, &record, limits)?;
     plan.save_new(output)?;
     Ok(json!({
         "status": "prepared",

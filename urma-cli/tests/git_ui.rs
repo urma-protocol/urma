@@ -59,6 +59,7 @@ fn fixture(directory: &Path, mock: &Mock) -> DiskPlan {
     workflows::prepare(
         &mock.node(),
         &mock.signer,
+        &mock.funder,
         &repo,
         &directory,
         &Limits::default(),

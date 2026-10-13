@@ -97,6 +97,7 @@ fn prepare_then_review_never_trips_over_its_own_lock_while_processes_spawn() {
         workflows::prepare(
             &mock.node(),
             &mock.signer,
+            &mock.funder,
             &repo,
             &plan,
             &Limits {

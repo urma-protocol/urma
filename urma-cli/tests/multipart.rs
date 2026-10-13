@@ -349,10 +349,11 @@ fn signed(
     let plan = urma_runtime::publication::prepare_multipart(
         &record,
         &key(author)?,
-        Funding {
+        vec![Funding {
             raw_transaction: hex::encode(serialize(&funding)),
             vout: 0,
-        },
+        }],
+        &funding.output[0].script_pubkey,
         Chain::BitcoinRegtest,
         1,
     )?;

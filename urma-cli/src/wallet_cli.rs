@@ -1,17 +1,20 @@
 use crate::{
     approve_publication,
-    key_cli::{VaultAccess, account_path},
+    key_cli::{VaultAccess, account_path, funding_account},
     node_cli::{NodeArgs, chain_name},
 };
 use clap::Subcommand;
 use serde_json::{Value, json};
 use std::num::NonZeroU64;
-use urma_identity::root::Branch;
 use urma_runtime::{
-    error::Error,
+    error::{Context, Error},
     transfer::{self, TransferRequest},
+    wallet::WalletView,
 };
-use urma_wallet::wallet::{FeeBudget, FeeRate};
+use urma_wallet::{
+    account::{Account, Branch, KeyPath},
+    wallet::{FeeBudget, FeeRate},
+};
 
 fn send(
     access: &VaultAccess,
@@ -21,50 +24,124 @@ fn send(
     yes: bool,
 ) -> Result<Value, Error> {
     let vault = access.open()?;
-    let signer = vault.keyring().active()?;
+    let account = funding_account(&vault, node.chain()?)?;
     let runtime = node.connect()?;
-    let prepared = transfer::prepare(&runtime, &signer, &request)?;
+    let prepared = transfer::prepare(&runtime, &account, &request)?;
     let txid = prepared.transaction.compute_txid();
+    let inputs: Vec<String> = prepared
+        .transaction
+        .input
+        .iter()
+        .map(|input| input.previous_output.to_string())
+        .collect();
     approve_publication(
-        &format!("Send {} base units to {to}", request.amount),
+        &format!(
+            "Send {} base units to {to}, spending {} input(s): {}",
+            request.amount,
+            inputs.len(),
+            inputs.join(", ")
+        ),
         &txid.to_string(),
         prepared.fee,
         yes,
     )?;
     let sent = transfer::submit(&runtime, &prepared)?;
+    let change = match &prepared.change {
+        Some(change) => json!({"value":change.value,
+            "path":format!("{}/1/{}", account_path(account.chain()), change.path.index),
+            "address":account.address(change.path)?}),
+        None => Value::Null,
+    };
     Ok(json!({
         "status": "broadcast",
         "txid": sent.to_string(),
         "to": to,
         "amount": request.amount,
         "fee": prepared.fee,
-        "change": prepared.change,
-        "chain": node.chain()?,
+        "inputs": inputs,
+        "change": change,
+        "chain": chain_name(account.chain())?,
     }))
+}
+
+fn balance(view: &WalletView) -> Result<u64, Error> {
+    view.coins.iter().try_fold(0u64, |total, coin| {
+        total.checked_add(coin.value).context("balance overflow")
+    })
+}
+
+fn status(account: &Account, node: &NodeArgs, utxos: bool) -> Result<Value, Error> {
+    let runtime = node.connect()?;
+    let view = runtime.wallet(account)?;
+    let verification = match view.verified {
+        true => "each output checked live against the source",
+        false => "reported unspents only; the set exceeds the per-output verification bound",
+    };
+    let mut report = json!({"chain":chain_name(account.chain())?,
+        "path":account_path(account.chain()),"designated_address":account.receive_address()?,
+        "spendable_confirmed_balance":balance(&view)?,"outputs":view.coins.len(),
+        "next_change_index":view.next_change,"reported_outputs":view.reported,
+        "outputs_verified":view.verified,"verification":verification,
+        "discovery":"BIP84 external and internal chains, gap limit 20",
+        "chain_evidence":runtime.inclusion_evidence(),"providers":runtime.provider_labels(),
+        "network_verified":true,"broadcast":false});
+    if utxos {
+        let mut rows = Vec::new();
+        for coin in &view.coins {
+            rows.push(
+                json!({"outpoint":coin.outpoint.to_string(),"value":coin.value,
+                "height":coin.height,"path":format!("{}/{}/{}", account_path(account.chain()),
+                    coin.path.branch.index(), coin.path.index),
+                "address":account.address(coin.path)?}),
+            );
+        }
+        report["utxos"] = Value::Array(rows);
+    }
+    Ok(report)
+}
+
+/// Next external index after the highest one still holding a confirmed coin.
+/// Spent history is not visible to the wallet scan, so a spent-out address can
+/// be offered again; 0/0 stays the designated address and is never "next".
+fn next_receive(account: &Account, node: &NodeArgs) -> Result<Value, Error> {
+    let view = node.connect()?.wallet(account)?;
+    let index = view
+        .coins
+        .iter()
+        .filter(|coin| coin.path.branch == Branch::External)
+        .fold(1, |next, coin| next.max(coin.path.index + 1));
+    let path = KeyPath::new(Branch::External, index);
+    Ok(json!({"chain":chain_name(account.chain())?,
+        "path":format!("{}/0/{index}", account_path(account.chain())),
+        "address":account.address(path)?,"designated_address":account.receive_address()?,
+        "basis":"first external index above every address holding a confirmed unspent coin",
+        "network_verified":true,"balance_checked":true}))
 }
 
 #[derive(Subcommand)]
 pub(crate) enum WalletCommand {
-    #[command(about = "Show your receiving address and confirmed spendable balance")]
+    #[command(about = "Show the account's designated address and confirmed spendable balance")]
     Status {
         #[command(flatten)]
         access: VaultAccess,
         #[command(flatten)]
         node: NodeArgs,
     },
-    #[command(about = "List confirmed spendable outputs for your active identity")]
+    #[command(about = "List the account's confirmed spendable outputs")]
     Utxos {
         #[command(flatten)]
         access: VaultAccess,
         #[command(flatten)]
         node: NodeArgs,
     },
-    #[command(about = "Show your designated receiving address (offline)")]
+    #[command(about = "Show your designated receiving address (offline), or --next unused")]
     Address {
         #[command(flatten)]
         access: VaultAccess,
         #[command(flatten)]
         node: NodeArgs,
+        #[arg(long, help = "Discover the next unused external address (network)")]
+        next: bool,
     },
     #[command(about = "Export the account xpub and output descriptors (offline, no secrets)")]
     Export {
@@ -73,7 +150,7 @@ pub(crate) enum WalletCommand {
         #[command(flatten)]
         node: NodeArgs,
     },
-    #[command(about = "Send funds from your active identity to an address")]
+    #[command(about = "Send funds from the account to an address")]
     Send {
         #[command(flatten)]
         access: VaultAccess,
@@ -103,50 +180,53 @@ pub(crate) enum WalletCommand {
     },
 }
 
+fn export(access: VaultAccess, node: NodeArgs) -> Result<Value, Error> {
+    let vault = access.open()?;
+    let chain = node.chain()?;
+    let root = vault.keyring().root();
+    let [external, internal] = root.descriptors(chain)?;
+    Ok(
+        json!({"chain":chain_name(chain)?,"path":account_path(chain),
+        "fingerprint":root.fingerprint().to_string(),
+        "account_xpub":root.account_xpub(chain)?.to_string(),
+        "descriptors":{"external":external,"internal":internal},"secrets":false}),
+    )
+}
+
+fn quote(node: NodeArgs, vbytes: u64, rate: NonZeroU64, max_fee: u64) -> Result<Value, Error> {
+    let genesis = node.chain()?.genesis()?;
+    let budget = FeeBudget {
+        chain: genesis,
+        rate: FeeRate(rate),
+        maximum_base_units: max_fee,
+    };
+    let fee = budget.quote(vbytes)?;
+    Ok(json!({"fee_base_units":fee,"genesis":genesis.0.to_string(),
+        "estimate_only":true,"broadcast":false}))
+}
+
 pub(crate) fn run(command: WalletCommand) -> Result<Value, Error> {
     match command {
-        WalletCommand::Address { access, node } => {
-            let vault = access.open()?;
-            let chain = node.chain()?;
-            let root = vault.keyring().root();
-            Ok(
-                json!({"chain":chain_name(chain)?,"path":format!("{}/0/0", account_path(chain)),
-                "designated_address":root.address(chain, Branch::External, 0)?,
-                "balance_checked":false}),
-            )
+        WalletCommand::Address { access, node, next } => {
+            let account = funding_account(&access.open()?, node.chain()?)?;
+            if next {
+                return next_receive(&account, &node);
+            }
+            Ok(json!({"chain":chain_name(account.chain())?,
+                "path":format!("{}/0/0", account_path(account.chain())),
+                "designated_address":account.receive_address()?,"balance_checked":false}))
         }
-        WalletCommand::Export { access, node } => {
-            let vault = access.open()?;
-            let chain = node.chain()?;
-            let root = vault.keyring().root();
-            let [external, internal] = root.descriptors(chain)?;
-            Ok(
-                json!({"chain":chain_name(chain)?,"path":account_path(chain),
-                "fingerprint":root.fingerprint().to_string(),
-                "account_xpub":root.account_xpub(chain)?.to_string(),
-                "descriptors":{"external":external,"internal":internal},"secrets":false}),
-            )
-        }
-        WalletCommand::Status { access, node } | WalletCommand::Utxos { access, node } => {
-            let vault = access.open()?;
-            let signer = vault.keyring().active()?;
-            let runtime = node.connect()?;
-            let spendable = runtime.spendable(&signer)?;
-            let balance = spendable.outputs.iter().try_fold(0u64, |total, coin| {
-                total
-                    .checked_add(coin.value)
-                    .ok_or_else(|| Error::Capacity("balance overflow".into()))
-            })?;
-            let verification = match spendable.verified {
-                true => "each output checked live against the source",
-                false => {
-                    "reported unspents only; the set exceeds the per-output verification bound"
-                }
-            };
-            Ok(
-                json!({"author":signer.author().0.to_string(), "chain":node.chain()?, "receive_address":urma_wallet::address::receive_address(&signer, node.chain()?)?, "utxos":spendable.outputs, "spendable_confirmed_balance":balance, "reported_outputs":spendable.reported, "outputs_verified":spendable.verified, "verification":verification, "chain_evidence":runtime.inclusion_evidence(), "providers":runtime.provider_labels(), "network_verified":true, "broadcast":false}),
-            )
-        }
+        WalletCommand::Export { access, node } => export(access, node),
+        WalletCommand::Status { access, node } => status(
+            &funding_account(&access.open()?, node.chain()?)?,
+            &node,
+            false,
+        ),
+        WalletCommand::Utxos { access, node } => status(
+            &funding_account(&access.open()?, node.chain()?)?,
+            &node,
+            true,
+        ),
         WalletCommand::Send {
             access,
             node,
@@ -172,17 +252,6 @@ pub(crate) fn run(command: WalletCommand) -> Result<Value, Error> {
             vbytes,
             rate,
             max_fee,
-        } => {
-            let genesis = node.chain()?.genesis()?.0;
-            let budget = FeeBudget {
-                chain: node.chain()?.genesis()?,
-                rate: FeeRate(rate),
-                maximum_base_units: max_fee,
-            };
-            let fee = budget.quote(vbytes)?;
-            Ok(
-                json!({"fee_base_units":fee,"genesis":genesis.to_string(),"estimate_only":true,"broadcast":false}),
-            )
-        }
+        } => quote(node, vbytes, rate, max_fee),
     }
 }

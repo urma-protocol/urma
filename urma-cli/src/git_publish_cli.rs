@@ -1,13 +1,15 @@
 use crate::funding_cli::{amount, currency};
 use crate::{
     approve_publication, config, detail, funding_cli, git_follow_cli, is_terminal,
-    key_cli::VaultAccess, node_cli::NodeArgs, progress, stage,
+    key_cli::{VaultAccess, funding_account},
+    node_cli::NodeArgs,
+    progress, stage,
 };
 use clap::Args;
 use serde_json::Value;
 use std::path::PathBuf;
 use urma_git::{plans::GitPlan, review, workflows};
-use urma_runtime::error::{Error, ensure};
+use urma_runtime::error::{Context, Error, ensure};
 use urma_runtime::{node::Node, plan::PlanLimits, quote};
 
 #[derive(Args)]
@@ -114,7 +116,8 @@ fn prepare(
     let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;
     let length = directory.join("object.bin").metadata()?.len();
-    let quote = quote::multipart(length, &signer, args.fee_rate, args.node.chain()?)?;
+    let funder = funding_account(&vault, args.node.chain()?)?;
+    let quote = quote::multipart(length, &signer, &funder, args.fee_rate)?;
     report_snapshot(directory, &snapshot, &quote);
     let ceiling =
         config::publication_fee_ceiling(config::FeeCeiling(args.max_fee), quote.maximum_fee);
@@ -134,11 +137,12 @@ fn prepare(
     let node = stage("Connecting to the selected network...", || {
         args.node.connect()
     })?;
-    funding_cli::check(&node, &signer, &quote, ceiling)?;
+    funding_cli::check(&node, &funder, &quote, ceiling)?;
     let report = stage("Signing and verifying the publication plan...", || {
         workflows::prepare_snapshot(
             &node,
             &signer,
+            &funder,
             directory,
             &limits,
             PlanLimits {
@@ -165,7 +169,12 @@ fn describe(
         "plan network differs; select the matching network before approving"
     );
     let unit = currency(node.chain());
-    let funding = publication.record(0)?.funding.prevout()?.1.value.to_sat();
+    let mut funding = 0u64;
+    for input in &publication.record(0)?.funding {
+        funding = funding
+            .checked_add(input.prevout()?.1.value.to_sat())
+            .context("funding overflow")?;
+    }
     if is_terminal() {
         progress(format!(
             "{} {}",

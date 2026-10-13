@@ -70,7 +70,10 @@ pub(crate) struct Pending {
     registry: Txid,
     #[arg(long, help = "Reveal TXID of the pending request or update")]
     request: Txid,
-    #[arg(long, help = "Names index file; defaults to the registry's local index")]
+    #[arg(
+        long,
+        help = "Names index file; defaults to the registry's local index"
+    )]
     index: Option<PathBuf>,
     #[arg(long, help = "Verified store; defaults to the browser's store")]
     store: Option<PathBuf>,
@@ -123,12 +126,7 @@ fn limits(fees: &Fees) -> PlanLimits {
     }
 }
 
-fn publish_record(
-    node: &Node,
-    directory: &Path,
-    label: &str,
-    fees: &Fees,
-) -> Result<Value, Error> {
+fn publish_record(node: &Node, directory: &Path, label: &str, fees: &Fees) -> Result<Value, Error> {
     names_flow::follow(
         node,
         Publication {
@@ -172,7 +170,11 @@ pub(crate) fn request(args: RequestArgs) -> Result<Value, Error> {
         &args.output.join("plan.json"),
         limits(&args.fees),
     )?)?;
-    let label = format!("Request {name} -> {} (site by {})", args.target, root.author());
+    let label = format!(
+        "Request {name} -> {} (site by {})",
+        args.target,
+        root.author()
+    );
     publish_record(&node, &args.output, &label, &args.fees)
 }
 
@@ -195,9 +197,17 @@ fn synced_index(node: &Node, pending: &Pending) -> Result<NamesIndex, Error> {
     load_index(&network, &path)
 }
 
-fn verify_request(node: &Node, registry: Txid, txid: Txid, record: &PendingRecord) -> Result<(), Error> {
+fn verify_request(
+    node: &Node,
+    registry: Txid,
+    txid: Txid,
+    record: &PendingRecord,
+) -> Result<(), Error> {
     let reveal = node.transaction(txid)?;
-    let spent = reveal.input.first().context("request reveal without input")?;
+    let spent = reveal
+        .input
+        .first()
+        .context("request reveal without input")?;
     let commit = node.transaction(spent.previous_output.txid)?;
     let parsed = envelope::verify_reveal(&reveal, &commit)?;
     ensure!(
@@ -215,7 +225,13 @@ fn verify_request(node: &Node, registry: Txid, txid: Txid, record: &PendingRecor
     Ok(())
 }
 
-fn export_site(node: &Node, store: &Path, target: Txid, output: &Path, max_bytes: usize) -> Result<Value, Error> {
+fn export_site(
+    node: &Node,
+    store: &Path,
+    target: Txid,
+    output: &Path,
+    max_bytes: usize,
+) -> Result<Value, Error> {
     let summary = store_publication(node, target, store, max_bytes)?;
     let opened = Store::open(store).map_err(web_error)?;
     let verified = opened
@@ -271,7 +287,10 @@ fn reviewed(node: &Node, pending: &Pending, output: &Path) -> Result<Reviewed, E
         "review": site,
         "broadcast": false,
     });
-    urma_io::write_new(&output.join("review.json"), &serde_json::to_vec_pretty(&summary)?)?;
+    urma_io::write_new(
+        &output.join("review.json"),
+        &serde_json::to_vec_pretty(&summary)?,
+    )?;
     Ok(Reviewed {
         record: record.clone(),
         summary,

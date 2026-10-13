@@ -54,6 +54,7 @@ fn clone_logs_timestamps_stages_and_configured_levels_without_verbosity_or_walle
     let plan = DiskPlan::prepare_multipart(
         &mock.node(),
         &mock.signer,
+        &mock.funder,
         &mut payload,
         length,
         Descriptor::PROFILE,

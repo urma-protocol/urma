@@ -1,6 +1,8 @@
 use crate::{
     approve_publication, config, detail, funding_cli, git_follow_cli, git_publish_cli, is_terminal,
-    key_cli::VaultAccess, node_cli::NodeArgs, object_archive, progress, stage,
+    key_cli::{VaultAccess, funding_account},
+    node_cli::NodeArgs,
+    object_archive, progress, stage,
 };
 use clap::{Args, Subcommand};
 use serde_json::{Value, json};
@@ -167,21 +169,23 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
     let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;
     let mut limits = args.resources.load()?;
+    let funder = funding_account(&vault, node.chain())?;
     limits.scan_secrets = args.scan_secrets;
     stage("Preparing and validating the Git snapshot...", || {
         urma_git::workspace::snapshot(&args.repo, &args.output, &limits, &name)
     })
     .map_err(boundary)?;
     let length = args.output.join("object.bin").metadata()?.len();
-    let quote = urma_runtime::quote::multipart(length, &signer, args.fee_rate, args.node.chain()?)?;
+    let quote = urma_runtime::quote::multipart(length, &signer, &funder, args.fee_rate)?;
     let ceiling =
         config::publication_fee_ceiling(config::FeeCeiling(args.max_fee), quote.maximum_fee);
     funding_cli::preview(node.chain(), &quote, ceiling);
-    funding_cli::check(&node, &signer, &quote, ceiling)?;
+    funding_cli::check(&node, &funder, &quote, ceiling)?;
     let report = stage("Signing and verifying the publication plan...", || {
         workflows::prepare_snapshot(
             &node,
             &signer,
+            &funder,
             &args.output,
             &limits,
             PlanLimits {

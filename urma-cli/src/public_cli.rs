@@ -1,4 +1,4 @@
-use crate::key_cli::VaultAccess;
+use crate::key_cli::{VaultAccess, funding_account};
 use crate::wire_live_cli;
 use bitcoin::{Txid, consensus::deserialize};
 use clap::{Subcommand, ValueEnum};
@@ -9,7 +9,11 @@ use urma_chain::observation::Chain;
 use urma_core::format::{PublicRecord, Urma};
 use urma_runtime::error::{Context, Error, bail, ensure};
 use urma_runtime::storage;
-use urma_wallet::wallet::{FeeBudget, FeeRate};
+use urma_runtime::wallet::FundingInput;
+use urma_wallet::{
+    account::KeyPath,
+    wallet::{FeeBudget, FeeRate},
+};
 
 #[derive(Clone, Copy, ValueEnum)]
 pub enum PublicKind {
@@ -85,7 +89,10 @@ pub(crate) enum PublicTools {
         access: VaultAccess,
         #[arg(long)]
         max_fee: u64,
-        #[arg(long)]
+        #[arg(
+            long,
+            help = "Funding JSON for one output paying the account's designated address 0/0"
+        )]
         funding: PathBuf,
         #[arg(long, value_enum)]
         chain: PublicChain,
@@ -188,6 +195,11 @@ fn tools(command: PublicTools) -> Result<Value, Error> {
             let signer = vault.keyring().active()?;
             let funding = serde_json::from_slice(&storage::read_bounded(&funding, 1_000_000)?)?;
             let chain: Chain = chain.into();
+            let funder = funding_account(&vault, chain)?;
+            let inputs = [FundingInput {
+                funding,
+                path: KeyPath::RECEIVE,
+            }];
             let budget = FeeBudget {
                 chain: chain.genesis()?,
                 rate: FeeRate(NonZeroU64::new(fee_rate).context("fee rate must be positive")?),
@@ -196,8 +208,8 @@ fn tools(command: PublicTools) -> Result<Value, Error> {
             let plan = urma_runtime::publication::prepare_signed_bytes(
                 &record.encode()?,
                 &signer,
-                funding,
-                chain,
+                &funder,
+                &inputs,
                 budget,
             )?
             .plan;

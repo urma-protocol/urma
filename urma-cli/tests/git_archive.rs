@@ -400,10 +400,11 @@ fn signed(record: MultipartRecord) -> Signed {
     let plan = prepare_multipart(
         &record,
         &key,
-        Funding {
+        vec![Funding {
             raw_transaction: hex::encode(serialize(&funding)),
             vout: 0,
-        },
+        }],
+        &funding.output[0].script_pubkey,
         Chain::BitcoinRegtest,
         1,
     )
