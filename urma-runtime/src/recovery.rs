@@ -9,7 +9,7 @@ use crate::{
     },
 };
 use bitcoin::{Transaction, Txid, consensus::serialize};
-use std::{collections::BTreeMap, fs::File, io::Write, path::Path};
+use std::{collections::BTreeMap, io::Write, path::Path};
 use urma_core::error::Error as ProtocolError;
 
 #[derive(Clone, Copy)]
@@ -54,7 +54,7 @@ fn retain_transaction(directory: &Path, path: &Path, bytes: &[u8]) -> Result<(),
         }
         Err(error) => return Err(Error::Io(error.error)),
     }
-    File::open(tx_directory)?.sync_all()?;
+    urma_io::sync_directory(&tx_directory)?;
     Ok(())
 }
 

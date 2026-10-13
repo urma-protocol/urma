@@ -223,6 +223,7 @@ fn fallback(child: fn(&Graph) -> Txid) {
     .unwrap();
     let mut bytes = Vec::new();
     object.read_to_end(&mut bytes).unwrap();
+    drop(object); // Windows removes delete-on-close scratch files at the last close.
     assert_eq!(bytes, b"x");
     assert_eq!(origins(&queries, child), ["primary", "backup"]);
     assert_eq!(

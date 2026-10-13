@@ -85,20 +85,19 @@ pub(crate) fn guard(plan: &DiskPlan, journal: &Path) -> Result<(), Error> {
 
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn observe(node: &Node, journal: &Path, report: &PublishReport) -> Result<(), Error> {
-    use std::os::unix::fs::OpenOptionsExt;
     let path = journal.with_extension("observations.jsonl");
-    let mut file = OpenOptions::new()
-        .create(true)
-        .append(true)
-        .mode(0o600)
-        .open(&path)?;
+    let mut options = OpenOptions::new();
+    options.create(true).append(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options.open(&path)?;
     let mut bytes = serde_json::to_vec(
         &serde_json::json!({"source": node.inclusion_evidence(), "chain": node.chain(), "report": report}),
     )?;
     bytes.push(b'\n');
     file.write_all(&bytes)?;
     file.sync_all()?;
-    File::open(urma_io::output_parent(&path))?.sync_all()?;
+    urma_io::sync_directory(urma_io::output_parent(&path))?;
     Ok(())
 }
 

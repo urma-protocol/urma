@@ -1,5 +1,7 @@
 use crate::config;
 use crate::error::{Context, Error, ensure};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::native_fs;
 use crate::storage;
 use crate::transaction::decode;
 use crate::{
@@ -242,7 +244,6 @@ pub(crate) fn advance(node: &Node, raw: &str, report: &mut PublishReport) -> Res
 
 #[cfg(not(target_arch = "wasm32"))]
 pub fn ensure_journal_distinct(plan_path: &Path, journal_path: &Path) -> Result<(), Error> {
-    use std::os::unix::fs::MetadataExt;
     let plan = std::fs::canonicalize(plan_path)?;
     if journal_path.try_exists()? {
         let journal = std::fs::canonicalize(journal_path)?;
@@ -250,10 +251,8 @@ pub fn ensure_journal_distinct(plan_path: &Path, journal_path: &Path) -> Result<
             plan != journal,
             "journal must differ from immutable plan input"
         );
-        let input = std::fs::metadata(&plan)?;
-        let output = std::fs::metadata(&journal)?;
         ensure!(
-            input.dev() != output.dev() || input.ino() != output.ino(),
+            native_fs::file_identity(&plan)? != native_fs::file_identity(&journal)?,
             "journal must not be a hard link to immutable plan input"
         );
     } else {

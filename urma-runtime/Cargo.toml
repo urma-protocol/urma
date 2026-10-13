@@ -1,6 +1,6 @@
 [package]
 name = "urma-runtime"
-version = "0.3.1"
+version = "0.3.2"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -12,7 +12,7 @@ include = ["Cargo.toml", "src/**/*.rs", "README.md", "LICENSE"]
 description = "URMA publication planning, network transports and recovery"
 
 [dependencies]
-urma-io = { version = "0.3.0", path = "../urma-io" }
+urma-io = { version = "0.3.1", path = "../urma-io" }
 minreq = { version = "2.14", features = ["https-rustls"] }
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 ring = "0.17"
@@ -31,6 +31,9 @@ urma-identity = { version = "0.3.0", path = "../urma-identity" }
 urma-wallet = { version = "0.3.0", path = "../urma-wallet" }
 rand = "0.8"
 zeroize = "1"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Storage_FileSystem"] }
 
 [dev-dependencies]
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }

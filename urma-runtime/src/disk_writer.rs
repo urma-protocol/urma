@@ -1,10 +1,8 @@
 use crate::error::{Context, Error, ensure};
-use crate::storage;
 use crate::{disk_plan::DiskPlan, planner::Planner};
+use crate::storage;
 use bitcoin::{Txid, hashes::Hash};
 use sha2::{Digest, Sha256};
-#[cfg(not(target_arch = "wasm32"))]
-use std::fs::OpenOptions;
 use std::{
     fs::File,
     io::{Read, Seek, Write},
@@ -14,6 +12,8 @@ use urma_core::multipart::{
     ChildReference, DataPart, Geometry, LeafManifest, MultipartRecord, RootManifest,
 };
 use urma_identity::identity::IdentitySigner;
+#[cfg(not(target_arch = "wasm32"))]
+use urma_io::Access;
 
 pub(crate) struct DiskWriter<'a, A> {
     directory: &'a Path,
@@ -29,18 +29,9 @@ pub(crate) struct DiskWriter<'a, A> {
 impl<'a, A: IdentitySigner> DiskWriter<'a, A> {
     #[cfg(not(target_arch = "wasm32"))]
     pub(crate) fn new(directory: &'a Path, planner: Planner<'a, A>) -> Result<Self, Error> {
-        use std::os::unix::fs::OpenOptionsExt;
         urma_io::create_private_directory(directory)?;
-        let records = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(directory.join("records.bin"))?;
-        let index = OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .mode(0o600)
-            .open(directory.join("index.bin"))?;
+        let records = urma_io::create_file(&directory.join("records.bin"), Access::Private)?;
+        let index = urma_io::create_file(&directory.join("index.bin"), Access::Private)?;
         Ok(Self {
             directory,
             planner,
@@ -173,7 +164,7 @@ impl<'a, A: IdentitySigner> DiskWriter<'a, A> {
             &self.directory.join("plan.json"),
             &serde_json::to_vec_pretty(&plan)?,
         )?;
-        File::open(self.directory)?.sync_all()?;
+        urma_io::sync_directory(self.directory)?;
         plan.validate()?;
         Ok(plan)
     }
