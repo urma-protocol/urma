@@ -49,11 +49,22 @@ impl Service {
         }
         let result = self
             .refresh_sync_peers(scheduler)
-            .and_then(|()| scheduler.step(&self.engine, &self.stop));
+            .and_then(|()| scheduler.step(&self.engine, &self.stop))
+            .and_then(|()| self.penalize_in_book(scheduler));
         if self.stop.load(Ordering::Acquire) {
             return;
         }
         record(&self.inventory_error, &result);
+    }
+
+    /// Peers the scheduler backed off also back off in the book, so discovery
+    /// stops dialing them; without discovery there is no book to tell.
+    fn penalize_in_book(&self, scheduler: &Scheduler) -> Result<(), Error> {
+        let penalized = scheduler.drain_penalized()?;
+        match &self.discovery {
+            Some(discovery) => discovery.penalize(&penalized),
+            None => Ok(()),
+        }
     }
 
     /// With discovery, the inventory peers follow the book every step.

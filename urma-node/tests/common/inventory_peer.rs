@@ -1,6 +1,7 @@
 //! Test-side codec peer for peer_inventory.rs and peer_discovery.rs: a raw
-//! client, a proxy to an upstream node that drops every inventory entry
-//! mentioning one string, or a responder answering Peers with a fixed list.
+//! client, a proxy to an upstream node that rewrites its inventory pages
+//! (drops every entry naming one txid, or moves every entry out of the
+//! requested range), or a responder answering Peers with a fixed list.
 //! Loaded with #[path]; it is not part of the shared common module.
 use libp2p::{
     Multiaddr, StreamProtocol, Swarm, SwarmBuilder,
@@ -35,6 +36,12 @@ const CALL_BOUND: Duration = Duration::from_secs(12);
 
 type Answer = mpsc::SyncSender<Result<Response, String>>;
 
+/// How the proxy rewrites upstream inventory pages.
+pub enum Rewrite {
+    Hide(String),
+    OutOfRange,
+}
+
 struct Call {
     to: PeerAddress,
     request: Request,
@@ -50,7 +57,7 @@ pub struct RawPeer {
 }
 
 struct RawState {
-    upstream: Option<(PeerAddress, String)>,
+    upstream: Option<(PeerAddress, Rewrite)>,
     gossip: Option<Vec<GossipPeer>>,
     seen: Arc<Mutex<Vec<Request>>>,
     ready: mpsc::SyncSender<Multiaddr>,
@@ -78,9 +85,16 @@ fn raw_swarm(key: Keypair) -> Swarm<request_response::Behaviour<Codec>> {
         .build()
 }
 
-fn hide_entries(mut response: Response, hide: &str) -> Response {
+fn rewrite(mut response: Response, rewrite: &Rewrite) -> Response {
     if let Reply::Inventory(page) = &mut response.result {
-        page.entries.retain(|entry| entry.txid.to_string() != hide);
+        match rewrite {
+            Rewrite::Hide(hide) => page.entries.retain(|entry| entry.txid.to_string() != *hide),
+            Rewrite::OutOfRange => {
+                for entry in &mut page.entries {
+                    entry.height = u64::MAX;
+                }
+            }
+        }
     }
     response
 }
@@ -118,8 +132,7 @@ fn raw_message(
             response,
         } => {
             if let Some(channel) = state.forwarded.remove(&request_id) {
-                let hide = &state.upstream.as_ref().unwrap().1;
-                let response = hide_entries(response, hide);
+                let response = rewrite(response, &state.upstream.as_ref().unwrap().1);
                 let _ = swarm.behaviour_mut().send_response(channel, response);
             } else if let Some(answer) = state.pending.remove(&request_id) {
                 let _ = answer.try_send(Ok(response));
@@ -176,7 +189,7 @@ async fn raw_loop(
 }
 
 impl RawPeer {
-    pub fn start(upstream: Option<(PeerAddress, String)>) -> Self {
+    pub fn start(upstream: Option<(PeerAddress, Rewrite)>) -> Self {
         Self::spawn(upstream, None)
     }
 
@@ -185,7 +198,7 @@ impl RawPeer {
         Self::spawn(None, Some(peers))
     }
 
-    fn spawn(upstream: Option<(PeerAddress, String)>, gossip: Option<Vec<GossipPeer>>) -> Self {
+    fn spawn(upstream: Option<(PeerAddress, Rewrite)>, gossip: Option<Vec<GossipPeer>>) -> Self {
         let key = Keypair::generate_ed25519();
         let id = key.public().to_peer_id();
         let (calls, receiver) = async_mpsc::channel(4);

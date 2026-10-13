@@ -210,4 +210,6 @@ pub struct OverlayPeerStatus {
     pub synced_through: Option<u64>,
     pub last_error: Option<String>,
     pub last_error_at: Option<u64>,
+    /// Unix second until which sync skips this peer after a peer error.
+    pub backoff_until: Option<u64>,
 }

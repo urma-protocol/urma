@@ -39,6 +39,14 @@ impl RecordedError {
     }
 }
 
+/// The current Unix second; a clock before 1970 is an error.
+pub(crate) fn unix_seconds() -> Result<u64, Error> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .map_err(|error| Error::Invalid(format!("system clock before 1970: {error}")))
+}
+
 /// Replace the latest outcome of one worker. A poisoned slot keeps its value.
 pub(crate) fn record<T>(slot: &Mutex<Option<RecordedError>>, result: &Result<T, Error>) {
     if let Ok(mut latest) = slot.lock() {

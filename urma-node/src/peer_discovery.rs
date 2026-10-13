@@ -10,7 +10,7 @@ use crate::{
     peer::{PeerNetwork, PeerSource},
     peer_protocol::GossipPeer,
     peerbook::PeerBook,
-    recorded::{RecordedError, read},
+    recorded::{RecordedError, read, unix_seconds as now},
 };
 use libp2p::{Multiaddr, PeerId};
 use rand::seq::SliceRandom;
@@ -21,7 +21,7 @@ use std::{
         Arc, Mutex, MutexGuard,
         atomic::{AtomicBool, AtomicU64, Ordering},
     },
-    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant},
 };
 
 pub struct Discovery {
@@ -51,13 +51,6 @@ impl Budget<'_> {
 
 fn poisoned() -> Error {
     Error::Invalid("peer discovery state poisoned".into())
-}
-
-fn now() -> Result<u64, Error> {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_secs())
-        .map_err(|error| Error::Invalid(format!("system clock before 1970: {error}")))
 }
 
 impl Discovery {
@@ -297,6 +290,24 @@ impl Discovery {
             last_gossip_error,
             last_gossip_error_at,
         })
+    }
+
+    /// Peers the inventory scheduler caught misbehaving back off in the book
+    /// too, so discovery stops dialing them; the book is saved if it changed.
+    pub fn penalize(&self, peers: &[PeerId]) -> Result<(), Error> {
+        if peers.is_empty() {
+            return Ok(());
+        }
+        let at = now()?;
+        let mut book = self.lock()?;
+        let mut changed = false;
+        for peer in peers {
+            changed |= book.failed_peer(*peer, at);
+        }
+        if changed {
+            book.save(&self.path)?;
+        }
+        Ok(())
     }
 
     pub fn book_json(&self) -> Result<Value, Error> {

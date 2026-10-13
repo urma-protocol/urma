@@ -3,19 +3,22 @@
 //! against the independently selected header chain, and coverage is recorded
 //! only after a complete range has every advertised record present locally.
 //! Full-block audit (`indexed_through`) remains the separate, stronger claim.
+//! A peer that answers with an invalid page, package or reply is disconnected
+//! and backed off; one that stays Busy for many turns is disconnected so the
+//! connection slot it holds frees up for others.
 use crate::{
     Error,
     engine::Engine,
     model::{OverlayPeerStatus, OverlayStatus, RecordReceipt},
     peer::PeerSource,
     peer_protocol::{InventoryPage, Placement},
-    recorded::RecordedError,
+    recorded::{RecordedError, unix_seconds},
 };
 use libp2p::PeerId;
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -51,17 +54,52 @@ struct Range {
 struct Peer {
     label: String,
     id: String,
+    peer_id: PeerId,
     source: PeerSource,
     range: Mutex<Option<Range>>,
     last_request: Mutex<Option<Instant>>,
     last_error: Mutex<Option<RecordedError>>,
+    backoff: Mutex<Backoff>,
+    busy_turns: AtomicU32,
+    missing: AtomicU32,
 }
 
-/// Why a step stopped early without blaming the peer.
+/// Sync backoff after peer errors: consecutive blamed turns and the Unix
+/// second before which the peer is skipped.
+struct Backoff {
+    failures: u32,
+    until: Option<u64>,
+}
+
+impl Peer {
+    fn backoff_until(&self, now: u64) -> Result<Option<u64>, Error> {
+        let backoff = self.backoff.lock().map_err(|_| poisoned())?;
+        Ok(backoff.until.filter(|until| *until > now))
+    }
+}
+
+/// Why a step stopped early. `Blame` is a peer error; `Error` is ours or
+/// retryable.
 enum Pause {
     Done,
     Abandon,
     Error(Error),
+    Blame(Error),
+}
+
+/// How one step ended for the peer it ran with.
+enum Turn {
+    Quiet,
+    Busy(Error),
+    Blamed(Error),
+}
+
+/// A failed request blames the peer unless it is retryable or our reorg.
+fn blame(error: Error) -> Pause {
+    match error {
+        Error::Busy(_) | Error::Stale => Pause::Error(error),
+        other => Pause::Blame(other),
+    }
 }
 
 impl From<Error> for Pause {
@@ -93,6 +131,7 @@ pub(crate) struct Scheduler {
     info: OverlayInfo,
     admitted: AtomicU64,
     rejected: AtomicU64,
+    penalized: Mutex<Vec<PeerId>>,
 }
 
 fn poisoned() -> Error {
@@ -100,19 +139,26 @@ fn poisoned() -> Error {
 }
 
 fn inventory_peer(label: String, source: PeerSource) -> Result<Peer, Error> {
-    let id = match label.parse::<PeerId>() {
-        Ok(id) => id.to_string(),
+    let peer_id = match label.parse::<PeerId>() {
+        Ok(id) => id,
         Err(error) => {
             return Err(Error::Invalid(format!("inventory peer label: {error}")));
         }
     };
     Ok(Peer {
         label,
-        id,
+        id: peer_id.to_string(),
+        peer_id,
         source,
         range: Mutex::new(None),
         last_request: Mutex::new(None),
         last_error: Mutex::new(None),
+        backoff: Mutex::new(Backoff {
+            failures: 0,
+            until: None,
+        }),
+        busy_turns: AtomicU32::new(0),
+        missing: AtomicU32::new(0),
     })
 }
 
@@ -127,6 +173,13 @@ impl Scheduler {
     pub const ROUND_TIME: Duration = Duration::from_secs(20);
     /// Minimum spacing between requests to one peer (its 4/s token bucket).
     pub const REQUEST_SPACING: Duration = Duration::from_millis(250);
+    /// Sync backoff after a peer error: 30 s, doubling per repeat, capped at a day.
+    pub const BACKOFF_SECONDS: u64 = 30;
+    pub const BACKOFF_CAP: u64 = 86_400;
+    /// Consecutive Busy turns after which a peer is disconnected.
+    pub const BUSY_TURNS: u32 = 10;
+    /// Consecutive Missing answers for advertised records that blame a peer.
+    pub const MISSING_ANSWERS: u32 = 2;
     const MAX_PEERS: usize = 1024;
 
     pub(crate) fn new(sync: PeerSync) -> Result<Self, Error> {
@@ -147,15 +200,17 @@ impl Scheduler {
             info: sync.info,
             admitted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
+            penalized: Mutex::new(Vec::new()),
         })
     }
 
-    /// One bounded step with the next non-omitting peer in rotation. Busy,
-    /// deadline and cancellation end the step quietly and keep the range; a
-    /// step interrupted by `stop` records nothing about the peer.
+    /// One bounded step with the next non-omitting, non-backed-off peer in
+    /// rotation. Busy, deadline and cancellation keep the range; a step
+    /// interrupted by `stop` records nothing about the peer.
     pub(crate) fn step(&self, engine: &Engine, stop: &AtomicBool) -> Result<(), Error> {
         let omitting = engine.omitting_peers()?;
-        let Some(peer) = self.next_peer(&omitting)? else {
+        let now = unix_seconds()?;
+        let Some(peer) = self.next_peer(&omitting, now)? else {
             return Ok(());
         };
         let peer = peer.as_ref();
@@ -169,8 +224,67 @@ impl Scheduler {
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
-        *peer.last_error.lock().map_err(|_| poisoned())? = RecordedError::from_result(&outcome);
+        let result = self.judge(peer, outcome, now)?;
+        *peer.last_error.lock().map_err(|_| poisoned())? = RecordedError::from_result(&result);
         Ok(())
+    }
+
+    /// A blamed turn disconnects the peer and backs it off; Busy turns build a
+    /// streak that disconnects the peer at `BUSY_TURNS`; a quiet turn resets
+    /// both. Our own failures say nothing about the peer.
+    fn judge(
+        &self,
+        peer: &Peer,
+        outcome: Result<Turn, Error>,
+        now: u64,
+    ) -> Result<Result<(), Error>, Error> {
+        match outcome {
+            Ok(Turn::Quiet) => {
+                peer.busy_turns.store(0, Ordering::Relaxed);
+                peer.backoff.lock().map_err(|_| poisoned())?.failures = 0;
+                Ok(Ok(()))
+            }
+            Ok(Turn::Busy(error)) => {
+                let streak = peer.busy_turns.fetch_add(1, Ordering::Relaxed) + 1;
+                if streak < Self::BUSY_TURNS {
+                    return Ok(Err(error));
+                }
+                peer.busy_turns.store(0, Ordering::Relaxed);
+                peer.source.disconnect();
+                Ok(Err(Error::Busy(format!(
+                    "{error}; busy for {streak} turns, disconnected"
+                ))))
+            }
+            Ok(Turn::Blamed(error)) => {
+                peer.busy_turns.store(0, Ordering::Relaxed);
+                self.penalize(peer, now)?;
+                Ok(Err(error))
+            }
+            Err(error) => Ok(Err(error)),
+        }
+    }
+
+    fn penalize(&self, peer: &Peer, now: u64) -> Result<(), Error> {
+        peer.source.disconnect();
+        let mut backoff = peer.backoff.lock().map_err(|_| poisoned())?;
+        backoff.failures = backoff.failures.checked_add(1).unwrap_or(u32::MAX);
+        let delay = 2u64
+            .checked_pow(backoff.failures - 1)
+            .and_then(|factor| factor.checked_mul(Self::BACKOFF_SECONDS))
+            .map_or(Self::BACKOFF_CAP, |delay| delay.min(Self::BACKOFF_CAP));
+        backoff.until = Some(now.checked_add(delay).unwrap_or(u64::MAX));
+        drop(backoff);
+        let mut penalized = self.penalized.lock().map_err(|_| poisoned())?;
+        if !penalized.contains(&peer.peer_id) {
+            penalized.push(peer.peer_id);
+        }
+        Ok(())
+    }
+
+    /// Peers backed off since the last call, for the peer book to record.
+    pub(crate) fn drain_penalized(&self) -> Result<Vec<PeerId>, Error> {
+        let mut penalized = self.penalized.lock().map_err(|_| poisoned())?;
+        Ok(std::mem::take(&mut *penalized))
     }
 
     /// Reconcile with the peer book: known identities keep their peer state and
@@ -199,30 +313,37 @@ impl Scheduler {
         Ok(self.peers.lock().map_err(|_| poisoned())?.clone())
     }
 
-    fn next_peer(&self, omitting: &[String]) -> Result<Option<Arc<Peer>>, Error> {
+    fn next_peer(&self, omitting: &[String], now: u64) -> Result<Option<Arc<Peer>>, Error> {
         let peers = self.snapshot()?;
         let count = peers.len();
-        Ok((0..count)
-            .map(|_| &peers[self.turn.fetch_add(1, Ordering::Relaxed) % count])
-            .find(|peer| !omitting.contains(&peer.id))
-            .cloned())
+        for _ in 0..count {
+            let peer = &peers[self.turn.fetch_add(1, Ordering::Relaxed) % count];
+            if !omitting.contains(&peer.id) && peer.backoff_until(now)?.is_none() {
+                return Ok(Some(Arc::clone(peer)));
+            }
+        }
+        Ok(None)
     }
 
-    fn advance(&self, peer: &Peer, engine: &Engine, round: &mut Round) -> Result<(), Error> {
+    fn advance(&self, peer: &Peer, engine: &Engine, round: &mut Round) -> Result<Turn, Error> {
         let mut slot = peer.range.lock().map_err(|_| poisoned())?;
         if slot.is_none() {
             *slot = open(peer, engine)?;
         }
+        // A peer error or our own failure abandons the range; it is requested
+        // again from the persisted cursor on this peer's next turn.
         match self.walk(peer, engine, &mut slot, round) {
-            Ok(()) | Err(Pause::Done) => Ok(()),
+            Ok(()) | Err(Pause::Done) => Ok(Turn::Quiet),
             Err(Pause::Abandon) | Err(Pause::Error(Error::Stale)) => {
                 *slot = None;
-                Ok(())
+                Ok(Turn::Quiet)
             }
-            Err(Pause::Error(Error::Busy(_retry_next_round))) => Ok(()),
+            Err(Pause::Error(busy @ Error::Busy(_))) => Ok(Turn::Busy(busy)),
+            Err(Pause::Blame(error)) => {
+                *slot = None;
+                Ok(Turn::Blamed(error))
+            }
             Err(Pause::Error(error)) => {
-                // A failed admission or a lying page abandons the range; it is
-                // requested again from the persisted cursor on this peer's turn.
                 *slot = None;
                 Err(error)
             }
@@ -257,17 +378,20 @@ impl Scheduler {
                 }
                 round.requested_page = true;
                 pace(peer, round)?;
-                let Some(page) = peer.source.inventory_until(
-                    (range.from, range.to),
-                    range.after,
-                    Self::PAGE_ENTRIES,
-                    round.stop,
-                    round.deadline,
-                )?
+                let Some(page) = peer
+                    .source
+                    .inventory_until(
+                        (range.from, range.to),
+                        range.after,
+                        Self::PAGE_ENTRIES,
+                        round.stop,
+                        round.deadline,
+                    )
+                    .map_err(blame)?
                 else {
                     return Err(Pause::Done);
                 };
-                if !accept(range, page)? {
+                if !accept(range, page).map_err(Pause::Blame)? {
                     *slot = None;
                 }
             } else {
@@ -281,7 +405,8 @@ impl Scheduler {
 
     /// Fetch one advertised record from the advertising peer and admit it. A
     /// peer that answers Missing leaves the entry listed-only: it neither blocks
-    /// coverage nor is retried within this range.
+    /// coverage nor is retried within this range. `MISSING_ANSWERS` Missing
+    /// answers in a row blame the peer; an invalid package always does.
     fn acquire(
         &self,
         peer: &Peer,
@@ -289,21 +414,35 @@ impl Scheduler {
         entry: &Placement,
         deadline: Instant,
     ) -> Result<(), Pause> {
-        let Some(package) = peer.source.fetch_until(entry.txid, deadline)? else {
-            return Ok(());
+        let fetched = peer
+            .source
+            .fetch_until(entry.txid, deadline)
+            .map_err(blame)?;
+        let Some(package) = fetched else {
+            let missing = peer.missing.fetch_add(1, Ordering::Relaxed) + 1;
+            if missing < Self::MISSING_ANSWERS {
+                return Ok(());
+            }
+            peer.missing.store(0, Ordering::Relaxed);
+            return Err(Pause::Blame(Error::Invalid(
+                "peer reported advertised records missing".into(),
+            )));
         };
+        peer.missing.store(0, Ordering::Relaxed);
         let receipt = match engine.admit_record(package) {
             Ok(receipt) => receipt,
+            Err(error @ (Error::Busy(_) | Error::Stale)) => return Err(Pause::Error(error)),
             Err(error) => {
-                if !matches!(error, Error::Busy(_) | Error::Stale) {
-                    self.rejected.fetch_add(1, Ordering::Relaxed);
-                }
-                return Err(Pause::Error(error));
+                self.rejected.fetch_add(1, Ordering::Relaxed);
+                return Err(match error {
+                    Error::Invalid(_) => Pause::Blame(error),
+                    local => Pause::Error(local),
+                });
             }
         };
         self.admitted.fetch_add(1, Ordering::Relaxed);
         if !placed(&receipt, entry) {
-            return Err(Pause::Error(Error::Invalid(
+            return Err(Pause::Blame(Error::Invalid(
                 "peer inventory placement disagrees with its proven record".into(),
             )));
         }
@@ -312,6 +451,7 @@ impl Scheduler {
 
     pub(crate) fn status(&self, engine: &Engine) -> Result<OverlayStatus, Error> {
         let start = engine.status()?.application_start.height;
+        let now = unix_seconds()?;
         let known = self.snapshot()?;
         let mut peers = Vec::with_capacity(known.len());
         for peer in &known {
@@ -325,6 +465,7 @@ impl Scheduler {
                 synced_through,
                 last_error,
                 last_error_at,
+                backoff_until: peer.backoff_until(now)?,
             });
         }
         Ok(OverlayStatus {

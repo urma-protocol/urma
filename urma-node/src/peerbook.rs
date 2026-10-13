@@ -387,6 +387,20 @@ impl PeerBook {
         let Some(index) = self.position_of_address(&address) else {
             return;
         };
+        self.fail_entry(index, now);
+    }
+
+    /// A peer misbehaved during sync: back its entry off like a failed dial.
+    /// Returns whether the book holds that peer.
+    pub fn failed_peer(&mut self, peer: PeerId, now: u64) -> bool {
+        let Some(index) = self.position_of_peer(peer) else {
+            return false;
+        };
+        self.fail_entry(index, now);
+        true
+    }
+
+    fn fail_entry(&mut self, index: usize, now: u64) {
         let entry = &mut self.entries[index];
         entry.failures = entry.failures.checked_add(1).unwrap_or(u32::MAX);
         let delay = 2u64

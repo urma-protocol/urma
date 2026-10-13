@@ -77,7 +77,8 @@ fn inventory(engine: &Engine, range: (u64, u64), after: Option<Placement>, limit
     }
 }
 
-/// Missing or Busy is no answer. Refusals, limits and other kinds are errors.
+/// Missing is no answer and Busy is retryable. Refusals, limits and other
+/// kinds are errors.
 pub(crate) fn validate_inventory(
     genesis: BlockHash,
     peer: PeerId,
@@ -87,7 +88,8 @@ pub(crate) fn validate_inventory(
     bind_response(genesis, peer, pending, &response)?;
     match response.result {
         Reply::Inventory(page) => check_page(&response.kind, page).map(Some),
-        Reply::Missing | Reply::Busy => Ok(None),
+        Reply::Missing => Ok(None),
+        Reply::Busy => Err(Error::Busy("remote peer capacity".into())),
         Reply::Record(_) | Reply::Parent(_) | Reply::Peers(_) => Err(Error::Invalid(
             "peer answered an inventory request with another kind".into(),
         )),
@@ -142,7 +144,10 @@ impl PeerSource {
     ) -> Result<Option<InventoryPage>, Error> {
         let range = (from_height, to_height);
         let deadline = Instant::now() + CALL_TIMEOUT;
-        self.inventory_until(range, after, limit, cancelled, deadline)
+        match self.inventory_until(range, after, limit, cancelled, deadline) {
+            Err(Error::Busy(_retryable)) => Ok(None),
+            other => other,
+        }
     }
 
     /// One record request bounded by CALL_TIMEOUT and the caller's `deadline`.
@@ -154,7 +159,8 @@ impl PeerSource {
         self.request(Kind::Record { txid }, deadline, Answer::Record)
     }
 
-    /// As `inventory`, also bounded by the caller's own `deadline`.
+    /// As `inventory`, also bounded by the caller's own `deadline`; Busy,
+    /// remote or local, stays an error so the scheduler can count it.
     pub(crate) fn inventory_until(
         &self,
         (from_height, to_height): (u64, u64),
@@ -170,9 +176,6 @@ impl PeerSource {
             after,
             limit,
         };
-        match self.request(kind, deadline, Answer::Inventory) {
-            Err(Error::Busy(_)) => Ok(None),
-            other => other,
-        }
+        self.request(kind, deadline, Answer::Inventory)
     }
 }

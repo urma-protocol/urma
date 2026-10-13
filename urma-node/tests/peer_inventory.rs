@@ -23,8 +23,8 @@ use bitcoin::{
     transaction::Version,
 };
 use common::{FIRST_HEIGHT, MemorySource, SignedPair, config, profile, witness_block};
-use inventory_peer::RawPeer;
-use libp2p::identity::Keypair;
+use inventory_peer::{RawPeer, Rewrite};
+use libp2p::{PeerId, identity::Keypair};
 use serde_json::{Value, json};
 use std::{
     fs::{self, File},
@@ -306,6 +306,10 @@ impl Running {
         self.join().unwrap();
     }
 
+    fn connected(&self) -> Vec<PeerId> {
+        self.network.as_ref().unwrap().connected_peer_ids()
+    }
+
     // A step checks stop between requests; one in-flight peer call may still
     // take its own 10 s bound before the worker returns.
     fn join(&mut self) -> Result<(), String> {
@@ -399,7 +403,7 @@ fn omission(root: &Path) -> Value {
     let mut blocks = chain(&pairs, 4, 1);
     let b = server(root, &blocks, 4);
     let hidden = pairs[1].reveal.compute_txid();
-    let liar = RawPeer::start(Some((b.address.clone(), hidden.to_string())));
+    let liar = RawPeer::start(Some((b.address.clone(), Rewrite::Hide(hidden.to_string()))));
     let a = Client::new(root, &blocks);
     stage(root, "A takes coverage from an omitting proxy");
     let running = Running::start(a.offline(), vec![liar.address()]);
@@ -433,6 +437,55 @@ fn omission(root: &Path) -> Value {
     assert_eq!(liar.asked(), asked, "scheduler still asks an omitting peer");
     assert_record(&a.offline(), &extra);
     json!({"omission":hidden.to_string(),"liar_skipped":true})
+}
+
+fn peer_status<'a>(status: &'a Value, id: &PeerId) -> &'a Value {
+    let label = id.to_string();
+    status["overlay"]["peers"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|peer| peer["label"].as_str() == Some(label.as_str()))
+        .unwrap_or_else(|| panic!("no status for {label}"))
+}
+
+fn rejecting(root: &Path) -> Value {
+    let pairs = vectors();
+    let blocks = chain(&pairs, 4, 1);
+    let b = server(root, &blocks, 4);
+    let liar = RawPeer::start(Some((b.address.clone(), Rewrite::OutOfRange)));
+    let (liar_id, honest_id) = (liar.address().peer_id(), b.address.peer_id());
+    let a = Client::new(root, &blocks);
+    stage(
+        root,
+        "a rejecting peer is backed off while the honest peer serves",
+    );
+    let running = Running::start(a.offline(), vec![liar.address(), b.address.clone()]);
+    let seen = running.until(|s| {
+        height(&peer_status(s, &honest_id)["synced_through"]) == Some(tip(&blocks))
+            && peer_status(s, &liar_id)["backoff_until"].is_u64()
+    });
+    let last = seen.last().unwrap();
+    let blamed = peer_status(last, &liar_id);
+    let error = blamed["last_error"].as_str().unwrap_or_default();
+    assert!(error.contains("out of range"), "{blamed}");
+    assert!(
+        peer_status(last, &honest_id)["last_error"].is_null(),
+        "{last}"
+    );
+    let deadline = Instant::now() + Duration::from_secs(10);
+    while running.connected().contains(&liar_id) {
+        assert!(Instant::now() < deadline, "rejecting peer still connected");
+        thread::sleep(Duration::from_millis(100));
+    }
+    let asked = liar.asked();
+    thread::sleep(Duration::from_secs(2));
+    assert_eq!(liar.asked(), asked, "a backed-off peer was asked again");
+    running.stop();
+    for pair in &pairs {
+        assert_record(&a.offline(), pair);
+    }
+    json!({"blamed":true,"disconnected":true,"honest_synced":true})
 }
 
 fn paging(root: &Path) -> Value {
@@ -562,6 +615,7 @@ fn peer_inventory_host() {
     let checks = match scenario.as_str() {
         "honest" => honest(&root),
         "omission" => omission(&root),
+        "rejecting" => rejecting(&root),
         "paging" => paging(&root),
         "reorg" => reorg(&root),
         "limits" => limits(&root),
@@ -663,6 +717,14 @@ fn fresh_node_admits_every_record_from_inventory_before_its_own_scan() {
 fn own_scan_detects_an_omitting_peer_and_the_scheduler_stops_asking_it() {
     let checks = run("omission");
     assert_eq!(checks["liar_skipped"], true);
+}
+
+#[test]
+fn a_rejecting_peer_is_disconnected_and_backed_off_while_an_honest_peer_proceeds() {
+    let checks = run("rejecting");
+    assert_eq!(checks["blamed"], true);
+    assert_eq!(checks["disconnected"], true);
+    assert_eq!(checks["honest_synced"], true);
 }
 
 #[test]
