@@ -33,7 +33,7 @@ fn account(chain: Chain) -> Account {
     let (_, v) = vectors();
     let phrase = IdentityPhrase::parse(v["phrase"].as_str().unwrap()).unwrap();
     let root = Root::from_phrase(&phrase).unwrap();
-    Account::new(chain, root.account(chain).unwrap()).unwrap()
+    Account::from_root(chain, &root).unwrap()
 }
 
 fn external(index: u32) -> KeyPath {

@@ -31,6 +31,8 @@ pub(crate) struct PlanArgs {
 pub(crate) struct PublishArgs {
     #[command(flatten)]
     node: NodeArgs,
+    #[command(flatten)]
+    access: VaultAccess,
     #[arg(long, default_value = "wire-plan.json")]
     plan: PathBuf,
     #[arg(short, long, help = "Approve the displayed exact plan and fee")]
@@ -94,6 +96,7 @@ pub(crate) fn plan(args: PlanArgs) -> Result<Value, Error> {
 pub(crate) fn publish(args: PublishArgs) -> Result<Value, Error> {
     publish_plan(
         &args.node,
+        &args.access,
         &args.plan,
         &args.journal,
         args.yes,

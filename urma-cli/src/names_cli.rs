@@ -183,6 +183,8 @@ pub(crate) struct PlanArgs {
 pub(crate) struct PublishArgs {
     #[command(flatten)]
     node: NodeArgs,
+    #[command(flatten)]
+    access: VaultAccess,
     #[arg(long, default_value = "names-plan.json")]
     plan: PathBuf,
     #[arg(short, long, help = "Approve the displayed exact plan and fee")]
@@ -540,6 +542,7 @@ fn publish(args: PublishArgs) -> Result<Value, Error> {
     names_flow::follow(
         &node,
         Publication {
+            access: &args.access,
             plan: &args.plan,
             journal: &args.journal,
             index: args.index,

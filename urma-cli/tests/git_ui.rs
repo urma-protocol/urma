@@ -1,5 +1,7 @@
 #[path = "../../urma-runtime/tests/support/publication_node.rs"]
 mod publication_node;
+#[path = "support/vault.rs"]
+mod vault;
 use publication_node::{Mock, txid};
 use std::{
     path::Path,
@@ -7,8 +9,17 @@ use std::{
 };
 use urma_git::{inventory::Limits, workflows};
 use urma_runtime::{disk_plan::DiskPlan, plan::PlanLimits};
+use vault::mock_funder_vault;
 
 fn command(mock: &Mock, directory: &Path, args: &[&str]) -> Command {
+    // Watch never unlocks; publish and resume check the plan against the account.
+    let (vault, unlock) = match args.contains(&"watch") {
+        true => (
+            directory.join("absent-vault"),
+            directory.join("absent-unlock"),
+        ),
+        false => mock_funder_vault(directory),
+    };
     let mut command = Command::new(env!("CARGO_BIN_EXE_urma"));
     command
         .env("XDG_STATE_HOME", directory.join("state"))
@@ -16,8 +27,8 @@ fn command(mock: &Mock, directory: &Path, args: &[&str]) -> Command {
         .env("URMA_NETWORK", "bitcoin-regtest")
         .env("URMA_RPC_URL", &mock.config.rpc_url)
         .env("URMA_NODE_AUTH_FILE", &mock.config.cookie_file)
-        .env("URMA_VAULT", directory.join("absent-vault"))
-        .env("URMA_UNLOCK_FILE", directory.join("absent-unlock"))
+        .env("URMA_VAULT", vault)
+        .env("URMA_UNLOCK_FILE", unlock)
         .args(args)
         .arg("--plan")
         .arg(directory.join("plan"))

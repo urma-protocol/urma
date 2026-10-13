@@ -1,4 +1,10 @@
-use crate::{approve_publication, funding_cli::plan_spending, node_cli::NodeArgs, print_report};
+use crate::{
+    approve_publication,
+    funding_cli::plan_spending,
+    key_cli::{VaultAccess, funding_account},
+    node_cli::NodeArgs,
+    print_report,
+};
 use serde_json::Value;
 use std::path::Path;
 use urma_runtime::error::{Error, ensure};
@@ -20,6 +26,7 @@ pub(crate) fn export_recovery(recovery: backend::Recovery, output: &Path) -> Res
 
 pub(crate) fn publish_plan(
     node: &NodeArgs,
+    access: &VaultAccess,
     plan_path: &Path,
     journal: &Path,
     yes: bool,
@@ -27,6 +34,7 @@ pub(crate) fn publish_plan(
 ) -> Result<Value, Error> {
     publish::ensure_journal_distinct(plan_path, journal)?;
     let plan = PublicationPlan::load(plan_path)?;
+    plan.require_funder(&funding_account(&access.open()?, node.chain()?)?)?;
     let node = node.connect()?;
     let id = plan.id()?;
     approve_publication(label, &id, plan.total_fee, &plan_spending(&plan)?, yes)?;

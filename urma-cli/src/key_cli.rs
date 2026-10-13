@@ -105,7 +105,7 @@ pub(crate) const WALLET_CHAINS: [Chain; 5] = [
 /// The chain's BIP84 account: funds publications and payments. The active
 /// identity only signs as author.
 pub(crate) fn funding_account(vault: &UnlockedVault, chain: Chain) -> Result<Account, Error> {
-    Ok(Account::new(chain, vault.keyring().root().account(chain)?)?)
+    Ok(Account::from_root(chain, vault.keyring().root())?)
 }
 
 pub(crate) fn account_path(chain: Chain) -> String {

@@ -40,7 +40,7 @@ fn publication_signs_author_with_identity_and_funds_from_the_account() {
         Keyring::recover(&IdentityPhrase::parse(v["phrase"].as_str().unwrap()).unwrap()).unwrap();
     let author = keys.identity(IdentitySlot::new(0).unwrap()).unwrap();
     let chain = Chain::BitcoinRegtest;
-    let funder = Account::new(chain, keys.root().account(chain).unwrap()).unwrap();
+    let funder = Account::from_root(chain, keys.root()).unwrap();
     let prev = Transaction {
         version: Version::TWO,
         lock_time: LockTime::ZERO,

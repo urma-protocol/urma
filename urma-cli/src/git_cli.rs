@@ -61,6 +61,8 @@ pub(crate) struct ResumeArgs {
     #[command(flatten)]
     node: NodeArgs,
     #[command(flatten)]
+    access: VaultAccess,
+    #[command(flatten)]
     follow: git_follow_cli::FollowArgs,
 }
 
@@ -219,6 +221,7 @@ fn prepare(args: PrepareArgs) -> Result<Value, Error> {
 }
 
 fn resume(args: ResumeArgs) -> Result<Value, Error> {
+    git_publish_cli::require_git_funder(&args.plan, &args.access, args.node.chain()?)?;
     let node = args.node.connect()?;
     let reviewed = workflows::inspect_plan(&args.plan).map_err(boundary)?;
     approve_publication(

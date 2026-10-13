@@ -2,6 +2,7 @@ use crate::{
     approve_publication,
     config::{self, IndexChoice},
     funding_cli::plan_spending,
+    key_cli::{VaultAccess, funding_account},
     node_cli::chain_name,
     print_report, progress,
 };
@@ -18,6 +19,7 @@ use urma_runtime::{
 };
 
 pub(crate) struct Publication<'a> {
+    pub(crate) access: &'a VaultAccess,
     pub(crate) plan: &'a Path,
     pub(crate) journal: &'a Path,
     pub(crate) index: Option<PathBuf>,
@@ -136,6 +138,7 @@ fn waiting(report: &PublishReport) -> bool {
 pub(crate) fn follow(node: &Node, publication: Publication<'_>) -> Result<Value, Error> {
     publish::ensure_journal_distinct(publication.plan, publication.journal)?;
     let plan = PublicationPlan::load(publication.plan)?;
+    plan.require_funder(&funding_account(&publication.access.open()?, node.chain())?)?;
     let id = plan.id()?;
     approve_publication(
         publication.label,

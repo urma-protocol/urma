@@ -239,6 +239,16 @@ fn describe(
     Ok(())
 }
 
+/// Refuses a prepared Git publication whose return output is not this vault's account.
+pub(crate) fn require_git_funder(
+    directory: &std::path::Path,
+    access: &VaultAccess,
+    chain: urma_chain::observation::Chain,
+) -> Result<(), Error> {
+    let (_, _, publication) = GitPlan::load_with_publication(directory).map_err(boundary)?;
+    publication.require_funder(&funding_account(&access.open()?, chain)?)
+}
+
 /// Approval lines for a prepared Git publication directory.
 pub(crate) fn git_spending(directory: &std::path::Path) -> Result<Vec<String>, Error> {
     let (_, _, publication) = GitPlan::load_with_publication(directory).map_err(boundary)?;
@@ -272,6 +282,7 @@ pub(crate) fn run(args: PublishArgs) -> Result<Value, Error> {
             (directory, report)
         }
     };
+    require_git_funder(&directory, &args.access, args.node.chain()?)?;
     let node = args.node.connect()?;
     describe(&node, &directory, &report)?;
     for maximum in args.max_fee.iter() {

@@ -126,10 +126,17 @@ fn limits(fees: &Fees) -> PlanLimits {
     }
 }
 
-fn publish_record(node: &Node, directory: &Path, label: &str, fees: &Fees) -> Result<Value, Error> {
+fn publish_record(
+    node: &Node,
+    access: &VaultAccess,
+    directory: &Path,
+    label: &str,
+    fees: &Fees,
+) -> Result<Value, Error> {
     names_flow::follow(
         node,
         Publication {
+            access,
             plan: &directory.join("plan.json"),
             journal: &directory.join("progress.json"),
             index: None,
@@ -175,7 +182,7 @@ pub(crate) fn request(args: RequestArgs) -> Result<Value, Error> {
         args.target,
         root.author()
     );
-    publish_record(&node, &args.output, &label, &args.fees)
+    publish_record(&node, &args.access, &args.output, &label, &args.fees)
 }
 
 fn synced_index(node: &Node, pending: &Pending) -> Result<NamesIndex, Error> {
@@ -346,5 +353,5 @@ pub(crate) fn approve(args: ApproveArgs) -> Result<Value, Error> {
         reviewed.record.author,
         args.output.join("site").display()
     );
-    publish_record(&node, &args.output, &label, &args.fees)
+    publish_record(&node, &args.access, &args.output, &label, &args.fees)
 }

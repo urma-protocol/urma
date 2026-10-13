@@ -107,6 +107,8 @@ pub(crate) struct PlanArgs {
 pub(crate) struct PublishArgs {
     #[command(flatten)]
     node: NodeArgs,
+    #[command(flatten)]
+    access: VaultAccess,
     #[arg(long, default_value = "web-plan", help = "The signed plan directory")]
     plan: PathBuf,
     #[arg(short, long, help = "Approve the displayed exact plan and fee")]
@@ -324,6 +326,7 @@ fn read_all(object: &mut RecoveredObject, limit: usize) -> Result<Vec<u8>, Error
 
 fn publish(args: PublishArgs) -> Result<Value, Error> {
     let plan = DiskPlan::load(&args.plan)?;
+    plan.require_funder(&funding_account(&args.access.open()?, args.node.chain()?)?)?;
     let node = args.node.connect()?;
     let id = plan.id()?;
     approve_publication(

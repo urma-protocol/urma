@@ -10,6 +10,8 @@
 
 #[path = "../../urma-runtime/tests/support/publication_node.rs"]
 mod publication_node;
+#[path = "support/vault.rs"]
+mod vault;
 use publication_node::{Mock, txid};
 use std::{
     process::{Command, Stdio},
@@ -17,6 +19,7 @@ use std::{
 };
 use urma_git::{inventory::Limits, workflows};
 use urma_runtime::{disk_plan::DiskPlan, plan::PlanLimits};
+use vault::mock_funder_vault;
 
 #[test]
 #[ignore = "slow real polling (30–60 seconds); run explicitly with --ignored --exact (see module docs)"]
@@ -71,18 +74,32 @@ fn persist_retries_after_bounded_poll_and_independent_watch_observes_completion(
     mock.state.lock().unwrap().preflight = Some("mempool full".into());
     mock.state.lock().unwrap().methods.clear();
     let start = Instant::now();
+    let (funder_vault, funder_unlock) = mock_funder_vault(directory.path());
     for args in [
         vec!["git", "resume", "--yes", "--persist"],
         vec!["git", "watch"],
     ] {
+        let resume = args[1] == "resume";
         children.push(
             Command::new(env!("CARGO_BIN_EXE_urma"))
                 .env("URMA_CONFIG", directory.path().join("absent"))
                 .env("URMA_NETWORK", "bitcoin-regtest")
                 .env("URMA_RPC_URL", &mock.config.rpc_url)
                 .env("URMA_NODE_AUTH_FILE", &mock.config.cookie_file)
-                .env("URMA_VAULT", directory.path().join("absent-vault"))
-                .env("URMA_UNLOCK_FILE", directory.path().join("absent-unlock"))
+                .env(
+                    "URMA_VAULT",
+                    match resume {
+                        true => funder_vault.clone(),
+                        false => directory.path().join("absent-vault"),
+                    },
+                )
+                .env(
+                    "URMA_UNLOCK_FILE",
+                    match resume {
+                        true => funder_unlock.clone(),
+                        false => directory.path().join("absent-unlock"),
+                    },
+                )
                 .args(args)
                 .arg("--plan")
                 .arg(&plan_path)
