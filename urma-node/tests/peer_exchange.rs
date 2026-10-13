@@ -280,12 +280,14 @@ impl Pair {
             Arc::clone(&engine_a),
             key_a,
             Some("/ip4/127.0.0.1/tcp/0".parse().unwrap()),
+            Vec::new(),
         )
         .unwrap();
         let network_b = PeerNetwork::start(
             Arc::clone(&engine_b),
             key_b,
             Some("/ip4/127.0.0.1/tcp/0".parse().unwrap()),
+            Vec::new(),
         )
         .unwrap();
         assert_eq!(network_a.peer_id(), expected_a);

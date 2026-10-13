@@ -91,7 +91,7 @@ fn node(root: &Path, name: &str, transactions: &[Transaction], nonce: u32) -> No
     let key = Keypair::generate_ed25519();
     let id = key.public().to_peer_id();
     let listen = Some("/ip4/127.0.0.1/tcp/0".parse().unwrap());
-    let network = PeerNetwork::start(engine.clone(), key, listen).unwrap();
+    let network = PeerNetwork::start(engine.clone(), key, listen, Vec::new()).unwrap();
     let address = PeerAddress::new(id, network.listen_address().unwrap()).unwrap();
     Node {
         engine,

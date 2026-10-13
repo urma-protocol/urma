@@ -159,7 +159,7 @@ fn server(root: &Path, blocks: &[Block], scanned: usize) -> Server {
     let key = Keypair::generate_ed25519();
     let id = key.public().to_peer_id();
     let listen = Some("/ip4/127.0.0.1/tcp/0".parse().unwrap());
-    let network = PeerNetwork::start(engine.clone(), key, listen).unwrap();
+    let network = PeerNetwork::start(engine.clone(), key, listen, Vec::new()).unwrap();
     let address = PeerAddress::new(id, network.listen_address().unwrap()).unwrap();
     Server {
         engine,
@@ -249,8 +249,13 @@ struct Running {
 impl Running {
     // A's Service with its own client network and the given inventory peers.
     fn start(engine: Arc<Engine>, peers: Vec<PeerAddress>) -> Self {
-        let network =
-            PeerNetwork::start(engine.clone(), Keypair::generate_ed25519(), None).unwrap();
+        let network = PeerNetwork::start(
+            engine.clone(),
+            Keypair::generate_ed25519(),
+            None,
+            Vec::new(),
+        )
+        .unwrap();
         let peers = peers
             .into_iter()
             .map(|address| (address.peer_id().to_string(), network.source(address)))

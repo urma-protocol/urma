@@ -454,6 +454,7 @@ fn serve(data: &Path, listen: SocketAddr, fixtures: &Fixtures) -> Result<()> {
         engine.clone(),
         Keypair::generate_ed25519(),
         Some(listener(listen)),
+        Vec::new(),
     )?;
     let outcome = (|| {
         receipt(
@@ -491,6 +492,7 @@ fn client(data: &Path, address: PeerAddress, fixtures: &Fixtures) -> Result<()> 
         engine.clone(),
         Keypair::generate_ed25519(),
         None,
+        Vec::new(),
     )?);
     let outcome = (|| {
         let first_peer_id = network.as_ref().unwrap().peer_id();
@@ -538,6 +540,7 @@ fn client(data: &Path, address: PeerAddress, fixtures: &Fixtures) -> Result<()> 
             engine.clone(),
             Keypair::generate_ed25519(),
             None,
+            Vec::new(),
         )?);
         let fresh_peer_id = network.as_ref().unwrap().peer_id();
         require(

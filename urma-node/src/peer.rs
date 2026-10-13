@@ -8,7 +8,7 @@ use crate::{
     engine::Engine,
     model::RecordPackage,
     peer_codec::Codec,
-    peer_gossip::{Dial, Dials, Shared, is_loopback, validate_peers},
+    peer_gossip::{Dial, Dials, Shared, is_loopback, validate_announce, validate_peers},
     peer_inventory::{lookup, validate_inventory},
     peer_limits::{LimitDenied, Limits},
     peer_parent::{Parent, validate_parent},
@@ -162,16 +162,22 @@ impl PeerNetwork {
     /// Listen only when an explicit IP/TCP address is supplied. Port zero is
     /// allowed for an ephemeral listener; returned address includes this PeerId.
     /// Merely constructing source handles never dials. No peer is a seed by default.
+    /// `announce` are operator-chosen public IP/TCP addresses identify advertises.
     pub fn start(
         engine: Arc<Engine>,
         identity: Keypair,
         listen: Option<Multiaddr>,
+        announce: Vec<Multiaddr>,
     ) -> Result<Self, Error> {
         if let Some(address) = &listen {
             validate_listener(address)?;
         }
         engine.status()?;
         let peer = identity.public().to_peer_id();
+        let announce = announce
+            .iter()
+            .map(|address| validate_announce(address, peer))
+            .collect::<Result<Vec<_>, _>>()?;
         let (commands, receiver) = async_mpsc::channel(MAX_PENDING);
         let (startup, ready) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
@@ -183,6 +189,7 @@ impl PeerNetwork {
             connected: connected.clone(),
             startup,
             shared: shared.clone(),
+            announce,
         };
         let worker = std::thread::Builder::new()
             .name("urma-peer".into())
@@ -394,6 +401,7 @@ struct Control {
     connected: Arc<AtomicU64>,
     startup: Startup,
     shared: Arc<Shared>,
+    announce: Vec<Multiaddr>,
 }
 
 /// Remote address per live connection, so gossip can tell loopback requesters.
@@ -426,9 +434,13 @@ async fn run(
         connected,
         startup,
         shared,
+        announce,
     } = control;
     let genesis = engine.status()?.chain_genesis;
     let mut swarm = swarm(identity)?;
+    for address in announce {
+        swarm.add_external_address(address);
+    }
     let mut ready = Some(startup);
     let listening = listen.is_some();
     if let Some(address) = listen {
@@ -531,7 +543,10 @@ async fn run(
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { connection_id, peer_id, info })) => {
                     // Inbound peers could steer our address; only dialed peers witness it.
-                    if remotes.outbound(connection_id) { shared.observe(info.observed_addr, peer_id); }
+                    if remotes.outbound(connection_id) {
+                        for confirmed in shared.observe(info.observed_addr, peer_id) { swarm.add_external_address(confirmed); }
+                    }
+                    shared.identified(peer_id, info.listen_addrs);
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Records(event)) => match event {
                     request_response::Event::Message { peer, connection_id, message: Message::Request { request_id, request, channel } } => {

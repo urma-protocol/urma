@@ -19,7 +19,7 @@ use libp2p::{
     swarm::{ConnectionId, DialError, dial_opts::DialOpts},
 };
 use std::{
-    collections::{BTreeSet, HashMap},
+    collections::{BTreeSet, HashMap, VecDeque},
     net::{Ipv4Addr, Ipv6Addr},
     sync::{
         Mutex,
@@ -36,6 +36,7 @@ pub(crate) struct Shared {
     gossip: Mutex<Vec<GossipPeer>>,
     observed: Mutex<ObservedAddrs>,
     connected: Mutex<BTreeSet<PeerId>>,
+    identified: Mutex<VecDeque<(PeerId, Vec<Multiaddr>)>>,
 }
 
 /// Public addresses outbound peers reported observing for this node. A
@@ -52,12 +53,13 @@ impl ObservedAddrs {
     const CONFIRMED_MAX: usize = 8;
 
     /// Record one report; non-public or non-literal addresses are ignored.
-    pub fn observe(&mut self, address: Multiaddr, reporter: PeerId) {
+    /// Returns the address when this report is the one that confirms it.
+    pub fn observe(&mut self, address: Multiaddr, reporter: PeerId) -> Option<Multiaddr> {
         if !is_public(&address)
             || validate_gossip_address(&address).is_err()
             || self.confirmed.contains(&address)
         {
-            return;
+            return None;
         }
         let index = match self
             .candidates
@@ -74,13 +76,15 @@ impl ObservedAddrs {
             }
         };
         self.candidates[index].1.insert(reporter);
-        if self.candidates[index].1.len() >= Self::WITNESSES {
-            let (address, _) = self.candidates.remove(index);
-            if self.confirmed.len() == Self::CONFIRMED_MAX {
-                self.confirmed.remove(0);
-            }
-            self.confirmed.push(address);
+        if self.candidates[index].1.len() < Self::WITNESSES {
+            return None;
         }
+        let (address, _) = self.candidates.remove(index);
+        if self.confirmed.len() == Self::CONFIRMED_MAX {
+            self.confirmed.remove(0);
+        }
+        self.confirmed.push(address.clone());
+        Some(address)
     }
 
     pub fn confirmed(&self) -> Vec<Multiaddr> {
@@ -90,6 +94,7 @@ impl ObservedAddrs {
 
 impl Shared {
     const GOSSIP_MAX: usize = 256;
+    const IDENTIFIED_MAX: usize = 64;
     const ENVELOPE: usize = 1024;
 
     pub(crate) fn new(local: PeerId) -> Self {
@@ -98,6 +103,35 @@ impl Shared {
             gossip: Mutex::new(Vec::new()),
             observed: Mutex::new(ObservedAddrs::default()),
             connected: Mutex::new(BTreeSet::new()),
+            identified: Mutex::new(VecDeque::new()),
+        }
+    }
+
+    /// Queue a connected peer's own literal public addresses (newest 64 peers).
+    pub(crate) fn identified(&self, peer: PeerId, advertised: Vec<Multiaddr>) {
+        let addresses: Vec<Multiaddr> = advertised
+            .into_iter()
+            .filter(|address| validate_gossip_address(address).is_ok() && is_public(address))
+            .take(PEER_ADDRESSES_MAX)
+            .collect();
+        if addresses.is_empty() || peer == self.local {
+            return;
+        }
+        let mut queue = match self.identified.lock() {
+            Ok(queue) => queue,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        queue.retain(|(known, _)| *known != peer);
+        if queue.len() == Self::IDENTIFIED_MAX {
+            queue.pop_front();
+        }
+        queue.push_back((peer, addresses));
+    }
+
+    fn drain_identified(&self) -> Vec<(PeerId, Vec<Multiaddr>)> {
+        match self.identified.lock() {
+            Ok(mut queue) => queue.drain(..).collect(),
+            Err(poisoned) => poisoned.into_inner().drain(..).collect(),
         }
     }
 
@@ -134,10 +168,12 @@ impl Shared {
         };
     }
 
-    /// One identify report, counted only from outbound connections.
-    pub(crate) fn observe(&self, address: Multiaddr, reporter: PeerId) {
-        if let Ok(mut observed) = self.observed.lock() {
-            observed.observe(address, reporter);
+    /// One identify report, counted only from outbound connections. Returns
+    /// the address once this report confirms it.
+    pub(crate) fn observe(&self, address: Multiaddr, reporter: PeerId) -> Option<Multiaddr> {
+        match self.observed.lock() {
+            Ok(mut observed) => observed.observe(address, reporter),
+            Err(poisoned) => poisoned.into_inner().observe(address, reporter),
         }
     }
 
@@ -260,6 +296,18 @@ pub fn validate_gossip_address(address: &Multiaddr) -> Result<Option<PeerId>, Er
             "gossiped addresses must be IP literals with TCP".into(),
         )),
     }
+}
+
+/// An operator announce address: an IP literal with TCP, without a /p2p of
+/// another node. Returned without /p2p, as identify advertises it.
+pub fn validate_announce(address: &Multiaddr, local: PeerId) -> Result<Multiaddr, Error> {
+    if validate_gossip_address(address)?.is_some_and(|named| named != local) {
+        return Err(Error::Invalid("announce address names another peer".into()));
+    }
+    Ok(address
+        .iter()
+        .filter(|part| !matches!(part, Protocol::P2p(_)))
+        .collect())
 }
 
 /// Operator-supplied dial targets: `/ip4|ip6|dns|dns4|dns6/<host>/tcp/<port>`
@@ -452,6 +500,12 @@ impl PeerNetwork {
     /// Peers with at least one established connection right now, sorted.
     pub fn connected_peer_ids(&self) -> Vec<PeerId> {
         self.shared.connected()
+    }
+
+    /// Connected peers' own literal public addresses learned through identify
+    /// since the last call, newest 64 peers; the queue is emptied.
+    pub fn drain_identified(&self) -> Vec<(PeerId, Vec<Multiaddr>)> {
+        self.shared.drain_identified()
     }
 
     /// Dial an address (with or without `/p2p`), then probe the peer with a

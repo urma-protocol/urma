@@ -22,6 +22,15 @@ use urma_node::{
 };
 
 fn node(root: &Path, name: &str, nonce: u32) -> (Arc<Engine>, PeerNetwork) {
+    announcing(root, name, nonce, &[]).unwrap()
+}
+
+fn announcing(
+    root: &Path,
+    name: &str,
+    nonce: u32,
+    announce: &[&str],
+) -> Result<(Arc<Engine>, PeerNetwork), Error> {
     let directory = root.join(name);
     fs::create_dir_all(&directory).unwrap();
     let pair = profile();
@@ -29,8 +38,44 @@ fn node(root: &Path, name: &str, nonce: u32) -> (Arc<Engine>, PeerNetwork) {
     let engine =
         Arc::new(Engine::open(&directory, config(&block, Retention::Unpruned), None).unwrap());
     let listen = Some("/ip4/127.0.0.1/tcp/0".parse().unwrap());
-    let network = PeerNetwork::start(engine.clone(), Keypair::generate_ed25519(), listen).unwrap();
-    (engine, network)
+    let announce = announce.iter().map(|text| text.parse().unwrap()).collect();
+    let network = PeerNetwork::start(
+        engine.clone(),
+        Keypair::generate_ed25519(),
+        listen,
+        announce,
+    )?;
+    Ok((engine, network))
+}
+
+#[test]
+fn identify_carries_announced_public_addresses_but_not_private_listeners() {
+    let root = tempfile::tempdir().unwrap();
+    let announced = "/ip4/8.8.8.8/tcp/28332";
+    let (_engine_a, network_a) = node(root.path(), "a", 1);
+    let (_engine_b, network_b) = announcing(root.path(), "b", 2, &[announced]).unwrap();
+    let idle = AtomicBool::new(false);
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let listen_b = network_b.listen_address().unwrap();
+    let dialed = network_a.dial(listen_b, &idle, deadline).unwrap();
+    let mut identified = Vec::new();
+    while identified.is_empty() && Instant::now() < deadline {
+        identified = network_a.drain_identified();
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(identified, vec![(dialed, vec![announced.parse().unwrap()])]);
+    assert!(
+        network_a.drain_identified().is_empty(),
+        "draining empties the queue"
+    );
+    for rejected in ["/dns4/me.example.org/tcp/1", "/ip4/8.8.8.8/udp/1"] {
+        assert!(
+            announcing(root.path(), "c", 3, &[rejected]).is_err(),
+            "{rejected}"
+        );
+    }
+    network_a.shutdown().unwrap();
+    network_b.shutdown().unwrap();
 }
 
 fn without_peer(address: &Multiaddr) -> Multiaddr {

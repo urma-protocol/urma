@@ -79,7 +79,7 @@ enum Command {
         /// Do not add this chain's built-in DNS seeds.
         #[arg(long, requires = "peer_key")]
         no_seeds: bool,
-        /// This node's own public multiaddr (repeatable), offered to peers.
+        /// Public IP/TCP address peers should dial; advertised through identify.
         #[arg(long, requires = "peer_key")]
         urma_announce: Vec<libp2p::Multiaddr>,
         /// Soft reclaimable cache target (not a SQLite/WAL or total archive quota).
@@ -306,7 +306,12 @@ fn attach_overlay(
         address.push(Protocol::Tcp(socket.port()));
         address
     });
-    let network = Arc::new(PeerNetwork::start(Arc::clone(engine), identity, listener)?);
+    let network = Arc::new(PeerNetwork::start(
+        Arc::clone(engine),
+        identity,
+        listener,
+        options.announce.clone(),
+    )?);
     let peers = book.sync_addresses(&engine.omitting_peers()?);
     let book_size = book.stats().book;
     let book = Arc::new(Mutex::new(book));
