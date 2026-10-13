@@ -37,9 +37,15 @@ fn exact(
     height: u64,
 ) {
     let record = &page.records[index];
-    let expected = urma_wire::index::entry_from_verified(&pair.verified, None, height, position)
-        .unwrap()
-        .unwrap();
+    let returned = &pair.reveal.output[0].script_pubkey;
+    let expected =
+        urma_wire::index::entry_from_verified(&pair.verified, Some(returned), height, position)
+            .unwrap()
+            .unwrap();
+    assert_eq!(
+        record.entry.return_script.as_deref(),
+        Some(hex::encode(returned.as_bytes()).as_str())
+    );
     assert_eq!(
         serde_json::to_value(&record.entry).unwrap(),
         serde_json::to_value(expected).unwrap()

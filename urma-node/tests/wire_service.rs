@@ -424,6 +424,7 @@ fn exact(
         json!({
             "height":height, "position":position, "txid":pair.reveal.compute_txid().to_string(),
             "author":pair.verified.author().to_string(), "record":hex::encode(pair.verified.record_bytes()),
+            "return_script":hex::encode(pair.reveal.output[0].script_pubkey.as_bytes()),
         })
     );
     assert_eq!(
