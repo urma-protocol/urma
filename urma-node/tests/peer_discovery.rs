@@ -156,7 +156,11 @@ fn discovers(root: &Path) -> Value {
     assert_eq!(learned.origin, Origin::Gossip);
     assert_eq!(learned.addrs, vec![bare(&c.listening())]);
     assert!(learned.last_success.is_some());
-    assert_eq!(entry_of(&saved, b.id).origin, Origin::Seed, "seed identified");
+    assert_eq!(
+        entry_of(&saved, b.id).origin,
+        Origin::Seed,
+        "seed identified"
+    );
     let status = a_discovery.status().unwrap();
     let counts = (status.seeds, status.book, status.verified, status.gossip);
     assert_eq!(counts, (1, 2, 2, 1));
@@ -210,7 +214,11 @@ fn private(root: &Path) -> Value {
     // The dial's zero-limit chain probe, then one bounded gossip request.
     let expected = vec![Kind::Peers { limit: 0 }, Kind::Peers { limit: 32 }];
     assert_eq!(asked, expected);
-    assert!(g.requests().iter().all(|request| request.version == VERSION));
+    assert!(
+        g.requests()
+            .iter()
+            .all(|request| request.version == VERSION)
+    );
     let saved = saved_book(&path, &a);
     assert_eq!(saved.entries().len(), 2, "{:?}", saved.entries());
     assert_eq!(entry_of(&saved, d.id).origin, Origin::Gossip);
@@ -337,7 +345,13 @@ fn seeds(root: &Path) -> Value {
     let late = Sink::start();
     let b = node(root, "b", None);
     let mut entries: Vec<Value> = (0..4)
-        .map(|_| manual_entry(Some(fresh_id()), &closed_port(), (Some(now() - 10), 0, None)))
+        .map(|_| {
+            manual_entry(
+                Some(fresh_id()),
+                &closed_port(),
+                (Some(now() - 10), 0, None),
+            )
+        })
         .collect();
     entries.push(
         json!({"peer_id":null,"addrs":[late.address.to_string()],"origin":"seed",
@@ -367,7 +381,11 @@ fn budget(root: &Path) -> Value {
     stage(root, "one round performs at most three network operations");
     rounds(&discovery, &a, 1);
     let first = (dialed(&seeds), dialed(&manual));
-    assert_eq!(first.0 + first.1, Discovery::OPERATIONS_PER_ROUND, "{first:?}");
+    assert_eq!(
+        first.0 + first.1,
+        Discovery::OPERATIONS_PER_ROUND,
+        "{first:?}"
+    );
     assert!(first.1 <= Discovery::DIALS_PER_ROUND, "{first:?}");
     rounds(&discovery, &a, 1);
     assert_eq!(dialed(&seeds), first.0, "no seed pass in round 1");
@@ -406,12 +424,16 @@ fn overlay_service(a: &Node, discovery: Discovery) -> Service {
         peers: Vec::new(),
         info,
     };
-    Service::bind("127.0.0.1:0".parse().unwrap(), TOKEN.into(), a.engine.clone())
-        .unwrap()
-        .with_peer_sync(sync)
-        .unwrap()
-        .with_discovery(discovery)
-        .unwrap()
+    Service::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        TOKEN.into(),
+        a.engine.clone(),
+    )
+    .unwrap()
+    .with_peer_sync(sync)
+    .unwrap()
+    .with_discovery(discovery)
+    .unwrap()
 }
 
 fn service(root: &Path) -> Value {
@@ -436,12 +458,21 @@ fn service(root: &Path) -> Value {
     };
     let typed: urma_node_client::model::ServiceStatus = serde_json::from_value(status).unwrap();
     let discovery = typed.overlay.unwrap().discovery.unwrap();
-    let counts = (discovery.seeds, discovery.book, discovery.verified, discovery.gossip);
+    let counts = (
+        discovery.seeds,
+        discovery.book,
+        discovery.verified,
+        discovery.gossip,
+    );
     assert_eq!(counts, (1, 1, 0, 0));
     assert!(discovery.last_seed_round_error_at.is_some());
     assert!(discovery.last_gossip_error.is_none());
     let body = http(address, "/v1/overlay/book").unwrap();
-    let entries = body.as_array().or(body["entries"].as_array()).unwrap().clone();
+    let entries = body
+        .as_array()
+        .or(body["entries"].as_array())
+        .unwrap()
+        .clone();
     assert_eq!(entries.len(), 1, "{body}");
     assert_eq!(entries[0]["origin"], "seed");
     assert_eq!(entries[0]["failures"], 1);
