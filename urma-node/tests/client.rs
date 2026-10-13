@@ -248,7 +248,7 @@ fn status_sends_authenticated_bodyless_http11_to_the_explicit_address() {
         "application/json",
         &serde_json::to_vec(&value).unwrap(),
     ));
-    assert_eq!(mock.client().status().unwrap(), value);
+    assert_eq!(mock.client().status_json().unwrap(), value);
     assert_eq!(
         mock.request(),
         format!(
@@ -315,7 +315,7 @@ fn only_record_404_is_missing_authentication_and_other_statuses_are_errors() {
     for code in [201, 301, 401, 404, 500] {
         let mock = Mock::raw(reply(code, "application/json", b"{}"));
         assert!(
-            mock.client().status().is_err(),
+            mock.client().status_json().is_err(),
             "status accepted HTTP {code}"
         );
         mock.finish();
@@ -355,7 +355,7 @@ fn rejects_malformed_framing_lengths_transfer_encoding_and_content_types() {
     ];
     for fault in faults {
         let mock = Mock::raw(format!("{fault}\r\n\r\n{{}}").into_bytes());
-        assert!(mock.client().status().is_err(), "accepted {fault:?}");
+        assert!(mock.client().status_json().is_err(), "accepted {fault:?}");
         mock.finish();
     }
 }
@@ -371,7 +371,7 @@ fn rejects_truncated_oversized_headers_and_invalid_json_even_for_404() {
         reply(200, "application/json", b"{broken"), reply(200, "application/json", b"{}junk"),
     ] {
         let mock = Mock::raw(bytes);
-        assert!(mock.client().status().is_err());
+        assert!(mock.client().status_json().is_err());
         mock.finish();
     }
     for bytes in [
@@ -392,7 +392,7 @@ fn accepts_exact_header_limit_and_case_insensitive_field_names() {
     raw.resize(8192 - 4, b'x');
     raw.extend_from_slice(b"\r\n\r\n{}");
     let mock = Mock::raw(raw);
-    assert_eq!(mock.client().status().unwrap(), json!({}));
+    assert_eq!(mock.client().status_json().unwrap(), json!({}));
     mock.finish();
 }
 
@@ -402,7 +402,7 @@ fn resource_limits_reject_announced_excess_before_reading_body() {
         b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 33554433\r\n\r\n"
             .to_vec(),
     );
-    let error = mock.client().status().unwrap_err();
+    let error = mock.client().status_json().unwrap_err();
     assert!(
         matches!(error, Error::Invalid(ref message) if message.contains("32 MiB")),
         "{error}"
@@ -415,7 +415,7 @@ fn resource_limits_reject_announced_excess_before_reading_body() {
         b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 33554432\r\n\r\n"
             .to_vec(),
     );
-    let error = mock.client().status().unwrap_err();
+    let error = mock.client().status_json().unwrap_err();
     assert!(
         matches!(error, Error::Io(ref cause) if cause.kind() == io::ErrorKind::UnexpectedEof),
         "{error}"
@@ -425,7 +425,7 @@ fn resource_limits_reject_announced_excess_before_reading_body() {
     let mut bytes = b"HTTP/1.1 200 OK\r\nX-Fill: ".to_vec();
     bytes.resize(8193, b'x');
     let mock = Mock::raw(bytes);
-    let error = mock.client().status().unwrap_err();
+    let error = mock.client().status_json().unwrap_err();
     assert!(
         matches!(error, Error::Invalid(ref message) if message.contains("8192")),
         "{error}"
@@ -469,7 +469,7 @@ fn absolute_deadline_covers_headers_and_body_while_progress_continues() {
     // Start before status opens its socket: this measures connect + request
     // write + delayed header + progressing body against one operation budget.
     let began = Instant::now();
-    let error = mock.client().status().unwrap_err();
+    let error = mock.client().status_json().unwrap_err();
     let elapsed = began.elapsed();
     assert!(
         matches!(error, Error::Io(ref cause) if matches!(cause.kind(), io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock)),
@@ -492,7 +492,7 @@ fn refused_connection_is_an_error_and_caller_can_use_its_own_source() {
     let address = listener.local_addr().unwrap();
     drop(listener);
     let client = Client::new(address, TOKEN.into()).unwrap();
-    assert!(client.status().is_err());
+    assert!(client.status_json().is_err());
     assert!(client.record(record().receipt.txid).is_err());
 
     // Source selection belongs to the caller. It can use direct acquisition

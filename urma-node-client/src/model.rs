@@ -124,3 +124,71 @@ pub struct ArchiveStatus {
     /// Selected records admitted selectively whose block has not been scanned.
     pub unaudited_records: u64,
 }
+
+/// Historical receipt of one atomic cache maintenance step. Later admissions,
+/// pins and reorgs can change usage. Protected evidence and SQLite/WAL overhead
+/// are outside this metric; disabled enforcement does not imply an empty archive.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CacheReceipt {
+    pub enabled: bool,
+    pub limit_bytes: u64,
+    pub before_bytes: u64,
+    pub remaining_bytes: u64,
+    pub removed_records: u64,
+    pub removed_transactions: u64,
+    pub over_budget: bool,
+}
+
+/// Operator-reported service state. Every `last_*_error` describes the latest
+/// attempt of that worker; `*_at` is when it was recorded, in Unix seconds.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ServiceStatus {
+    pub archive: ArchiveStatus,
+    pub last_sync_error: Option<String>,
+    pub last_sync_error_at: Option<u64>,
+    pub last_retention_error: Option<String>,
+    pub last_retention_error_at: Option<u64>,
+    pub last_names_error: Option<String>,
+    pub last_names_error_at: Option<u64>,
+    pub last_dependency_error: Option<String>,
+    pub last_dependency_error_at: Option<u64>,
+    pub last_inventory_error: Option<String>,
+    pub last_inventory_error_at: Option<u64>,
+    pub commit_sources: Vec<CommitSourceStatus>,
+    pub cache_limit_bytes: u64,
+    pub last_cache_error: Option<String>,
+    pub last_cache_error_at: Option<u64>,
+    pub last_cache_maintenance: Option<CacheReceipt>,
+    pub overlay: Option<OverlayStatus>,
+    pub retention_configured: bool,
+    pub record_sources_configured: u64,
+    pub capabilities: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CommitSourceStatus {
+    pub label: String,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<u64>,
+}
+
+/// Public overlay facts; never secrets. Counters cover this service run.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayStatus {
+    pub peer_id: String,
+    pub listen: Option<String>,
+    pub peer_book: u64,
+    pub connected: u64,
+    pub admitted: u64,
+    pub rejected: u64,
+    pub peers: Vec<OverlayPeerStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OverlayPeerStatus {
+    pub label: String,
+    pub cursor: u64,
+    pub synced_through: Option<u64>,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<u64>,
+}

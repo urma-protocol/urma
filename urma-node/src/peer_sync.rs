@@ -6,12 +6,12 @@
 use crate::{
     Error,
     engine::Engine,
-    model::RecordReceipt,
+    model::{OverlayPeerStatus, OverlayStatus, RecordReceipt},
     peer::PeerSource,
     peer_protocol::{InventoryPage, Placement},
+    recorded::RecordedError,
 };
 use libp2p::PeerId;
-use serde_json::{Value, json};
 use std::{
     sync::{
         Arc, Mutex,
@@ -54,7 +54,7 @@ struct Peer {
     source: PeerSource,
     range: Mutex<Option<Range>>,
     last_request: Mutex<Option<Instant>>,
-    last_error: Mutex<Option<String>>,
+    last_error: Mutex<Option<RecordedError>>,
 }
 
 /// Why a step stopped early without blaming the peer.
@@ -163,10 +163,7 @@ impl Scheduler {
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
-        *peer.last_error.lock().map_err(|_| poisoned())? = match outcome {
-            Ok(()) => None,
-            Err(error) => Some(error.to_string()),
-        };
+        *peer.last_error.lock().map_err(|_| poisoned())? = RecordedError::from_result(&outcome);
         Ok(())
     }
 
@@ -279,22 +276,31 @@ impl Scheduler {
         Ok(())
     }
 
-    pub(crate) fn status(&self, engine: &Engine) -> Result<Value, Error> {
+    pub(crate) fn status(&self, engine: &Engine) -> Result<OverlayStatus, Error> {
         let start = engine.status()?.application_start.height;
         let mut peers = Vec::with_capacity(self.peers.len());
         for peer in &self.peers {
             let cursor = engine.peer_cursor(&peer.id)?;
             let synced_through = cursor.checked_sub(1).filter(|height| *height >= start);
-            let last_error = peer.last_error.lock().map_err(|_| poisoned())?.clone();
-            peers.push(json!({"label":peer.label,"cursor":cursor,
-                "synced_through":synced_through,"last_error":last_error}));
+            let recorded = peer.last_error.lock().map_err(|_| poisoned())?.clone();
+            let (last_error, last_error_at) = RecordedError::split(recorded);
+            peers.push(OverlayPeerStatus {
+                label: peer.label.clone(),
+                cursor,
+                synced_through,
+                last_error,
+                last_error_at,
+            });
         }
-        Ok(
-            json!({"peer_id":self.info.peer_id,"listen":self.info.listen,
-            "peer_book":self.info.peer_book,"connected":(self.info.connected)(),
-            "admitted":self.admitted.load(Ordering::Relaxed),
-            "rejected":self.rejected.load(Ordering::Relaxed),"peers":peers}),
-        )
+        Ok(OverlayStatus {
+            peer_id: self.info.peer_id.clone(),
+            listen: self.info.listen.clone(),
+            peer_book: self.info.peer_book,
+            connected: (self.info.connected)(),
+            admitted: self.admitted.load(Ordering::Relaxed),
+            rejected: self.rejected.load(Ordering::Relaxed),
+            peers,
+        })
     }
 }
 

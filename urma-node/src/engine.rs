@@ -229,7 +229,7 @@ impl Engine {
         &self,
         limit_bytes: u64,
         cancelled: &AtomicBool,
-    ) -> Result<crate::cache::CacheMaintenance, Error> {
+    ) -> Result<CacheReceipt, Error> {
         if limit_bytes > i64::MAX as u64 {
             return Err(Error::Invalid("cache limit exceeds storage range".into()));
         }

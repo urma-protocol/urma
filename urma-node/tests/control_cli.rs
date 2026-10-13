@@ -301,6 +301,38 @@ fn object() -> Value {
         "members_total": 3, "members_local": 1, "members_selected": 3, "pinned": false})
 }
 
+// Complete typed service status; the control binary re-serializes the typed
+// struct, so unknown operator fields are dropped from its output.
+fn service_status() -> Value {
+    json!({
+        "archive": {"api_version": 1, "chain_genesis": OTHER,
+            "application_start": {"height": 100, "hash": OTHER}, "retention": "pruned",
+            "generation": 9, "selected_tip": null, "indexed_through": null,
+            "scanned_blocks": 0, "unresolved_dependencies": 0, "stored_transactions": 0,
+            "scan_rules_version": 1, "peer_synced_through": null, "peer_omissions": 0,
+            "unaudited_records": 0},
+        "last_sync_error": "offline", "last_sync_error_at": 1_760_000_000u64,
+        "last_retention_error": null, "last_retention_error_at": null,
+        "last_names_error": null, "last_names_error_at": null,
+        "last_dependency_error": null, "last_dependency_error_at": null,
+        "last_inventory_error": null, "last_inventory_error_at": null,
+        "commit_sources": [{"label": "A", "last_error": "down", "last_error_at": 7}],
+        "cache_limit_bytes": 134_217_728u64, "last_cache_error": null,
+        "last_cache_error_at": null, "last_cache_maintenance": null,
+        "overlay": {"peer_id": "self", "listen": null, "peer_book": 2, "connected": 1,
+            "admitted": 3, "rejected": 0, "peers": [{"label": "p", "cursor": 5,
+            "synced_through": 4, "last_error": null, "last_error_at": null}]},
+        "retention_configured": false, "record_sources_configured": 0,
+        "capabilities": ["status"]
+    })
+}
+
+fn future_service_status() -> Value {
+    let mut status = service_status();
+    status["field_from_a_newer_operator"] = json!(true);
+    status
+}
+
 // Coherent operator DTOs for CLI transport/JSON tests, not chain placements,
 // signed observations or evidence of real Names ownership/scan coverage.
 fn names_status(height: u64) -> NamesStatus {
@@ -356,8 +388,8 @@ fn status_and_object_emit_exact_json_and_404_emits_explicit_null() {
             vec!["status"],
             "/v1/status".to_owned(),
             200,
-            json!({"archive":{"scanned_blocks":0},"last_sync_error":null}),
-            json!({"archive":{"scanned_blocks":0},"last_sync_error":null}),
+            future_service_status(),
+            service_status(),
         ),
         (
             vec!["object", ROOT],
@@ -694,8 +726,9 @@ fn exact_256_byte_token_file_is_bounded_then_validated_and_nonloopback_is_refuse
     let fixture = Fixture::new(&bytes);
     let mock = Mock::new();
     let child = fixture.spawn(mock.address, &["status"]);
-    mock.respond("GET", "/v1/status", &response(200, b"{}"));
-    success(child.finish(), json!({}));
+    let body = serde_json::to_vec(&service_status()).unwrap();
+    mock.respond("GET", "/v1/status", &response(200, &body));
+    success(child.finish(), service_status());
     mock.assert_no_connection();
     let mut oversized = TOKEN.as_bytes().to_vec();
     oversized.resize(257, b'\n');

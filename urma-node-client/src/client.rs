@@ -7,7 +7,7 @@
 
 use crate::{
     Error,
-    model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt},
+    model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt, ServiceStatus},
     names::{
         MAX_NAMES_PAGE, MAX_NAMES_PAGE_BYTES, MAX_NAMES_STATE_BYTES, NamesCursor, NamesEntry,
         NamesPage, NamesResolution, NamesStatus, NamesStep,
@@ -47,8 +47,14 @@ impl Client {
         Ok(Self { address, token })
     }
 
-    /// Read status reported by the local operator, without verifying its claims.
-    pub fn status(&self) -> Result<serde_json::Value, Error> {
+    /// Typed service status reported by the local operator, without verifying
+    /// its claims. Unknown fields from a newer operator are ignored.
+    pub fn status(&self) -> Result<ServiceStatus, Error> {
+        Ok(serde_json::from_value(self.status_json()?)?)
+    }
+
+    /// Raw status JSON reported by the local operator, without verifying its claims.
+    pub fn status_json(&self) -> Result<serde_json::Value, Error> {
         let deadline = Instant::now() + OPERATION_TIMEOUT;
         let (code, body) = self.request("GET", "/v1/status", deadline)?;
         if code != 200 {

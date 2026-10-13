@@ -11,7 +11,7 @@
 
 use crate::{
     Error,
-    model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt},
+    model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt, ServiceStatus},
     names::{NamesCursor, NamesPage, NamesResolution, NamesStatus, NamesStep},
     projection::{WireCursor, WirePage},
 };
@@ -32,9 +32,14 @@ impl Client {
             .map_err(Error::from)
     }
 
-    /// Read status reported by the local operator, without verifying its claims.
-    pub fn status(&self) -> Result<serde_json::Value, Error> {
+    /// Typed service status reported by the local operator, without verifying its claims.
+    pub fn status(&self) -> Result<ServiceStatus, Error> {
         self.inner.status().map_err(Error::from)
+    }
+
+    /// Raw status JSON reported by the local operator, without verifying its claims.
+    pub fn status_json(&self) -> Result<serde_json::Value, Error> {
+        self.inner.status_json().map_err(Error::from)
     }
 
     /// Read locally archived data. `None` means HTTP 404 (not locally available),

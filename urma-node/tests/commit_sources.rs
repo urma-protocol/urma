@@ -27,7 +27,7 @@ use urma_chain::observation::Chain;
 use urma_node::{
     Error,
     engine::Engine,
-    model::Retention,
+    model::{CommitSourceStatus, Retention},
     service::{Service, ShutdownHandle},
     source::{CommitSource, CommitSources, PublicCommitSource},
 };
@@ -268,6 +268,16 @@ fn entries(status: &Value) -> Vec<(String, Option<String>)> {
 fn expect(rows: &[(&str, Option<String>)]) -> Vec<(String, Option<String>)> {
     rows.iter()
         .map(|(label, error)| ((*label).to_owned(), error.clone()))
+        .collect()
+}
+
+// Every recorded error carries its recording time; a cleared one carries none.
+fn labelled(rows: Vec<CommitSourceStatus>) -> Vec<(String, Option<String>)> {
+    rows.into_iter()
+        .map(|row| {
+            assert_eq!(row.last_error.is_some(), row.last_error_at.is_some());
+            (row.label, row.last_error)
+        })
         .collect()
 }
 
@@ -541,7 +551,7 @@ fn direct_chain_semantics(pair: &SignedPair) {
     );
     assert!(absent.fetch(parent, &idle).unwrap().is_none());
     assert_eq!(
-        absent.status().unwrap(),
+        labelled(absent.status().unwrap()),
         expect(&[("A", Some(shown("A"))), ("B", None)])
     );
     assert_eq!(logged(&log).len(), 2);
@@ -565,7 +575,7 @@ fn direct_chain_semantics(pair: &SignedPair) {
         Some(pair.raw_commit.clone())
     );
     assert_eq!(
-        recovering.status().unwrap(),
+        labelled(recovering.status().unwrap()),
         expect(&[("A", Some(shown("A"))), ("B", None)])
     );
     assert_eq!(
@@ -573,7 +583,7 @@ fn direct_chain_semantics(pair: &SignedPair) {
         Some(pair.raw_commit.clone())
     );
     assert_eq!(
-        recovering.status().unwrap(),
+        labelled(recovering.status().unwrap()),
         expect(&[("A", None), ("B", None)])
     );
     let order: Vec<String> = logged(&log).into_iter().map(|(label, _)| label).collect();
@@ -594,7 +604,10 @@ fn direct_cancel_and_verification(pair: &SignedPair) {
         logged(&log).is_empty(),
         "pre-cancelled chain asked an entry"
     );
-    assert_eq!(precancelled.status().unwrap(), expect(&[("A", None)]));
+    assert_eq!(
+        labelled(precancelled.status().unwrap()),
+        expect(&[("A", None)])
+    );
     let (midway, log) = chained(
         Chain::BitcoinRegtest,
         pairs,
@@ -610,7 +623,7 @@ fn direct_cancel_and_verification(pair: &SignedPair) {
         "B asked after cancel"
     );
     assert_eq!(
-        midway.status().unwrap(),
+        labelled(midway.status().unwrap()),
         expect(&[("A", None), ("B", None)])
     );
     let (verified, log) = chained(
@@ -621,7 +634,7 @@ fn direct_cancel_and_verification(pair: &SignedPair) {
     let served = verified.fetch(parent, &AtomicBool::new(false)).unwrap();
     assert_eq!(served, Some(pair.raw_commit.clone()));
     assert_eq!(logged(&log).len(), 2);
-    let rows = verified.status().unwrap();
+    let rows = labelled(verified.status().unwrap());
     assert_eq!(rows[0].1.as_deref(), Some(MISMATCH));
     assert_eq!(rows[1], ("B".to_owned(), None));
 }
@@ -699,7 +712,7 @@ fn public_source_is_inert() {
     set.push("public".to_owned(), Box::new(public));
     set.push("public-missing".to_owned(), Box::new(absent));
     assert_eq!(
-        set.status().unwrap(),
+        labelled(set.status().unwrap()),
         expect(&[("public", None), ("public-missing", None)])
     );
     assert_eq!(

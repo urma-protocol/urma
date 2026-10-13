@@ -294,7 +294,7 @@ fn prune_sends_exact_bodyless_route_and_reads_u64_removal_count() {
 #[test]
 fn generalized_transport_preserves_exact_get_request() {
     let mock = Mock::raw(reply(200, br#"{"archive":{}}"#));
-    assert_eq!(mock.client().status().unwrap(), json!({"archive":{}}));
+    assert_eq!(mock.client().status_json().unwrap(), json!({"archive":{}}));
     assert_eq!(mock.request(), expected_request(&mock, "GET", "/v1/status"));
     mock.finish();
 }

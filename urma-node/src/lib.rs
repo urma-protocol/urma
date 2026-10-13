@@ -19,6 +19,7 @@ pub mod peer_protocol;
 pub mod peer_sync;
 pub mod peerbook;
 pub mod projection;
+mod recorded;
 pub mod retrieval;
 mod scan;
 pub mod service;

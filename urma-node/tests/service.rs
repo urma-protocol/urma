@@ -449,7 +449,11 @@ fn offline_status_requires_auth_and_rejects_duplicate_auth_and_request_bodies() 
     assert_eq!(observed["last_sync_error"], Value::Null);
     assert_eq!(observed["last_retention_error"], Value::Null);
     assert_eq!(observed["last_names_error"], Value::Null);
+    assert_eq!(observed["last_sync_error_at"], Value::Null);
+    assert_eq!(observed["last_cache_error_at"], Value::Null);
     assert_eq!(observed["retention_configured"], false);
+    let typed: urma_node::model::ServiceStatus = serde_json::from_value(observed.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&typed).unwrap(), observed);
     assert_eq!(
         observed["capabilities"],
         json!([

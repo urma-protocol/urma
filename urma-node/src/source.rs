@@ -1,4 +1,8 @@
-use crate::{Error, model::ChainPoint};
+use crate::{
+    Error,
+    model::{ChainPoint, CommitSourceStatus},
+    recorded::RecordedError,
+};
 use bitcoin::{BlockHash, Txid, block::Header};
 use std::{
     net::SocketAddr,
@@ -178,7 +182,7 @@ impl CommitSource for PublicCommitSource {
 pub struct CommitSources {
     chain: Chain,
     entries: Vec<(String, Box<dyn CommitSource + Send + Sync>)>,
-    errors: Mutex<Vec<Option<String>>>,
+    errors: Mutex<Vec<Option<RecordedError>>>,
 }
 
 impl CommitSources {
@@ -198,13 +202,20 @@ impl CommitSources {
         self.entries.is_empty()
     }
 
-    pub fn status(&self) -> Result<Vec<(String, Option<String>)>, Error> {
+    pub fn status(&self) -> Result<Vec<CommitSourceStatus>, Error> {
         let errors = self.errors()?;
         Ok(self
             .entries
             .iter()
             .zip(errors.iter())
-            .map(|(entry, error)| (entry.0.clone(), error.clone()))
+            .map(|(entry, error)| {
+                let (last_error, last_error_at) = RecordedError::split(error.clone());
+                CommitSourceStatus {
+                    label: entry.0.clone(),
+                    last_error,
+                    last_error_at,
+                }
+            })
             .collect())
     }
 
@@ -212,7 +223,7 @@ impl CommitSources {
         self.entries.iter().map(|entry| entry.1.chain()).collect()
     }
 
-    fn errors(&self) -> Result<MutexGuard<'_, Vec<Option<String>>>, Error> {
+    fn errors(&self) -> Result<MutexGuard<'_, Vec<Option<RecordedError>>>, Error> {
         let mut errors = self
             .errors
             .lock()
@@ -229,7 +240,7 @@ impl CommitSources {
         Ok(Some(raw))
     }
 
-    fn record(&self, index: usize, error: Option<String>) -> Result<(), Error> {
+    fn record(&self, index: usize, error: Option<RecordedError>) -> Result<(), Error> {
         let mut errors = self.errors()?;
         let slot = errors
             .get_mut(index)
@@ -261,7 +272,7 @@ impl CommitSource for CommitSources {
                 }
                 Ok(None) => self.record(index, None)?,
                 Err(error) => {
-                    self.record(index, Some(error.to_string()))?;
+                    self.record(index, Some(RecordedError::now(&error)))?;
                     failures += 1;
                     last = Some(error);
                 }

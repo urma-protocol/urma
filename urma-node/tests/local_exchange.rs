@@ -227,7 +227,7 @@ fn local_service_shares_exact_packages_with_independent_selective_admission_and_
     }
     assert_eq!(source_a.body_calls.load(Ordering::Relaxed), 2);
     assert_eq!(
-        client_one.status().unwrap()["archive"],
+        client_one.status_json().unwrap()["archive"],
         serde_json::to_value(&scanned).unwrap()
     );
 
@@ -306,7 +306,7 @@ fn local_service_shares_exact_packages_with_independent_selective_admission_and_
         assert!(RecordSource::fetch(client, second_id).unwrap().is_none());
     }
     assert_eq!(
-        client_one.status().unwrap()["archive"],
+        client_one.status_json().unwrap()["archive"],
         serde_json::to_value(&reorged_a).unwrap()
     );
     assert_eq!(

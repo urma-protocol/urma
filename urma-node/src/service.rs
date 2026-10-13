@@ -3,7 +3,9 @@
 use crate::{
     Error,
     engine::Engine,
+    model::{CacheReceipt, ServiceStatus},
     peer_sync::{PeerSync, Scheduler},
+    recorded::{RecordedError, read, record},
     retrieval::RecordSource,
     source::{CommitSource, CommitSources},
 };
@@ -23,9 +25,11 @@ use std::{
 
 #[derive(Default, Clone)]
 struct CacheStatus {
-    receipt: Option<crate::cache::CacheMaintenance>,
-    error: Option<String>,
+    receipt: Option<CacheReceipt>,
+    error: Option<RecordedError>,
 }
+
+type ErrorSlot = Arc<Mutex<Option<RecordedError>>>;
 
 /// Cooperative stop request shared with the owner of a running service.
 /// Requesting shutdown does not wait for completion or interrupt entered I/O
@@ -47,20 +51,32 @@ pub struct Service {
     token: String,
     engine: Arc<Engine>,
     stop: Arc<AtomicBool>,
-    sync_error: Arc<Mutex<Option<String>>>,
-    names_error: Arc<Mutex<Option<String>>>,
-    retention_error: Arc<Mutex<Option<String>>>,
+    sync_error: ErrorSlot,
+    names_error: ErrorSlot,
+    retention_error: ErrorSlot,
     cache_status: Arc<Mutex<CacheStatus>>,
     cache_bytes: u64,
     retention: Option<(PathBuf, urma_runtime::multipart::RecoveryLimits)>,
     sources: Vec<Arc<dyn RecordSource + Send + Sync>>,
     commit_sources: Option<CommitSources>,
-    dependency_error: Arc<Mutex<Option<String>>>,
+    dependency_error: ErrorSlot,
     peer_sync: Option<Scheduler>,
-    inventory_error: Arc<Mutex<Option<String>>>,
+    inventory_error: ErrorSlot,
 }
 
 impl Service {
+    const CAPABILITIES: [&str; 9] = [
+        "status",
+        "header-sync",
+        "full-block-scan",
+        "record-read",
+        "object-status",
+        "object-pin",
+        "cache-prune",
+        "wire-index",
+        "names-index",
+    ];
+
     pub fn bind(address: SocketAddr, token: String, engine: Arc<Engine>) -> Result<Self, Error> {
         if !address.ip().is_loopback()
             || token.len() != 64
@@ -206,18 +222,14 @@ impl Service {
                 }
                 Ok(status)
             });
-        if let Ok(mut error) = self.sync_error.lock() {
-            *error = result.err().map(|e| e.to_string());
-        }
+        record(&self.sync_error, &result);
         self.acquire_next_dependency();
         // Registered projections can use already scanned data
         // even if this round's acquisition failed. They never
         // create registrations or acquire missing history.
         if !self.stop.load(Ordering::Acquire) {
             let result = self.engine.maintain_next_names(&self.stop);
-            if let Ok(mut error) = self.names_error.lock() {
-                *error = result.err().map(|e| e.to_string());
-            }
+            record(&self.names_error, &result);
         }
         // Full-block audit always gets its opportunity before
         // one object attempt. A sync failure does not suppress
@@ -233,9 +245,7 @@ impl Service {
                 let result = self
                     .engine
                     .retain_next_object(&sources, *limits, scratch, &self.stop);
-                if let Ok(mut error) = self.retention_error.lock() {
-                    *error = result.err().map(|e| e.to_string());
-                }
+                record(&self.retention_error, &result);
             }
         }
         // Independent local maintenance also runs after failed
@@ -249,7 +259,7 @@ impl Service {
                         status.error = None;
                     }
                     Err(cause) => {
-                        status.error = Some(cause.to_string());
+                        status.error = Some(RecordedError::now(cause));
                     }
                 }
             }
@@ -267,9 +277,7 @@ impl Service {
         if self.stop.load(Ordering::Acquire) {
             return;
         }
-        if let Ok(mut error) = self.inventory_error.lock() {
-            *error = result.err().map(|e| e.to_string());
-        }
+        record(&self.inventory_error, &result);
     }
 
     fn acquire_next_dependency(&self) {
@@ -283,64 +291,57 @@ impl Service {
         if self.stop.load(Ordering::Acquire) {
             return;
         }
-        if let Ok(mut error) = self.dependency_error.lock() {
-            *error = result.err().map(|e| e.to_string());
-        }
+        record(&self.dependency_error, &result);
     }
 
-    fn status_json(&self) -> Result<serde_json::Value, Error> {
-        let status = self.engine.status()?;
-        let error = self
-            .sync_error
-            .lock()
-            .map_err(|_| Error::Invalid("sync status poisoned".into()))?
-            .clone();
-        let retention_error = self
-            .retention_error
-            .lock()
-            .map_err(|_| Error::Invalid("retention status poisoned".into()))?
-            .clone();
-        let names_error = self
-            .names_error
-            .lock()
-            .map_err(|_| Error::Invalid("Names status poisoned".into()))?
-            .clone();
-        let cache_status = self
+    fn status(&self) -> Result<ServiceStatus, Error> {
+        let (last_sync_error, last_sync_error_at) =
+            RecordedError::split(read(&self.sync_error, "sync")?);
+        let (last_retention_error, last_retention_error_at) =
+            RecordedError::split(read(&self.retention_error, "retention")?);
+        let (last_names_error, last_names_error_at) =
+            RecordedError::split(read(&self.names_error, "Names")?);
+        let (last_dependency_error, last_dependency_error_at) =
+            RecordedError::split(read(&self.dependency_error, "dependency")?);
+        let (last_inventory_error, last_inventory_error_at) =
+            RecordedError::split(read(&self.inventory_error, "inventory")?);
+        let cache = self
             .cache_status
             .lock()
             .map_err(|_| Error::Invalid("cache status poisoned".into()))?
             .clone();
-        let dependency_error = self
-            .dependency_error
-            .lock()
-            .map_err(|_| Error::Invalid("dependency status poisoned".into()))?
-            .clone();
-        let inventory_error = self
-            .inventory_error
-            .lock()
-            .map_err(|_| Error::Invalid("inventory status poisoned".into()))?
-            .clone();
+        let (last_cache_error, last_cache_error_at) = RecordedError::split(cache.error);
         let overlay = match &self.peer_sync {
-            Some(scheduler) => scheduler.status(&self.engine)?,
-            None => serde_json::Value::Null,
+            Some(scheduler) => Some(scheduler.status(&self.engine)?),
+            None => None,
         };
         let mut commit_sources = Vec::new();
         for sources in self.commit_sources.iter() {
-            for (label, last_error) in sources.status()? {
-                commit_sources.push(json!({"label":label,"last_error":last_error}));
-            }
+            commit_sources.extend(sources.status()?);
         }
-        Ok(
-            json!({"archive":status,"last_sync_error":error,"last_retention_error":retention_error,
-                "last_names_error":names_error,
-                "commit_sources":commit_sources,"last_dependency_error":dependency_error,
-                "overlay":overlay,"last_inventory_error":inventory_error,
-                "cache_limit_bytes":self.cache_bytes,"last_cache_error":cache_status.error,
-                "last_cache_maintenance":cache_status.receipt,
-                "retention_configured":self.retention.is_some(),
-                "record_sources_configured":self.sources.len(),
-                "capabilities":["status","header-sync","full-block-scan","record-read","object-status","object-pin","cache-prune","wire-index","names-index"]}),
-        )
+        Ok(ServiceStatus {
+            archive: self.engine.status()?,
+            last_sync_error,
+            last_sync_error_at,
+            last_retention_error,
+            last_retention_error_at,
+            last_names_error,
+            last_names_error_at,
+            last_dependency_error,
+            last_dependency_error_at,
+            last_inventory_error,
+            last_inventory_error_at,
+            commit_sources,
+            cache_limit_bytes: self.cache_bytes,
+            last_cache_error,
+            last_cache_error_at,
+            last_cache_maintenance: cache.receipt,
+            overlay,
+            retention_configured: self.retention.is_some(),
+            record_sources_configured: u64::try_from(self.sources.len())
+                .map_err(|error| Error::Invalid(format!("record source count: {error}")))?,
+            capabilities: Self::CAPABILITIES.map(String::from).to_vec(),
+        })
     }
 
     fn accept_loop(&self) -> Result<(), Error> {
@@ -549,7 +550,9 @@ impl Service {
                     ),
                 }
             }
-            "GET /v1/status HTTP/1.1" => respond(stream, 200, self.status_json()?),
+            "GET /v1/status HTTP/1.1" => {
+                respond(stream, 200, serde_json::to_value(self.status()?)?)
+            }
             // Ascending by height; only the newest (highest) 1024 rows are returned.
             "GET /v1/overlay/omissions HTTP/1.1" => match self.engine.peer_omissions_latest(1024) {
                 Ok(omissions) => respond(stream, 200, serde_json::to_value(omissions)?),

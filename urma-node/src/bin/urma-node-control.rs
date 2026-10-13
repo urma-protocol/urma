@@ -81,7 +81,7 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
     let client = Client::new(args.endpoint, token.to_owned())?;
     let value = (|| -> Result<serde_json::Value, Error> {
         Ok(match args.command {
-            Command::Status => client.status()?,
+            Command::Status => serde_json::to_value(client.status()?)?,
             Command::Object { root } => serde_json::to_value(client.object_status(root)?)?,
             Command::Pin { root } => serde_json::to_value(client.set_pin(root, true)?)?,
             Command::Unpin { root } => serde_json::to_value(client.set_pin(root, false)?)?,

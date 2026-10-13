@@ -1,5 +1,9 @@
 use super::{Archive, unsigned};
-use crate::{Error, cache::*, model::Retention};
+use crate::{
+    Error,
+    cache::*,
+    model::{CacheReceipt, Retention},
+};
 use rusqlite::Connection;
 
 // Match the complete V0 prefix, not just the kind byte. No blob is loaded into
@@ -31,9 +35,9 @@ fn reclaimable_bytes(db: &Connection) -> Result<u64, Error> {
 }
 
 impl Archive {
-    pub(crate) fn maintain_cache(&mut self, limit_bytes: u64) -> Result<CacheMaintenance, Error> {
+    pub(crate) fn maintain_cache(&mut self, limit_bytes: u64) -> Result<CacheReceipt, Error> {
         let enabled = self.config.retention == Retention::Pruned;
-        let mut receipt = CacheMaintenance {
+        let mut receipt = CacheReceipt {
             enabled,
             limit_bytes,
             before_bytes: 0,
