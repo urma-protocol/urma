@@ -907,7 +907,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2687,7 +2687,7 @@ dependencies = [
  "once_cell",
  "socket2 0.6.5",
  "tracing",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2944,7 +2944,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3336,10 +3336,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3651,7 +3651,7 @@ dependencies = [
  "urma-io",
  "urma-names",
  "urma-node",
- "urma-node-client 0.5.0",
+ "urma-node-client",
  "urma-profiles",
  "urma-runtime",
  "urma-wallet",
@@ -3771,9 +3771,9 @@ dependencies = [
 
 [[package]]
 name = "urma-node"
-version = "0.4.0"
+version = "0.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5978fbaef554c8ddfa2ca3fc3fe29e9f6ceae34e8adaad676a3a65ed746bfeac"
+checksum = "64fa822075df02ec38ac690d454818d31d46adb4205c23275d5f0cfc7ba5cb7c"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -3790,24 +3790,8 @@ dependencies = [
  "urma-core",
  "urma-io",
  "urma-names",
- "urma-node-client 0.4.0",
+ "urma-node-client",
  "urma-runtime",
- "urma-wire",
-]
-
-[[package]]
-name = "urma-node-client"
-version = "0.4.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "03d4244b47bbd302c560f808adf846e18e00f8a26c591335e9a4c60596863753"
-dependencies = [
- "bitcoin",
- "hex",
- "serde",
- "serde_json",
- "urma-chain",
- "urma-core",
- "urma-names",
  "urma-wire",
 ]
 
