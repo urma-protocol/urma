@@ -347,7 +347,9 @@ counts as reached. `--urma-seed MULTIADDR` (repeatable) adds more, `--no-seeds` 
 built-in ones. Seeds are dialed in random order at startup while fewer than
 four book entries have ever been reached (ignoring backoff saved by an earlier
 run), every round while no peer is connected, and every 600 rounds while below
-target; outside startup a failing seed waits out its backoff.
+target; outside startup a failing seed waits out its backoff, which never
+exceeds ten minutes (a longer saved ban counts as expired), so a seed whose DNS
+record appears later is picked up within ten minutes.
 
 Each `run(true)` round runs one discovery step before the inventory step: while
 fewer than 8 peers are connected it dials up to 2 non-seed candidates, alternating
@@ -355,8 +357,8 @@ a never-tried entry (at random) with a tried one (oldest expired backoff first),
 and every 30 rounds it asks one random connected peer for up to 32 addresses. A
 round makes at most three network operations and checks cancellation between
 them, each with a 10-second bound. A failed dial backs the entry off for
-60 s × 2^(failures−1) (60 s after the first failure), capped at one day; a
-success clears it. Each round also merges peers that identified themselves over
+60 s × 2^(failures−1) (60 s after the first failure), capped at one day for
+manual and gossip entries and at ten minutes for seeds; a success clears it. Each round also merges peers that identified themselves over
 a connection (public literal addresses, same caps) and refreshes the snapshot
 served to Peers requests from reached book entries. `--urma-announce MULTIADDR`
 (repeatable, public IP/TCP) is advertised through identify, as are observed

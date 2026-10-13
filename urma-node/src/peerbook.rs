@@ -151,6 +151,9 @@ impl PeerBook {
     const VERSION: u32 = 2;
     const BACKOFF_SECONDS: u64 = 60;
     const BACKOFF_CAP: u64 = 86_400;
+    /// Seeds are operator configuration, never banned like gossip: their
+    /// backoff stops growing at ten minutes.
+    pub const SEED_BACKOFF_CAP: u64 = 600;
 
     pub fn empty(chain_genesis: BlockHash) -> Self {
         Self {
@@ -393,7 +396,7 @@ impl PeerBook {
     }
 
     /// A dial through `address` failed: back off 60 s × 2^(failures−1), so the
-    /// first failure waits 60 s, capped at one day.
+    /// first failure waits 60 s, capped at one day (ten minutes for seeds).
     pub fn failed(&mut self, address: &Multiaddr, now: u64) {
         let Ok((address, _)) = split(address.clone()) else {
             return;
@@ -417,10 +420,14 @@ impl PeerBook {
     fn fail_entry(&mut self, index: usize, now: u64) {
         let entry = &mut self.entries[index];
         entry.failures = entry.failures.checked_add(1).unwrap_or(u32::MAX);
+        let cap = match entry.origin {
+            Origin::Seed => Self::SEED_BACKOFF_CAP,
+            Origin::Gossip | Origin::Manual => Self::BACKOFF_CAP,
+        };
         let delay = 2u64
             .checked_pow(entry.failures - 1)
             .and_then(|factor| factor.checked_mul(Self::BACKOFF_SECONDS))
-            .map_or(Self::BACKOFF_CAP, |delay| delay.min(Self::BACKOFF_CAP));
+            .map_or(cap, |delay| delay.min(cap));
         entry.banned_until = Some(now.checked_add(delay).unwrap_or(u64::MAX));
     }
 
@@ -464,14 +471,16 @@ impl PeerBook {
     }
 
     /// Seed dial addresses in random order, skipping seeds known to be this
-    /// node's omitters and, given `now`, seeds still backing off.
+    /// node's omitters and, given `now`, seeds still backing off. A ban beyond
+    /// the seed cap (persisted under an older policy) counts as expired.
     pub fn seeds(&self, omitting: &[String], now: Option<u64>) -> Vec<Multiaddr> {
+        let ready = |until: u64, now: u64| until <= now || until - now > Self::SEED_BACKOFF_CAP;
         let mut seeds: Vec<Multiaddr> = self
             .entries
             .iter()
             .filter(|entry| entry.origin == Origin::Seed)
             .filter(|entry| {
-                now.is_none_or(|now| entry.banned_until.is_none_or(|until| until <= now))
+                now.is_none_or(|now| entry.banned_until.is_none_or(|until| ready(until, now)))
             })
             .filter(|entry| {
                 entry

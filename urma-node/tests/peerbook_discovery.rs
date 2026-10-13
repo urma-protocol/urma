@@ -1,8 +1,10 @@
 //! Peer book cases discovery depends on, beyond tests/peerbook.rs: gossip
 //! address classes, IPv6 groups, a full operator book, the whole backoff
-//! series and the gossip export bounds. Memory only: no files or sockets.
+//! series, seed backoff and the gossip export bounds. No sockets; only the
+//! persisted seed ban case writes a temporary book file.
 use bitcoin::{BlockHash, hashes::Hash};
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
+use serde_json::json;
 use urma_node::{
     Error,
     peer_protocol::GossipPeer,
@@ -263,4 +265,64 @@ fn gossip_export_is_bounded_newest_first_and_merge_takes_four_addresses() {
     let stats = book.stats();
     let counts = (stats.book, stats.reached, stats.reached_ever, stats.gossip);
     assert_eq!(counts, (41, 40, 40, 1));
+}
+
+#[test]
+fn seeds_retry_within_ten_minutes_after_any_failures_while_gossip_backs_off_a_day() {
+    let mut book = PeerBook::empty(genesis());
+    let seed = bare("/dnsaddr/seed.example");
+    book.add(seed.clone(), Origin::Seed).unwrap();
+    let gossiped = named("/ip4/8.8.8.8/tcp/4001", peer(1));
+    merge(&mut book, &[gossip(peer(1), &["/ip4/8.8.8.8/tcp/4001"])]);
+    for _ in 0..20 {
+        book.failed(&seed, NOW);
+        book.failed(&gossiped, NOW);
+    }
+    let seeded = book.entries()[0].clone();
+    assert_eq!((seeded.origin, seeded.failures), (Origin::Seed, 20));
+    assert_eq!(seeded.banned_until, Some(NOW + PeerBook::SEED_BACKOFF_CAP));
+    let retry = NOW + PeerBook::SEED_BACKOFF_CAP;
+    assert!(book.seeds(&[], Some(retry - 1)).is_empty());
+    assert_eq!(book.seeds(&[], Some(retry)), vec![seed.clone()]);
+    let backed_off = find(&book, peer(1));
+    assert_eq!(
+        (backed_off.failures, backed_off.banned_until),
+        (20, Some(NOW + DAY))
+    );
+    assert!(book.candidates(retry, &[], &[], 8).is_empty());
+    assert_eq!(book.candidates(NOW + DAY, &[], &[], 8), vec![gossiped]);
+    // The first seed failures still double: 60 s, then 120 s.
+    let mut fresh = PeerBook::empty(genesis());
+    fresh.add(seed.clone(), Origin::Seed).unwrap();
+    for delay in [60, 120, 240, 480, 600, 600] {
+        fresh.failed(&seed, NOW);
+        assert_eq!(fresh.entries()[0].banned_until, Some(NOW + delay));
+    }
+    book.succeeded(&seed, peer(2), peer(LOCAL), retry);
+    let reset = book.entries()[0].clone();
+    assert_eq!((reset.failures, reset.banned_until), (0, None));
+}
+
+#[test]
+fn a_seed_ban_persisted_beyond_ten_minutes_does_not_hold_the_seed() {
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("peers.json");
+    let entry = |address: &str, origin: &str| {
+        json!({"peer_id":null,"addrs":[address],"origin":origin,
+            "last_success":null,"failures":11,"banned_until":NOW + 50_000})
+    };
+    let document = json!({"version":2,"chain_genesis":genesis().to_string(),"entries":[
+        entry("/dnsaddr/seed.example", "seed"),
+        entry("/ip4/127.0.0.1/tcp/4001", "manual"),
+    ]});
+    std::fs::write(&path, serde_json::to_vec(&document).unwrap()).unwrap();
+    let book = PeerBook::load(&path, genesis()).unwrap();
+    assert_eq!(
+        book.seeds(&[], Some(NOW)),
+        vec![bare("/dnsaddr/seed.example")]
+    );
+    assert!(
+        book.candidates(NOW, &[], &[], 8).is_empty(),
+        "manual keeps its ban"
+    );
 }
