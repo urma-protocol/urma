@@ -42,7 +42,7 @@ fn without_peer(address: &Multiaddr) -> Multiaddr {
 
 fn hint(peer: PeerId, addresses: &[&str]) -> GossipPeer {
     GossipPeer {
-        peer_id: peer.to_string(),
+        peer_id: peer,
         addrs: addresses
             .iter()
             .map(|address| format!("{address}/p2p/{peer}").parse().unwrap())
@@ -67,6 +67,8 @@ fn dial_probes_the_chain_and_loopback_requesters_receive_private_gossip() {
         .dial(without_peer(&listen_b), &idle, deadline())
         .unwrap();
     assert_eq!(dialed, network_b.peer_id());
+    assert_eq!(network_a.connected_peer_ids(), vec![dialed]);
+    assert_eq!(network_a.connected_peers(), 1);
     assert_eq!(
         network_a.dial(listen_b.clone(), &idle, deadline()).unwrap(),
         dialed

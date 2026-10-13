@@ -3,7 +3,7 @@
 //! record validity or completeness. URMA V0 records and proofs are unchanged.
 use crate::model::RecordPackage;
 use bitcoin::{BlockHash, Txid, Wtxid};
-use libp2p::Multiaddr;
+use libp2p::{Multiaddr, PeerId};
 use serde::{Deserialize, Serialize};
 
 pub const PROTOCOL: &str = "/urma/node/record/4";
@@ -53,9 +53,26 @@ pub enum Kind {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct GossipPeer {
-    pub peer_id: String,
+    #[serde(with = "base58_peer")]
+    pub peer_id: PeerId,
     pub addrs: Vec<Multiaddr>,
     pub last_seen: u64,
+}
+
+/// A PeerId on the wire is its base58 string, parsed strictly on receipt.
+mod base58_peer {
+    use libp2p::PeerId;
+    use serde::{Deserialize, Deserializer, Serializer, de::Error};
+
+    pub fn serialize<S: Serializer>(peer: &PeerId, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(peer)
+    }
+
+    pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<PeerId, D::Error> {
+        String::deserialize(deserializer)?
+            .parse()
+            .map_err(D::Error::custom)
+    }
 }
 
 /// One transaction's position in a block the answering node fully scanned.

@@ -502,11 +502,17 @@ async fn run(
                 SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, num_established, .. } => {
                     remotes.0.insert(connection_id, endpoint.get_remote_address().clone());
                     dials.established(connection_id, peer_id);
-                    if num_established.get() == 1 { connected.fetch_add(1, Ordering::Relaxed); }
+                    if num_established.get() == 1 {
+                        connected.fetch_add(1, Ordering::Relaxed);
+                        shared.set_connected(peer_id, true);
+                    }
                 }
-                SwarmEvent::ConnectionClosed { connection_id, num_established, .. } => {
+                SwarmEvent::ConnectionClosed { peer_id, connection_id, num_established, .. } => {
                     remotes.0.remove(&connection_id);
-                    if num_established == 0 { connected.fetch_sub(1, Ordering::Relaxed); }
+                    if num_established == 0 {
+                        connected.fetch_sub(1, Ordering::Relaxed);
+                        shared.set_connected(peer_id, false);
+                    }
                 }
                 SwarmEvent::OutgoingConnectionError { connection_id, peer_id, error } => {
                     // Queued before request-response reports the same DialFailure.

@@ -19,7 +19,7 @@ use libp2p::{
     swarm::{ConnectionId, DialError, dial_opts::DialOpts},
 };
 use std::{
-    collections::HashMap,
+    collections::{BTreeSet, HashMap},
     net::Ipv4Addr,
     sync::{
         Mutex,
@@ -35,6 +35,7 @@ use std::{
 pub(crate) struct Shared {
     gossip: Mutex<Vec<GossipPeer>>,
     observed: Mutex<Vec<Multiaddr>>,
+    connected: Mutex<BTreeSet<PeerId>>,
 }
 
 impl Shared {
@@ -54,6 +55,25 @@ impl Shared {
             Ok(observed) => observed.clone(),
             Err(poisoned) => poisoned.into_inner().clone(),
         }
+    }
+
+    fn connected(&self) -> Vec<PeerId> {
+        match self.connected.lock() {
+            Ok(connected) => connected.iter().copied().collect(),
+            Err(poisoned) => poisoned.into_inner().iter().copied().collect(),
+        }
+    }
+
+    /// First established connection of a peer, or its last one closing.
+    pub(crate) fn set_connected(&self, peer: PeerId, connected: bool) {
+        let mut set = match self.connected.lock() {
+            Ok(set) => set,
+            Err(poisoned) => poisoned.into_inner(),
+        };
+        match connected {
+            true => set.insert(peer),
+            false => set.remove(&peer),
+        };
     }
 
     /// Keep the newest distinct public observations; others are discarded.
@@ -84,7 +104,6 @@ impl Shared {
         let Ok(snapshot) = self.gossip.lock() else {
             return Reply::Busy;
         };
-        let requester = requester.to_string();
         let mut peers = Vec::new();
         for entry in snapshot.iter().filter(|entry| entry.peer_id != requester) {
             if peers.len() == limit {
@@ -99,7 +118,7 @@ impl Shared {
                 .collect();
             if !addrs.is_empty() {
                 peers.push(GossipPeer {
-                    peer_id: entry.peer_id.clone(),
+                    peer_id: entry.peer_id,
                     addrs,
                     last_seen: entry.last_seen,
                 });
@@ -223,10 +242,7 @@ pub(crate) fn validate_peers(
 }
 
 fn check_gossip(entry: &GossipPeer) -> Result<(), Error> {
-    let peer: PeerId = entry
-        .peer_id
-        .parse()
-        .map_err(|_| Error::Invalid("peer gossip carries an invalid peer ID".into()))?;
+    let peer = entry.peer_id;
     if entry.addrs.is_empty() || entry.addrs.len() > PEER_ADDRESSES_MAX {
         return Err(Error::Invalid(
             "peer gossip address count out of range".into(),
@@ -346,6 +362,11 @@ impl PeerNetwork {
     /// Public addresses connected peers reported observing for this node.
     pub fn observed_addrs(&self) -> Vec<Multiaddr> {
         self.shared.observed()
+    }
+
+    /// Peers with at least one established connection right now, sorted.
+    pub fn connected_peer_ids(&self) -> Vec<PeerId> {
+        self.shared.connected()
     }
 
     /// Dial an address (with or without `/p2p`), then probe the peer with a
