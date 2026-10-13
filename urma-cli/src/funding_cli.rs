@@ -1,7 +1,13 @@
 use crate::{detail, is_terminal, progress, stage};
+use bitcoin::{
+    Script, ScriptBuf,
+    bech32::{Fe32, Hrp, segwit},
+};
 use urma_chain::observation::Chain;
 use urma_runtime::error::{Context, Error};
-use urma_runtime::{node::Node, quote::Quote};
+use urma_runtime::{
+    disk_plan::DiskPlan, node::Node, plan::PublicationPlan, publication::PublicPlan, quote::Quote,
+};
 use urma_wallet::account::Account;
 
 pub(crate) fn currency(chain: Chain) -> &'static str {
@@ -9,6 +15,56 @@ pub(crate) fn currency(chain: Chain) -> &'static str {
         Chain::LitecoinMainnet | Chain::LitecoinTestnet => "LTC",
         Chain::BitcoinMainnet | Chain::BitcoinTestnet4 | Chain::BitcoinRegtest => "BTC",
     }
+}
+
+/// Bech32 address of a witness script on `chain`, or the raw script when it
+/// has no witness program (legacy or nonstandard outputs).
+pub(crate) fn script_address(script: &Script, chain: Chain) -> String {
+    let encoded = script.witness_version().and_then(|version| {
+        let hrp = Hrp::parse(chain.address_hrp()).ok()?;
+        segwit::encode(hrp, Fe32::from(version), &script.as_bytes()[2..]).ok()
+    });
+    match encoded {
+        Some(address) => address,
+        None => format!("script {}", hex::encode(script.as_bytes())),
+    }
+}
+
+/// Approval lines for the first record: every funding input with its value and
+/// paying address, then the return output that pays the account's 0/0 address.
+/// The plan stores no derivation path; the address identifies the account key.
+pub(crate) fn spending_summary(
+    record: &PublicPlan,
+    return_script: &str,
+) -> Result<Vec<String>, Error> {
+    let mut lines = Vec::new();
+    for funding in &record.funding {
+        let (outpoint, previous) = funding.prevout()?;
+        lines.push(format!(
+            "Input {outpoint}: {} base units from {}",
+            previous.value.to_sat(),
+            script_address(&previous.script_pubkey, record.chain)
+        ));
+    }
+    let returned = ScriptBuf::from_hex(return_script)
+        .map_err(|cause| Error::Invalid(format!("plan return script: {cause}")))?;
+    lines.push(format!(
+        "Return to {} (designated account address 0/0)",
+        script_address(&returned, record.chain)
+    ));
+    Ok(lines)
+}
+
+pub(crate) fn plan_spending(plan: &PublicationPlan) -> Result<Vec<String>, Error> {
+    let first = plan
+        .records
+        .first()
+        .context("publication plan has no records")?;
+    spending_summary(first, &plan.return_script)
+}
+
+pub(crate) fn disk_spending(plan: &DiskPlan) -> Result<Vec<String>, Error> {
+    spending_summary(&plan.record(0)?, &plan.return_script)
 }
 
 pub(crate) fn amount(value: u64) -> String {

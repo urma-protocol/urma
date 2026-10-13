@@ -1,6 +1,7 @@
 use crate::{
     approve_publication,
     config::{self, StoreChoice},
+    funding_cli::disk_spending,
     key_cli::{VaultAccess, funding_account},
     node_cli::{NodeArgs, chain_name},
     print_report, progress,
@@ -325,7 +326,13 @@ fn publish(args: PublishArgs) -> Result<Value, Error> {
     let plan = DiskPlan::load(&args.plan)?;
     let node = args.node.connect()?;
     let id = plan.id()?;
-    approve_publication("Publish web package", &id, plan.total_fee, args.yes)?;
+    approve_publication(
+        "Publish web package",
+        &id,
+        plan.total_fee,
+        &disk_spending(&plan)?,
+        args.yes,
+    )?;
     let mut shown = String::new();
     let mut notify = |update: &Progress| {
         let summary = update.summary();

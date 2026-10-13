@@ -225,6 +225,7 @@ fn resume(args: ResumeArgs) -> Result<Value, Error> {
         "Publish Git snapshot",
         &reviewed.plan_id,
         reviewed.total_fee,
+        &git_publish_cli::git_spending(&args.plan)?,
         args.yes,
     )?;
     git_follow_cli::publish(&node, &args.plan, &reviewed.plan_id, &args.follow)?;

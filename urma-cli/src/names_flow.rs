@@ -1,6 +1,7 @@
 use crate::{
     approve_publication,
     config::{self, IndexChoice},
+    funding_cli::plan_spending,
     node_cli::chain_name,
     print_report, progress,
 };
@@ -136,7 +137,13 @@ pub(crate) fn follow(node: &Node, publication: Publication<'_>) -> Result<Value,
     publish::ensure_journal_distinct(publication.plan, publication.journal)?;
     let plan = PublicationPlan::load(publication.plan)?;
     let id = plan.id()?;
-    approve_publication(publication.label, &id, plan.total_fee, publication.yes)?;
+    approve_publication(
+        publication.label,
+        &id,
+        plan.total_fee,
+        &plan_spending(&plan)?,
+        publication.yes,
+    )?;
     let window = RevealWindow::of(node, &plan, publication.index)?;
     loop {
         window.check(node, &plan)?;

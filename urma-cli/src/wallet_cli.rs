@@ -34,24 +34,33 @@ fn send(
         .iter()
         .map(|input| input.previous_output.to_string())
         .collect();
+    let mut lines: Vec<String> = inputs
+        .iter()
+        .map(|outpoint| format!("Input {outpoint}"))
+        .collect();
+    let change = match &prepared.change {
+        Some(change) => {
+            let path = format!("{}/1/{}", account_path(account.chain()), change.path.index);
+            let address = account.address(change.path)?;
+            lines.push(format!(
+                "Change {} base units to {path} ({address})",
+                change.value
+            ));
+            json!({"value":change.value,"path":path,"address":address})
+        }
+        None => {
+            lines.push("No change output; the remainder is part of the fee".into());
+            Value::Null
+        }
+    };
     approve_publication(
-        &format!(
-            "Send {} base units to {to}, spending {} input(s): {}",
-            request.amount,
-            inputs.len(),
-            inputs.join(", ")
-        ),
+        &format!("Send {} base units to {to}", request.amount),
         &txid.to_string(),
         prepared.fee,
+        &lines,
         yes,
     )?;
     let sent = transfer::submit(&runtime, &prepared)?;
-    let change = match &prepared.change {
-        Some(change) => json!({"value":change.value,
-            "path":format!("{}/1/{}", account_path(account.chain()), change.path.index),
-            "address":account.address(change.path)?}),
-        None => Value::Null,
-    };
     Ok(json!({
         "status": "broadcast",
         "txid": sent.to_string(),
@@ -140,7 +149,10 @@ pub(crate) enum WalletCommand {
         access: VaultAccess,
         #[command(flatten)]
         node: NodeArgs,
-        #[arg(long, help = "Discover the next unused external address (network)")]
+        #[arg(
+            long,
+            help = "Next external address above every address holding a confirmed coin (network); a spent-out address can be offered again"
+        )]
         next: bool,
     },
     #[command(about = "Export the account xpub and output descriptors (offline, no secrets)")]

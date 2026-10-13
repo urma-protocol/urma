@@ -265,7 +265,13 @@ pub(crate) fn is_terminal() -> bool {
             .any(|value| value == "json")
 }
 
-pub(crate) fn approve_publication(label: &str, id: &str, fee: u64, yes: bool) -> Result<(), Error> {
+pub(crate) fn approve_publication(
+    label: &str,
+    id: &str,
+    fee: u64,
+    spending: &[String],
+    yes: bool,
+) -> Result<(), Error> {
     use std::io::{IsTerminal, Write};
     if is_terminal() {
         eprintln!(
@@ -276,8 +282,14 @@ pub(crate) fn approve_publication(label: &str, id: &str, fee: u64, yes: bool) ->
             console::style("Total fee").dim(),
             console::style(format!("{fee} base units")).yellow().bold()
         );
+        for line in spending {
+            eprintln!("  {}", console::style(line).dim());
+        }
     } else {
         eprintln!("{label}\nPlan: {id}\nTotal fee: {fee} base units.");
+        for line in spending {
+            eprintln!("{line}");
+        }
     }
     if yes {
         return Ok(());

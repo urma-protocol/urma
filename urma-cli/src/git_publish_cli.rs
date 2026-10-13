@@ -1,4 +1,4 @@
-use crate::funding_cli::{amount, currency};
+use crate::funding_cli::{amount, currency, disk_spending};
 use crate::{
     approve_publication, config, detail, funding_cli, git_follow_cli, is_terminal,
     key_cli::{VaultAccess, funding_account},
@@ -229,11 +229,20 @@ fn describe(
             directory.display()
         ));
     }
+    for line in disk_spending(&publication)? {
+        progress(line);
+    }
     detail(
         1,
         format!("Root: {} / author {}", plan.root_txid, plan.author),
     );
     Ok(())
+}
+
+/// Approval lines for a prepared Git publication directory.
+pub(crate) fn git_spending(directory: &std::path::Path) -> Result<Vec<String>, Error> {
+    let (_, _, publication) = GitPlan::load_with_publication(directory).map_err(boundary)?;
+    disk_spending(&publication)
 }
 
 pub(crate) fn run(args: PublishArgs) -> Result<Value, Error> {
@@ -284,6 +293,7 @@ pub(crate) fn run(args: PublishArgs) -> Result<Value, Error> {
         "Publish this public Git snapshot",
         &report.plan_id,
         report.total_fee,
+        &git_spending(&directory)?,
         args.yes,
     )?;
     if !reviewed {
