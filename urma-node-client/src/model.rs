@@ -181,7 +181,10 @@ pub struct CommitSourceStatus {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverlayStatus {
     pub peer_id: String,
-    pub listen: Option<String>,
+    #[serde(default)]
+    pub listen: Vec<String>,
+    #[serde(default)]
+    pub announce: Vec<String>,
     pub peer_book: u64,
     pub connected: u64,
     pub admitted: u64,
