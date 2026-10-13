@@ -13,13 +13,13 @@ bitcoin = { version = "0.32", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
-urma-chain = { path = "../urma-chain", version = "0.2.2" }
-urma-core = { path = "../urma-core", version = "0.2.2" }
-urma-runtime = { path = "../urma-runtime", version = "0.2.2" }
-urma-io = { path = "../urma-io", version = "0.2.2" }
-urma-wire = { path = "../urma-wire", version = "0.2.2" }
-urma-names = { path = "../urma-names", version = "0.2.2" }
-urma-node-client = { path = "../urma-node-client", version = "0.2.2" }
+urma-chain = { path = "../urma-chain", version = "0.3.0" }
+urma-core = { path = "../urma-core", version = "0.3.0" }
+urma-runtime = { path = "../urma-runtime", version = "0.3.0" }
+urma-io = { path = "../urma-io", version = "0.3.0" }
+urma-wire = { path = "../urma-wire", version = "0.3.0" }
+urma-names = { path = "../urma-names", version = "0.3.0" }
+urma-node-client = { path = "../urma-node-client", version = "0.3.0" }
 hex = "0.4"
 clap = { version = "4", features = ["derive"] }
 ctrlc = { version = "3", features = ["termination"] }

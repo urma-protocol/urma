@@ -21,7 +21,7 @@ argon2 = { version = "0.5", default-features = false, features = ["alloc", "zero
 hkdf = "0.12"
 sha2 = "0.10"
 bip39 = { version = "2.2", features = ["zeroize"] }
-urma-chain = { version = "0.2.2", path = "../urma-chain" }
+urma-chain = { version = "0.3.0", path = "../urma-chain" }
 
 [dev-dependencies]
 static_assertions = "1"

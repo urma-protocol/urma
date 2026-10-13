@@ -3607,7 +3607,7 @@ dependencies = [
 
 [[package]]
 name = "urma-chain"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bitcoin",
  "hex",
@@ -3618,7 +3618,7 @@ dependencies = [
 
 [[package]]
 name = "urma-cli"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -3663,7 +3663,7 @@ dependencies = [
 
 [[package]]
 name = "urma-core"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aes",
  "bitcoin",
@@ -3679,7 +3679,7 @@ dependencies = [
 
 [[package]]
 name = "urma-files"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bitcoin",
  "hex",
@@ -3698,7 +3698,7 @@ dependencies = [
 
 [[package]]
 name = "urma-git"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -3722,7 +3722,7 @@ dependencies = [
 
 [[package]]
 name = "urma-identity"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3742,7 +3742,7 @@ dependencies = [
 
 [[package]]
 name = "urma-io"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "libc",
  "sha2",
@@ -3752,7 +3752,7 @@ dependencies = [
 
 [[package]]
 name = "urma-names"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -3771,7 +3771,7 @@ dependencies = [
 
 [[package]]
 name = "urma-node"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "bitcoin",
@@ -3796,7 +3796,7 @@ dependencies = [
 
 [[package]]
 name = "urma-node-client"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bitcoin",
  "hex",
@@ -3810,7 +3810,7 @@ dependencies = [
 
 [[package]]
 name = "urma-profiles"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bitcoin",
  "rand 0.8.8",
@@ -3821,7 +3821,7 @@ dependencies = [
 
 [[package]]
 name = "urma-runtime"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -3848,7 +3848,7 @@ dependencies = [
 
 [[package]]
 name = "urma-wallet"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bech32",
  "bitcoin",
@@ -3861,7 +3861,7 @@ dependencies = [
 
 [[package]]
 name = "urma-web"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "bitcoin",
@@ -3879,7 +3879,7 @@ dependencies = [
 
 [[package]]
 name = "urma-wire"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "bitcoin",
  "hex",
@@ -3895,7 +3895,7 @@ dependencies = [
 
 [[package]]
 name = "urma-workflows"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "rand 0.8.8",
  "urma-core",
