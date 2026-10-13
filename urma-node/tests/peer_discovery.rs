@@ -194,13 +194,8 @@ fn private(root: &Path) -> Value {
             "/ip4/169.254.1.1/tcp/1",
         ]),
         gossip_hint(&["/ip6/::1/tcp/1", "/ip6/fd00::1/tcp/1", "/ip6/fe80::1/tcp/1"]),
-        // Names and mapped or reserved literals are refused from gossip too.
-        gossip_hint(&[
-            "/dns4/peer.example/tcp/1",
-            "/dnsaddr/peer.example",
-            "/ip6/::ffff:8.8.8.8/tcp/1",
-            "/ip4/240.0.0.1/tcp/1",
-        ]),
+        // Mapped and reserved literals pass the wire check; the book drops them.
+        gossip_hint(&["/ip6/::ffff:8.8.8.8/tcp/1", "/ip4/240.0.0.1/tcp/1"]),
         own(&a),
     ];
     let g = RawPeer::gossiping(listed);
@@ -225,7 +220,35 @@ fn private(root: &Path) -> Value {
     let manual = entry_of(&saved, g.address().peer_id());
     assert_eq!(manual.origin, Origin::Manual);
     assert!(a.connected().contains(&d.id));
-    json!({"stored":saved.entries().len(),"dialed_public":true})
+    let named = named_reply(root, &d);
+    json!({"stored":saved.entries().len(),"named_reply_stored":named})
+}
+
+/// Names come only from operators: one named hint rejects the whole reply,
+/// including the valid public peer beside it, and records a gossip error.
+fn named_reply(root: &Path, d: &Node) -> usize {
+    let listed = vec![
+        GossipPeer {
+            peer_id: d.id,
+            addrs: vec![bare(&d.listening())],
+            last_seen: now(),
+        },
+        gossip_hint(&["/dns4/peer.example/tcp/1"]),
+    ];
+    let g = RawPeer::gossiping(listed);
+    stage(root, "a reply carrying a DNS name is refused whole");
+    let a = node(root, "a2", None);
+    let mut book = PeerBook::empty(a.genesis());
+    book.add(g.address().address().clone(), Origin::Manual)
+        .unwrap();
+    let (discovery, path) = discover(root, "a2", &a, book);
+    rounds(&discovery, &a, Discovery::GOSSIP_EVERY + 1);
+    assert_eq!(g.requests().len(), 2, "probe and one gossip request");
+    let error = discovery.status().unwrap().last_gossip_error;
+    assert!(error.is_some_and(|text| text.contains("IP literals")));
+    let saved = saved_book(&path, &a);
+    assert!(!a.connected().contains(&d.id));
+    saved.entries().len() - 1
 }
 
 fn backoff_once(root: &Path) -> u32 {
@@ -509,6 +532,7 @@ fn fresh_node_with_a_loopback_seed_learns_and_connects_a_gossiped_peer() {
 fn gossiped_private_mapped_reserved_named_and_own_addresses_are_never_stored() {
     let checks = run(HOST, "private");
     assert_eq!(checks["stored"], 2);
+    assert_eq!(checks["named_reply_stored"], 0);
 }
 
 #[test]
