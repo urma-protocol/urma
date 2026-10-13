@@ -23,8 +23,11 @@ use urma_runtime::{
     p2p::{Anchor, HeaderBootstrap, context_headers},
 };
 
+/// `i64::MAX` as an unsigned CLI bound: byte counts are stored as SQLite INTEGER.
+const MAX_ARG: u64 = 9_223_372_036_854_775_807;
+
 #[derive(Parser)]
-#[command(about = "Optional URMA archive service (development branch)")]
+#[command(about = "Optional URMA archive service")]
 struct Arguments {
     #[arg(long)]
     data: PathBuf,
@@ -85,7 +88,7 @@ enum Command {
         #[arg(long, requires = "peer_key")]
         urma_announce: Vec<libp2p::Multiaddr>,
         /// Soft reclaimable cache target (not a SQLite/WAL or total archive quota).
-        #[arg(long, default_value_t = urma_node::cache::DEFAULT_CACHE_BYTES, value_parser = clap::value_parser!(u64).range(..=i64::MAX as u64))]
+        #[arg(long, default_value_t = urma_node::cache::DEFAULT_CACHE_BYTES, value_parser = clap::value_parser!(u64).range(..=MAX_ARG))]
         cache_bytes: u64,
         /// Maximum payload per background object attempt (not a protocol limit).
         #[arg(long, default_value_t = 64 * 1024 * 1024, value_parser = clap::value_parser!(u64).range(1..))]
@@ -485,7 +488,7 @@ fn read_header_bootstrap(
     if input.height > application_height {
         return Err("application start precedes the supplied header anchor".into());
     }
-    let count = input.height.min(u64::try_from(context_headers(chain))?) as usize;
+    let count = usize::try_from(input.height.min(u64::try_from(context_headers(chain))?))?;
     if input.ancestors.len() != count {
         return Err(format!("header bootstrap needs exactly {count} ancestors").into());
     }
@@ -767,7 +770,8 @@ mod peer_config_tests {
         assert!(Arguments::try_parse_from(&remote).is_err());
         remote.extend(["--peer-key", "transport.key"]);
         assert!(Arguments::try_parse_from(remote).is_ok());
-        for (value, expected) in [("0", 0), ("9223372036854775807", i64::MAX as u64)] {
+        assert_eq!(i64::try_from(MAX_ARG).unwrap(), i64::MAX);
+        for (value, expected) in [("0", 0), ("9223372036854775807", MAX_ARG)] {
             let mut cache = base.to_vec();
             cache.extend(["--cache-bytes", value]);
             assert!(matches!(Arguments::try_parse_from(cache).unwrap().command,
