@@ -5,7 +5,7 @@
 #![cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod common;
-use bitcoin::{Block, Txid};
+use bitcoin::{Block, BlockHash, Txid, block::Header};
 use common::{MemorySource, SignedPair, config, profile, witness_block};
 use serde_json::{Value, json};
 use std::{
@@ -23,9 +23,9 @@ use urma_chain::observation::Chain;
 use urma_node::{
     Error,
     engine::Engine,
-    model::Retention,
+    model::{ChainPoint, Retention, ServiceStatus},
     service::{Service, ShutdownHandle},
-    source::{CommitSource, CommitSources},
+    source::{ChainSource, CommitSource, CommitSources},
 };
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const LABEL: &str = "owned in-memory recording parent source";
@@ -355,6 +355,52 @@ fn offline_run_never_calls_configured_source_but_reports_its_label() {
         chain_calls,
         "run(false) touched the chain source"
     );
+}
+
+// A chain source that reports connected peers, as the Litecoin source does.
+struct Peered(Arc<MemorySource>);
+impl ChainSource for Peered {
+    fn genesis(&self) -> Result<BlockHash, Error> {
+        self.0.genesis()
+    }
+    fn tip(&self) -> Result<ChainPoint, Error> {
+        self.0.tip()
+    }
+    fn header(&self, height: u64) -> Result<Header, Error> {
+        self.0.header(height)
+    }
+    fn block(&self, height: u64) -> Result<Vec<u8>, Error> {
+        self.0.block(height)
+    }
+    fn chain_peers(&self) -> Result<u64, Error> {
+        Ok(3)
+    }
+}
+
+#[test]
+fn status_reports_chain_peers_from_the_source_and_zero_offline() {
+    let block = witness_block(&[], None, 41);
+    let memory = Arc::new(MemorySource::new(std::slice::from_ref(&block)));
+    let peered: Arc<dyn ChainSource> = Arc::new(Peered(memory.clone()));
+    let plain: Arc<dyn ChainSource> = memory;
+    for (source, expected) in [(None, 0), (Some(plain), 0), (Some(peered), 3)] {
+        let directory = tempfile::tempdir().unwrap();
+        let config = config(&block, Retention::Unpruned);
+        let engine = Engine::open(directory.path(), config, source).unwrap();
+        let running = Running::start(engine, None, false);
+        let mut current = status(running.address);
+        assert_eq!(
+            field(&current, "chain_peers"),
+            &json!(expected),
+            "{current}"
+        );
+        let typed: ServiceStatus = serde_json::from_value(current.clone()).unwrap();
+        assert_eq!(typed.chain_peers, expected);
+        current.as_object_mut().unwrap().remove("chain_peers");
+        let older: ServiceStatus = serde_json::from_value(current).unwrap();
+        assert_eq!(older.chain_peers, 0);
+        running.finish();
+    }
 }
 
 #[test]

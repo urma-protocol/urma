@@ -162,6 +162,9 @@ pub struct ServiceStatus {
     pub last_cache_error_at: Option<u64>,
     pub last_cache_maintenance: Option<CacheReceipt>,
     pub overlay: Option<OverlayStatus>,
+    /// Litecoin P2P peers the light client holds now; 0 when offline.
+    #[serde(default)]
+    pub chain_peers: u64,
     pub retention_configured: bool,
     pub record_sources_configured: u64,
     pub capabilities: Vec<String>,

@@ -19,7 +19,7 @@ use std::{
 pub struct Engine {
     index_instance: String,
     archive: Mutex<Archive>,
-    source: Option<Arc<dyn ChainSource>>,
+    pub(crate) source: Option<Arc<dyn ChainSource>>,
     synchronizing: Mutex<()>,
     retaining: Mutex<Option<bitcoin::Txid>>,
     projecting_names: Mutex<Option<bitcoin::Txid>>,

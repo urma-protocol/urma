@@ -29,6 +29,10 @@ pub trait ChainSource: Send + Sync {
     fn tip(&self) -> Result<ChainPoint, Error>;
     fn header(&self, height: u64) -> Result<Header, Error>;
     fn block(&self, height: u64) -> Result<Vec<u8>, Error>;
+    /// Connected chain peers now; 0 for sources without a peer network.
+    fn chain_peers(&self) -> Result<u64, Error> {
+        Ok(0)
+    }
 }
 
 /// Untrusted auxiliary parent bytes, not a chain verifier. The chain getter
@@ -367,5 +371,9 @@ impl ChainSource for LitecoinSource {
             .map_err(source_error)?
             .raw()
             .to_vec())
+    }
+    fn chain_peers(&self) -> Result<u64, Error> {
+        u64::try_from(self.provider.progress().peers_connected)
+            .map_err(|error| Error::Invalid(format!("chain peer count: {error}")))
     }
 }

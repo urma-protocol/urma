@@ -327,6 +327,7 @@ impl Service {
             last_cache_error_at,
             last_cache_maintenance: cache.receipt,
             overlay,
+            chain_peers: self.engine.chain_peers()?,
             retention_configured: self.retention.is_some(),
             record_sources_configured: u64::try_from(self.sources.len())
                 .map_err(|error| Error::Invalid(format!("record source count: {error}")))?,

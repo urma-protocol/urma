@@ -45,4 +45,12 @@ impl Engine {
     pub fn peer_omissions_latest(&self, limit: u32) -> Result<Vec<Omission>, Error> {
         self.archive()?.peer_omissions_latest(limit)
     }
+
+    /// Chain peers the source holds now; 0 without a source (offline).
+    pub fn chain_peers(&self) -> Result<u64, Error> {
+        match &self.source {
+            Some(source) => source.chain_peers(),
+            None => Ok(0),
+        }
+    }
 }

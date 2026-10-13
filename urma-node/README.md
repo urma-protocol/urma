@@ -326,7 +326,8 @@ no coverage.
 The `overlay` status block (null without `--peer-key`) reports the peer ID,
 listener, peer-book size, connected peers, records admitted and packages
 rejected since start, and each peer's cursor, synced height and last error;
-`last_inventory_error` reports a failed step.
+`last_inventory_error` reports a failed step. Top-level `chain_peers` counts the
+Litecoin P2P peers the light client holds now (0 without `--p2p`).
 
 ### Peer discovery
 
