@@ -4,11 +4,14 @@ use crate::{
     Error,
     engine::Engine,
     model::{CacheReceipt, ServiceStatus},
-    peer_sync::{PeerSync, Scheduler},
+    peer_discovery::Discovery,
+    peer_sync::Scheduler,
     recorded::{RecordedError, read, record},
     retrieval::RecordSource,
     source::{CommitSource, CommitSources},
 };
+
+mod overlay;
 use rand::RngCore;
 use serde_json::json;
 use std::{
@@ -62,6 +65,8 @@ pub struct Service {
     dependency_error: ErrorSlot,
     peer_sync: Option<Scheduler>,
     inventory_error: ErrorSlot,
+    discovery: Option<Discovery>,
+    discovery_error: ErrorSlot,
 }
 
 impl Service {
@@ -104,6 +109,8 @@ impl Service {
             dependency_error: Arc::new(Mutex::new(None)),
             peer_sync: None,
             inventory_error: Arc::new(Mutex::new(None)),
+            discovery: None,
+            discovery_error: Arc::new(Mutex::new(None)),
         })
     }
 
@@ -149,13 +156,6 @@ impl Service {
             }
         }
         self.commit_sources = Some(sources);
-        Ok(self)
-    }
-
-    /// Fast inventory synchronization from configured overlay peers. Only
-    /// run(true) schedules it; configuring peers does not dial or fetch.
-    pub fn with_peer_sync(mut self, sync: PeerSync) -> Result<Self, Error> {
-        self.peer_sync = Some(Scheduler::new(sync)?);
         Ok(self)
     }
 
@@ -211,6 +211,9 @@ impl Service {
 
     fn worker_round(&self) {
         let headers = self.engine.synchronize_headers_until(&self.stop);
+        // Discovery keeps connections and the book fresh before inventory
+        // sync uses them; it is independent of this round's header result.
+        self.discover_peers();
         // Peer inventory is fast data: it runs before the full-block scan and
         // independently of this round's header result, with its own status.
         self.sync_next_inventory();
@@ -266,20 +269,6 @@ impl Service {
         }
     }
 
-    fn sync_next_inventory(&self) {
-        let Some(scheduler) = &self.peer_sync else {
-            return;
-        };
-        if self.stop.load(Ordering::Acquire) {
-            return;
-        }
-        let result = scheduler.step(&self.engine, &self.stop);
-        if self.stop.load(Ordering::Acquire) {
-            return;
-        }
-        record(&self.inventory_error, &result);
-    }
-
     fn acquire_next_dependency(&self) {
         let Some(sources) = &self.commit_sources else {
             return;
@@ -305,16 +294,15 @@ impl Service {
             RecordedError::split(read(&self.dependency_error, "dependency")?);
         let (last_inventory_error, last_inventory_error_at) =
             RecordedError::split(read(&self.inventory_error, "inventory")?);
+        let (last_discovery_error, last_discovery_error_at) =
+            RecordedError::split(read(&self.discovery_error, "discovery")?);
         let cache = self
             .cache_status
             .lock()
             .map_err(|_| Error::Invalid("cache status poisoned".into()))?
             .clone();
         let (last_cache_error, last_cache_error_at) = RecordedError::split(cache.error);
-        let overlay = match &self.peer_sync {
-            Some(scheduler) => Some(scheduler.status(&self.engine)?),
-            None => None,
-        };
+        let overlay = self.overlay_status()?;
         let mut commit_sources = Vec::new();
         for sources in self.commit_sources.iter() {
             commit_sources.extend(sources.status()?);
@@ -331,6 +319,8 @@ impl Service {
             last_dependency_error_at,
             last_inventory_error,
             last_inventory_error_at,
+            last_discovery_error,
+            last_discovery_error_at,
             commit_sources,
             cache_limit_bytes: self.cache_bytes,
             last_cache_error,
@@ -556,6 +546,10 @@ impl Service {
             // Ascending by height; only the newest (highest) 1024 rows are returned.
             "GET /v1/overlay/omissions HTTP/1.1" => match self.engine.peer_omissions_latest(1024) {
                 Ok(omissions) => respond(stream, 200, serde_json::to_value(omissions)?),
+                Err(error) => control_error(stream, error),
+            },
+            "GET /v1/overlay/book HTTP/1.1" => match self.overlay_book() {
+                Ok(book) => respond(stream, 200, book),
                 Err(error) => control_error(stream, error),
             },
             "POST /v1/shutdown HTTP/1.1" => {

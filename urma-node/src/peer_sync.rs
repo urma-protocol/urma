@@ -88,7 +88,7 @@ impl Round<'_> {
 }
 
 pub(crate) struct Scheduler {
-    peers: Vec<Peer>,
+    peers: Mutex<Vec<Arc<Peer>>>,
     turn: AtomicUsize,
     info: OverlayInfo,
     admitted: AtomicU64,
@@ -97,6 +97,23 @@ pub(crate) struct Scheduler {
 
 fn poisoned() -> Error {
     Error::Invalid("peer synchronization state poisoned".into())
+}
+
+fn inventory_peer(label: String, source: PeerSource) -> Result<Peer, Error> {
+    let id = match label.parse::<PeerId>() {
+        Ok(id) => id.to_string(),
+        Err(error) => {
+            return Err(Error::Invalid(format!("inventory peer label: {error}")));
+        }
+    };
+    Ok(Peer {
+        label,
+        id,
+        source,
+        range: Mutex::new(None),
+        last_request: Mutex::new(None),
+        last_error: Mutex::new(None),
+    })
 }
 
 impl Scheduler {
@@ -116,28 +133,16 @@ impl Scheduler {
         if sync.peers.len() > Self::MAX_PEERS {
             return Err(Error::Invalid("too many inventory peers".into()));
         }
-        let mut peers: Vec<Peer> = Vec::new();
+        let mut peers: Vec<Arc<Peer>> = Vec::new();
         for (label, source) in sync.peers {
-            let id = match label.parse::<PeerId>() {
-                Ok(id) => id.to_string(),
-                Err(error) => {
-                    return Err(Error::Invalid(format!("inventory peer label: {error}")));
-                }
-            };
-            if peers.iter().any(|peer| peer.id == id) {
+            let peer = inventory_peer(label, source)?;
+            if peers.iter().any(|known| known.id == peer.id) {
                 return Err(Error::Invalid("duplicate inventory peer".into()));
             }
-            peers.push(Peer {
-                label,
-                id,
-                source,
-                range: Mutex::new(None),
-                last_request: Mutex::new(None),
-                last_error: Mutex::new(None),
-            });
+            peers.push(Arc::new(peer));
         }
         Ok(Self {
-            peers,
+            peers: Mutex::new(peers),
             turn: AtomicUsize::new(0),
             info: sync.info,
             admitted: AtomicU64::new(0),
@@ -150,9 +155,10 @@ impl Scheduler {
     /// step interrupted by `stop` records nothing about the peer.
     pub(crate) fn step(&self, engine: &Engine, stop: &AtomicBool) -> Result<(), Error> {
         let omitting = engine.omitting_peers()?;
-        let Some(peer) = self.next_peer(&omitting) else {
+        let Some(peer) = self.next_peer(&omitting)? else {
             return Ok(());
         };
+        let peer = peer.as_ref();
         let mut round = Round {
             stop,
             deadline: Instant::now() + Self::ROUND_TIME,
@@ -167,11 +173,39 @@ impl Scheduler {
         Ok(())
     }
 
-    fn next_peer(&self, omitting: &[String]) -> Option<&Peer> {
-        let count = self.peers.len();
-        (0..count)
-            .map(|_| &self.peers[self.turn.fetch_add(1, Ordering::Relaxed) % count])
+    /// Reconcile with the peer book: known identities keep their peer state and
+    /// in-flight range, new ones join, ones no longer offered are dropped.
+    pub(crate) fn refresh(&self, offered: Vec<(String, PeerSource)>) -> Result<(), Error> {
+        if offered.len() > Self::MAX_PEERS {
+            return Err(Error::Invalid("too many inventory peers".into()));
+        }
+        let mut peers = self.peers.lock().map_err(|_| poisoned())?;
+        let mut next: Vec<Arc<Peer>> = Vec::with_capacity(offered.len());
+        for (label, source) in offered {
+            let candidate = inventory_peer(label, source)?;
+            if next.iter().any(|kept| kept.id == candidate.id) {
+                continue;
+            }
+            match peers.iter().find(|known| known.id == candidate.id) {
+                Some(known) => next.push(Arc::clone(known)),
+                None => next.push(Arc::new(candidate)),
+            }
+        }
+        *peers = next;
+        Ok(())
+    }
+
+    fn snapshot(&self) -> Result<Vec<Arc<Peer>>, Error> {
+        Ok(self.peers.lock().map_err(|_| poisoned())?.clone())
+    }
+
+    fn next_peer(&self, omitting: &[String]) -> Result<Option<Arc<Peer>>, Error> {
+        let peers = self.snapshot()?;
+        let count = peers.len();
+        Ok((0..count)
+            .map(|_| &peers[self.turn.fetch_add(1, Ordering::Relaxed) % count])
             .find(|peer| !omitting.contains(&peer.id))
+            .cloned())
     }
 
     fn advance(&self, peer: &Peer, engine: &Engine, round: &mut Round) -> Result<(), Error> {
@@ -278,8 +312,9 @@ impl Scheduler {
 
     pub(crate) fn status(&self, engine: &Engine) -> Result<OverlayStatus, Error> {
         let start = engine.status()?.application_start.height;
-        let mut peers = Vec::with_capacity(self.peers.len());
-        for peer in &self.peers {
+        let known = self.snapshot()?;
+        let mut peers = Vec::with_capacity(known.len());
+        for peer in &known {
             let cursor = engine.peer_cursor(&peer.id)?;
             let synced_through = cursor.checked_sub(1).filter(|height| *height >= start);
             let recorded = peer.last_error.lock().map_err(|_| poisoned())?.clone();
@@ -300,6 +335,7 @@ impl Scheduler {
             admitted: self.admitted.load(Ordering::Relaxed),
             rejected: self.rejected.load(Ordering::Relaxed),
             peers,
+            discovery: None,
         })
     }
 }

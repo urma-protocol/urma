@@ -1,18 +1,15 @@
-//! Bounded, explicitly saved routing hints. A saved peer identity or address is
-//! untrusted data, not chain evidence or a statement of record availability.
-//! No operation resolves names, dials peers, supplies seeds or starts networking.
-//! The caller owns the directory and coordinates its lock and explicit saves.
+//! Bounded peer book: explicit routing hints, configured seeds and addresses
+//! learned from peers. Every entry is an untrusted hint, never chain evidence
+//! or a statement of record availability. Nothing here resolves names, dials
+//! or starts networking; the caller owns the directory, its lock and saves.
 
-use crate::Error;
+use crate::{Error, peer_gossip::is_public, peer_protocol::GossipPeer};
 use bitcoin::BlockHash;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
+use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, io::ErrorKind, path::Path};
-
-const FILE_LIMIT: usize = 256 * 1024;
-const PEER_LIMIT: usize = 256;
-const ADDRESS_LIMIT: usize = 4;
-const VERSION: u32 = 1;
+use serde_json::{Value, json};
+use std::{fs, io::ErrorKind, net::IpAddr, path::Path};
 
 /// A syntactically validated routing hint with an explicit matching identity.
 /// Validation establishes neither reachability nor trust in the named peer.
@@ -29,10 +26,8 @@ impl PeerAddress {
     pub fn new(peer: PeerId, address: Multiaddr) -> Result<Self, Error> {
         let mut protocols = address.iter();
         let valid_ip = match protocols.next() {
-            Some(Protocol::Ip4(ip)) => {
-                !ip.is_unspecified() && !ip.is_multicast() && !ip.is_broadcast()
-            }
-            Some(Protocol::Ip6(ip)) => !ip.is_unspecified() && !ip.is_multicast(),
+            Some(Protocol::Ip4(ip)) => usable(IpAddr::V4(ip)),
+            Some(Protocol::Ip6(ip)) => usable(IpAddr::V6(ip)),
             _ => false,
         };
         if !valid_ip
@@ -57,19 +52,40 @@ impl PeerAddress {
     }
 }
 
-/// Origin belongs to each address. Learning cannot downgrade a manual entry.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+/// How an entry entered the book. Manual and seed entries are never evicted;
+/// learning cannot downgrade an entry's origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum Origin {
+    Gossip,
+    Seed,
     Manual,
-    Learned,
 }
 
-/// At most 256 peers with four distinct addresses per peer. Mutations affect
-/// memory only; callers choose when and where to atomically save the snapshot.
+/// One peer (or one not yet identified seed address). Addresses are stored
+/// without a terminal `/p2p`; the identity lives in `peer_id` once learned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BookEntry {
+    pub peer_id: Option<PeerId>,
+    pub addrs: Vec<Multiaddr>,
+    pub origin: Origin,
+    pub last_success: Option<u64>,
+    pub failures: u32,
+    pub banned_until: Option<u64>,
+}
+
+/// Counts reported in overlay status.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct BookStats {
+    pub seeds: u64,
+    pub book: u64,
+    pub verified: u64,
+    pub gossip: u64,
+}
+
 pub struct PeerBook {
     chain_genesis: BlockHash,
-    peers: BTreeMap<PeerId, Vec<(PeerAddress, Origin)>>,
+    entries: Vec<BookEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -77,40 +93,62 @@ pub struct PeerBook {
 struct SavedBook {
     version: u32,
     chain_genesis: String,
-    entries: Vec<SavedAddress>,
+    entries: Vec<SavedEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct SavedAddress {
-    peer_id: String,
-    address: String,
+struct SavedEntry {
+    peer_id: Option<String>,
+    addrs: Vec<String>,
     origin: Origin,
+    last_success: Option<u64>,
+    failures: u32,
+    banned_until: Option<u64>,
+}
+
+/// Where an address points: a literal IP or a name resolved at dial time.
+enum Host {
+    Ip(IpAddr),
+    Name,
 }
 
 impl PeerBook {
-    /// Load a bounded regular JSON file for the caller's explicit network.
-    /// Only `NotFound` yields an empty book; invalid existing files are refused
-    /// in their entirety and preserved. A missing file creates nothing.
-    pub fn load(path: &Path, chain_genesis: BlockHash) -> Result<Self, Error> {
-        let mut book = Self {
+    pub const CAPACITY: usize = 1024;
+    pub const ADDRESSES: usize = 4;
+    /// Gossip entries per IPv4 /24 or IPv6 /48.
+    pub const GROUP_LIMIT: usize = 2;
+    const FILE_LIMIT: usize = 1024 * 1024;
+    const VERSION: u32 = 2;
+    const BACKOFF_SECONDS: u64 = 60;
+    const BACKOFF_CAP: u64 = 86_400;
+
+    pub fn empty(chain_genesis: BlockHash) -> Self {
+        Self {
             chain_genesis,
-            peers: BTreeMap::new(),
-        };
+            entries: Vec::new(),
+        }
+    }
+
+    /// Load a bounded regular JSON file for the caller's explicit network.
+    /// Only `NotFound` yields an empty book; any invalid file, including an
+    /// older format version, is refused whole and preserved untouched.
+    pub fn load(path: &Path, chain_genesis: BlockHash) -> Result<Self, Error> {
+        let mut book = Self::empty(chain_genesis);
         let metadata = match fs::symlink_metadata(path) {
             Ok(metadata) => metadata,
             Err(error) if error.kind() == ErrorKind::NotFound => return Ok(book),
             Err(error) => return Err(error.into()),
         };
-        if !metadata.is_file() {
-            return Err(Error::Invalid("peer book must be a regular file".into()));
+        let limit = u64::try_from(Self::FILE_LIMIT).map_err(|e| Error::Invalid(e.to_string()))?;
+        if !metadata.is_file() || metadata.len() > limit {
+            return Err(Error::Invalid(
+                "peer book must be a regular file of at most 1 MiB".into(),
+            ));
         }
-        if metadata.len() > FILE_LIMIT as u64 {
-            return Err(Error::Invalid("peer book exceeds 256 KiB".into()));
-        }
-        let bytes = urma_io::read_regular(path, FILE_LIMIT).map_err(io_source)?;
+        let bytes = urma_io::read_regular(path, Self::FILE_LIMIT).map_err(io_source)?;
         let saved: SavedBook = serde_json::from_slice(&bytes)?;
-        if saved.version != VERSION {
+        if saved.version != Self::VERSION {
             return Err(Error::Invalid("unsupported peer book version".into()));
         }
         let saved_genesis: BlockHash = saved
@@ -120,96 +158,465 @@ impl PeerBook {
         if saved_genesis != chain_genesis {
             return Err(Error::Invalid("peer book belongs to another chain".into()));
         }
-        if saved.entries.len() > PEER_LIMIT * ADDRESS_LIMIT {
-            return Err(Error::Busy("peer book has too many addresses".into()));
+        if saved.entries.len() > Self::CAPACITY {
+            return Err(Error::Busy("peer book has too many entries".into()));
         }
-        for entry in saved.entries {
-            let peer = entry
-                .peer_id
-                .parse()
-                .map_err(|_| Error::Invalid("invalid saved peer ID".into()))?;
-            let address = entry
-                .address
-                .parse()
-                .map_err(|_| Error::Invalid("invalid saved peer address".into()))?;
-            let address = PeerAddress::new(peer, address)?;
-            if book.peers.get(&peer).is_some_and(|addresses| {
-                addresses
-                    .iter()
-                    .any(|(known, _)| known.address == address.address)
-            }) {
-                return Err(Error::Invalid("duplicate saved peer address".into()));
+        for saved in saved.entries {
+            let entry = restore(saved)?;
+            if book.overlaps(&entry) {
+                return Err(Error::Invalid("duplicate saved peer or address".into()));
             }
-            book.insert(address, entry.origin)?;
+            book.entries.push(entry);
         }
         Ok(book)
     }
 
-    /// Return whether memory changed. A manual duplicate upgrades a learned
-    /// address; a learned duplicate preserves manual origin. Capacity refusal
-    /// does not evict entries or change memory, and never writes a file.
-    pub fn insert(&mut self, address: PeerAddress, origin: Origin) -> Result<bool, Error> {
-        if let Some(addresses) = self.peers.get_mut(&address.peer) {
-            if let Some((_, known_origin)) = addresses
-                .iter_mut()
-                .find(|(known, _)| known.address == address.address)
-            {
-                if *known_origin == Origin::Learned && origin == Origin::Manual {
-                    *known_origin = Origin::Manual;
-                    return Ok(true);
-                }
-                return Ok(false);
-            }
-            if addresses.len() == ADDRESS_LIMIT {
-                return Err(Error::Busy("peer already has four addresses".into()));
-            }
-            addresses.push((address, origin));
-        } else {
-            if self.peers.len() == PEER_LIMIT {
-                return Err(Error::Busy("peer book already has 256 peers".into()));
-            }
-            self.peers.insert(address.peer, vec![(address, origin)]);
-        }
-        Ok(true)
-    }
-
-    /// Snapshot sorted by peer ID string, then canonical address string.
-    pub fn entries(&self) -> Vec<(PeerAddress, Origin)> {
-        let mut entries: Vec<_> = self.peers.values().flatten().cloned().collect();
-        entries.sort_by_cached_key(|(address, _)| {
-            (address.peer.to_string(), address.address.to_string())
-        });
-        entries
-    }
-
-    /// Remove all addresses for a peer from memory without persisting.
-    pub fn remove(&mut self, peer: PeerId) -> bool {
-        self.peers.remove(&peer).is_some()
-    }
-
-    /// Atomically replace a bounded snapshot using `urma_io`. The destination
-    /// directory must exist; the caller owns its lock. New files use the private
-    /// temporary file supplied by that I/O API. No file handle is retained.
+    /// Atomically replace a bounded snapshot sorted by identity then address.
     pub fn save(&self, path: &Path) -> Result<(), Error> {
+        let mut entries: Vec<SavedEntry> = self.entries.iter().map(persist).collect();
+        entries.sort_by(|a, b| (&a.peer_id, &a.addrs).cmp(&(&b.peer_id, &b.addrs)));
         let saved = SavedBook {
-            version: VERSION,
+            version: Self::VERSION,
             chain_genesis: self.chain_genesis.to_string(),
-            entries: self
-                .entries()
-                .into_iter()
-                .map(|(address, origin)| SavedAddress {
-                    peer_id: address.peer.to_string(),
-                    address: address.address.to_string(),
-                    origin,
-                })
-                .collect(),
+            entries,
         };
         let bytes = serde_json::to_vec(&saved)?;
-        if bytes.len() > FILE_LIMIT {
-            return Err(Error::Invalid("peer book exceeds 256 KiB".into()));
+        if bytes.len() > Self::FILE_LIMIT {
+            return Err(Error::Invalid("peer book exceeds 1 MiB".into()));
         }
         urma_io::write_replace(path, &bytes).map_err(io_source)
     }
+
+    pub fn entries(&self) -> &[BookEntry] {
+        &self.entries
+    }
+
+    /// Add one address. A terminal `/p2p` names the peer; without it the
+    /// entry stays unidentified until a dial succeeds. Gossip only accepts
+    /// public literal IPs under the group cap; manual and seed accept any
+    /// usable address including loopback and names. Returns whether memory
+    /// changed; capacity is made by evicting the worst gossip entry only.
+    pub fn add(&mut self, address: Multiaddr, origin: Origin) -> Result<bool, Error> {
+        let (address, peer) = split(address)?;
+        if origin == Origin::Gossip {
+            self.admit_gossip(&address)?;
+        }
+        if let Some(index) = self.position_of_address(&address) {
+            let entry = &mut self.entries[index];
+            if peer.is_some() && entry.peer_id.is_some() && entry.peer_id != peer {
+                return Err(Error::Invalid("address already names another peer".into()));
+            }
+            let upgraded = origin > entry.origin || (entry.peer_id.is_none() && peer.is_some());
+            entry.origin = entry.origin.max(origin);
+            entry.peer_id = entry.peer_id.or(peer);
+            return Ok(upgraded);
+        }
+        if let Some(index) = peer.and_then(|peer| self.position_of_peer(peer)) {
+            let entry = &mut self.entries[index];
+            if entry.addrs.len() == Self::ADDRESSES {
+                return Err(Error::Busy("peer already has four addresses".into()));
+            }
+            entry.addrs.push(address);
+            entry.origin = entry.origin.max(origin);
+            return Ok(true);
+        }
+        self.make_room(origin)?;
+        self.entries.push(BookEntry {
+            peer_id: peer,
+            addrs: vec![address],
+            origin,
+            last_success: None,
+            failures: 0,
+            banned_until: None,
+        });
+        Ok(true)
+    }
+
+    /// Merge one peer's gossip under the caps. The local identity and peers
+    /// this archive found omitting records are never stored from gossip.
+    /// Returns how many addresses changed memory; refusals are skipped.
+    pub fn merge(&mut self, peers: &[GossipPeer], local: PeerId, omitting: &[String]) -> usize {
+        let mut changed = 0;
+        for peer in peers {
+            let id = peer.peer_id;
+            if id == local || omitting.contains(&id.to_string()) {
+                continue;
+            }
+            for address in peer.addrs.iter().take(Self::ADDRESSES) {
+                let Ok((address, named)) = split(address.clone()) else {
+                    continue;
+                };
+                if named.is_some_and(|named| named != id) {
+                    continue;
+                }
+                let address = address.with(Protocol::P2p(id));
+                if let Ok(true) = self.add(address, Origin::Gossip) {
+                    changed += 1;
+                }
+            }
+        }
+        changed
+    }
+
+    /// A dial through `address` reached `peer`. Resets failures and records
+    /// the success; an unidentified literal-IP entry learns the identity. An
+    /// entry that turns out to be this node is dropped: the book never holds
+    /// ourselves.
+    pub fn succeeded(&mut self, address: &Multiaddr, peer: PeerId, local: PeerId, now: u64) {
+        let Ok((address, _)) = split(address.clone()) else {
+            return;
+        };
+        let Some(index) = self.position_of_address(&address) else {
+            return;
+        };
+        if peer == local {
+            self.entries.remove(index);
+            return;
+        }
+        let learnable = matches!(host(&address), Some(Host::Ip(_)));
+        let known_elsewhere = self
+            .position_of_peer(peer)
+            .is_some_and(|other| other != index);
+        let entry = &mut self.entries[index];
+        entry.last_success = Some(now);
+        entry.failures = 0;
+        entry.banned_until = None;
+        if entry.peer_id.is_none() && learnable && !known_elsewhere {
+            entry.peer_id = Some(peer);
+        }
+    }
+
+    /// A dial through `address` failed: back off 60 s × 2^(failures−1), so the
+    /// first failure waits 60 s, capped at one day.
+    pub fn failed(&mut self, address: &Multiaddr, now: u64) {
+        let Ok((address, _)) = split(address.clone()) else {
+            return;
+        };
+        let Some(index) = self.position_of_address(&address) else {
+            return;
+        };
+        let entry = &mut self.entries[index];
+        entry.failures = entry.failures.checked_add(1).unwrap_or(u32::MAX);
+        let delay = 2u64
+            .checked_pow(entry.failures - 1)
+            .and_then(|factor| factor.checked_mul(Self::BACKOFF_SECONDS))
+            .map_or(Self::BACKOFF_CAP, |delay| delay.min(Self::BACKOFF_CAP));
+        entry.banned_until = Some(now.checked_add(delay).unwrap_or(u64::MAX));
+    }
+
+    /// Up to `count` dial addresses for non-seed entries that are not banned,
+    /// connected or omitting. Never-tried entries come first, picked at random;
+    /// then the rest by oldest backoff expiry (verified entries first).
+    pub fn candidates(
+        &self,
+        now: u64,
+        connected: &[PeerId],
+        omitting: &[String],
+        count: usize,
+    ) -> Vec<Multiaddr> {
+        let eligible = |entry: &&BookEntry| {
+            entry.origin != Origin::Seed
+                && entry.banned_until.is_none_or(|until| until <= now)
+                && entry.peer_id.is_none_or(|peer| {
+                    !connected.contains(&peer) && !omitting.contains(&peer.to_string())
+                })
+        };
+        let (mut fresh, mut tried): (Vec<&BookEntry>, Vec<&BookEntry>) = self
+            .entries
+            .iter()
+            .filter(eligible)
+            .partition(|entry| entry.last_success.is_none() && entry.failures == 0);
+        fresh.shuffle(&mut rand::thread_rng());
+        tried.sort_by_key(|entry| (entry.banned_until, entry.failures));
+        fresh
+            .into_iter()
+            .chain(tried)
+            .take(count)
+            .filter_map(dial_address)
+            .collect()
+    }
+
+    /// Seed dial addresses, skipping seeds known to be this node's omitters.
+    pub fn seeds(&self, omitting: &[String]) -> Vec<Multiaddr> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.origin == Origin::Seed)
+            .filter(|entry| {
+                entry
+                    .peer_id
+                    .is_none_or(|peer| !omitting.contains(&peer.to_string()))
+            })
+            .filter_map(dial_address)
+            .collect()
+    }
+
+    /// Identified IP/TCP addresses for record, commit and inventory sources,
+    /// one per peer, excluding peers this archive found omitting records.
+    pub fn sync_addresses(&self, omitting: &[String]) -> Vec<PeerAddress> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                let peer = entry.peer_id?;
+                if omitting.contains(&peer.to_string()) {
+                    return None;
+                }
+                entry.addrs.iter().find_map(|address| {
+                    PeerAddress::new(peer, address.clone().with(Protocol::P2p(peer))).ok()
+                })
+            })
+            .collect()
+    }
+
+    /// Verified, identified peers with public literal-IP addresses, most
+    /// recently successful first, for answering a Peers request.
+    pub fn gossip(&self, limit: usize, omitting: &[String]) -> Vec<GossipPeer> {
+        let mut verified: Vec<(&BookEntry, PeerId, u64)> = self
+            .entries
+            .iter()
+            .filter_map(|entry| Some((entry, entry.peer_id?, entry.last_success?)))
+            .filter(|(_, peer, _)| !omitting.contains(&peer.to_string()))
+            .collect();
+        verified.sort_by_key(|(_, _, seen)| std::cmp::Reverse(*seen));
+        verified
+            .into_iter()
+            .filter_map(|(entry, peer_id, last_seen)| {
+                let addrs: Vec<Multiaddr> =
+                    entry.addrs.iter().filter(|a| public(a)).cloned().collect();
+                (!addrs.is_empty()).then_some(GossipPeer {
+                    peer_id,
+                    addrs,
+                    last_seen,
+                })
+            })
+            .take(limit)
+            .collect()
+    }
+
+    pub fn stats(&self) -> BookStats {
+        let count = |keep: &dyn Fn(&BookEntry) -> bool| {
+            u64::try_from(self.entries.iter().filter(|entry| keep(entry)).count())
+                .unwrap_or(u64::MAX)
+        };
+        BookStats {
+            seeds: count(&|entry| entry.origin == Origin::Seed),
+            book: count(&|_| true),
+            verified: count(&|entry| entry.last_success.is_some()),
+            gossip: count(&|entry| entry.origin == Origin::Gossip),
+        }
+    }
+
+    /// Bounded JSON snapshot for the local control API.
+    pub fn json(&self) -> Value {
+        let mut entries: Vec<SavedEntry> = self.entries.iter().map(persist).collect();
+        entries.sort_by(|a, b| (&a.peer_id, &a.addrs).cmp(&(&b.peer_id, &b.addrs)));
+        entries.truncate(Self::CAPACITY);
+        json!(entries)
+    }
+
+    /// Remove a peer's entry from memory without persisting.
+    pub fn remove(&mut self, peer: PeerId) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.peer_id != Some(peer));
+        self.entries.len() != before
+    }
+
+    fn position_of_address(&self, address: &Multiaddr) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.addrs.contains(address))
+    }
+
+    fn position_of_peer(&self, peer: PeerId) -> Option<usize> {
+        self.entries
+            .iter()
+            .position(|entry| entry.peer_id == Some(peer))
+    }
+
+    fn overlaps(&self, candidate: &BookEntry) -> bool {
+        candidate
+            .peer_id
+            .is_some_and(|peer| self.position_of_peer(peer).is_some())
+            || candidate
+                .addrs
+                .iter()
+                .any(|address| self.position_of_address(address).is_some())
+    }
+
+    /// Gossip may only name public literal IPs, two entries per network group.
+    fn admit_gossip(&self, address: &Multiaddr) -> Result<(), Error> {
+        let Some(Host::Ip(ip)) = host(address) else {
+            return Err(Error::Invalid(
+                "gossip addresses must be literal IPs".into(),
+            ));
+        };
+        if !is_public(address) {
+            return Err(Error::Invalid("gossip named a non-public address".into()));
+        }
+        let neighbours = self
+            .entries
+            .iter()
+            .filter(|entry| entry.origin == Origin::Gossip)
+            .filter(|entry| entry.addrs.iter().any(|known| same_group(known, ip)))
+            .count();
+        if neighbours >= Self::GROUP_LIMIT && self.position_of_address(address).is_none() {
+            return Err(Error::Busy("gossip network group is full".into()));
+        }
+        Ok(())
+    }
+
+    /// At capacity, evict the gossip entry with most failures, then the oldest
+    /// success (never-successful first). Manual and seed are never evicted.
+    fn make_room(&mut self, origin: Origin) -> Result<(), Error> {
+        if self.entries.len() < Self::CAPACITY {
+            return Ok(());
+        }
+        let worst = self
+            .entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.origin == Origin::Gossip)
+            .max_by_key(|(_, entry)| {
+                (
+                    entry.failures,
+                    std::cmp::Reverse(entry.last_success.unwrap_or(0)),
+                )
+            })
+            .map(|(index, _)| index);
+        match worst {
+            Some(index)
+                if origin != Origin::Gossip
+                    || self.entries[index].failures > 0
+                    || self.entries[index].last_success.is_none() =>
+            {
+                self.entries.remove(index);
+                Ok(())
+            }
+            _ => Err(Error::Busy("peer book is full".into())),
+        }
+    }
+}
+
+/// Validate a dialable address and split off a terminal `/p2p`. Accepted:
+/// IP4/IP6/DNS/DNS4/DNS6 + nonzero TCP, or DNSADDR alone; then optional `/p2p`.
+fn split(address: Multiaddr) -> Result<(Multiaddr, Option<PeerId>), Error> {
+    let invalid = || Error::Invalid("peer book address shape is not dialable".into());
+    let mut bare = Multiaddr::empty();
+    let mut protocols = address.iter();
+    let first = protocols.next().ok_or_else(invalid)?;
+    let named_only = matches!(first, Protocol::Dnsaddr(_));
+    match &first {
+        Protocol::Ip4(ip) if usable(IpAddr::V4(*ip)) => (),
+        Protocol::Ip6(ip) if usable(IpAddr::V6(*ip)) => (),
+        Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => (),
+        _ => return Err(invalid()),
+    }
+    bare.push(first);
+    if !named_only {
+        match protocols.next() {
+            Some(Protocol::Tcp(port)) if port != 0 => bare.push(Protocol::Tcp(port)),
+            _ => return Err(invalid()),
+        }
+    }
+    let peer = match protocols.next() {
+        None => None,
+        Some(Protocol::P2p(peer)) => Some(peer),
+        Some(_) => return Err(invalid()),
+    };
+    if protocols.next().is_some() {
+        return Err(invalid());
+    }
+    Ok((bare, peer))
+}
+
+fn host(address: &Multiaddr) -> Option<Host> {
+    match address.iter().next()? {
+        Protocol::Ip4(ip) => Some(Host::Ip(IpAddr::V4(ip))),
+        Protocol::Ip6(ip) => Some(Host::Ip(IpAddr::V6(ip))),
+        Protocol::Dns(_) | Protocol::Dns4(_) | Protocol::Dns6(_) | Protocol::Dnsaddr(_) => {
+            Some(Host::Name)
+        }
+        _ => None,
+    }
+}
+
+fn usable(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => !ip.is_unspecified() && !ip.is_multicast() && !ip.is_broadcast(),
+        IpAddr::V6(ip) => !ip.is_unspecified() && !ip.is_multicast(),
+    }
+}
+
+/// A globally routable literal IP: the only address gossip may carry. Names
+/// and non-public ranges come only from an operator (manual or seed).
+fn public(address: &Multiaddr) -> bool {
+    matches!(host(address), Some(Host::Ip(_))) && is_public(address)
+}
+
+/// IPv4 /24 or IPv6 /48 equality.
+fn same_group(address: &Multiaddr, ip: IpAddr) -> bool {
+    match (host(address), ip) {
+        (Some(Host::Ip(IpAddr::V4(known))), IpAddr::V4(ip)) => {
+            known.octets()[..3] == ip.octets()[..3]
+        }
+        (Some(Host::Ip(IpAddr::V6(known))), IpAddr::V6(ip)) => {
+            known.segments()[..3] == ip.segments()[..3]
+        }
+        _ => false,
+    }
+}
+
+fn dial_address(entry: &BookEntry) -> Option<Multiaddr> {
+    let address = entry.addrs.first()?.clone();
+    Some(match entry.peer_id {
+        Some(peer) => address.with(Protocol::P2p(peer)),
+        None => address,
+    })
+}
+
+fn persist(entry: &BookEntry) -> SavedEntry {
+    SavedEntry {
+        peer_id: entry.peer_id.map(|peer| peer.to_string()),
+        addrs: entry.addrs.iter().map(Multiaddr::to_string).collect(),
+        origin: entry.origin,
+        last_success: entry.last_success,
+        failures: entry.failures,
+        banned_until: entry.banned_until,
+    }
+}
+
+fn restore(saved: SavedEntry) -> Result<BookEntry, Error> {
+    let peer_id = saved
+        .peer_id
+        .map(|peer| peer.parse::<PeerId>())
+        .transpose()
+        .map_err(|_| Error::Invalid("invalid saved peer ID".into()))?;
+    if saved.addrs.is_empty() || saved.addrs.len() > PeerBook::ADDRESSES {
+        return Err(Error::Invalid(
+            "saved peer needs one to four addresses".into(),
+        ));
+    }
+    let mut addrs = Vec::new();
+    for address in saved.addrs {
+        let parsed: Multiaddr = address
+            .parse()
+            .map_err(|_| Error::Invalid("invalid saved peer address".into()))?;
+        let (bare, named) = split(parsed)?;
+        if named.is_some() || addrs.contains(&bare) {
+            return Err(Error::Invalid("saved peer address is not canonical".into()));
+        }
+        if saved.origin == Origin::Gossip && !public(&bare) {
+            return Err(Error::Invalid("saved gossip address is not public".into()));
+        }
+        addrs.push(bare);
+    }
+    Ok(BookEntry {
+        peer_id,
+        addrs,
+        origin: saved.origin,
+        last_success: saved.last_success,
+        failures: saved.failures,
+        banned_until: saved.banned_until,
+    })
 }
 
 fn io_source(error: urma_io::Error) -> Error {

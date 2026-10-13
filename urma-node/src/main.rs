@@ -3,13 +3,15 @@ use libp2p::{Multiaddr, multiaddr::Protocol};
 use std::{
     net::{IpAddr, SocketAddr},
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{Arc, Mutex},
 };
 use urma_chain::observation::Chain;
 use urma_node::{
+    config,
     engine::Engine,
     model::ArchiveConfig,
     peer::{OverlayCommitSource, PeerNetwork, PeerSource},
+    peer_discovery::Discovery,
     peer_sync::{OverlayInfo, PeerSync},
     peerbook::{Origin, PeerAddress, PeerBook},
     retrieval::RecordSource,
@@ -71,6 +73,15 @@ enum Command {
         /// Explicit IP/TCP/p2p routing hint; saved in this archive's peer book.
         #[arg(long, requires = "peer_key")]
         urma_peer: Vec<libp2p::Multiaddr>,
+        /// Extra bootstrap seed (repeatable); saved with seed origin.
+        #[arg(long, requires = "peer_key")]
+        urma_seed: Vec<libp2p::Multiaddr>,
+        /// Do not add this chain's built-in DNS seeds.
+        #[arg(long, requires = "peer_key")]
+        no_seeds: bool,
+        /// This node's own public multiaddr (repeatable), offered to peers.
+        #[arg(long, requires = "peer_key")]
+        urma_announce: Vec<libp2p::Multiaddr>,
         /// Soft reclaimable cache target (not a SQLite/WAL or total archive quota).
         #[arg(long, default_value_t = urma_node::cache::DEFAULT_CACHE_BYTES, value_parser = clap::value_parser!(u64).range(..=i64::MAX as u64))]
         cache_bytes: u64,
@@ -138,6 +149,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
             peer_key,
             urma_listen,
             urma_peer,
+            urma_seed,
+            no_seeds,
+            urma_announce,
             no_commit_public,
             ..
         } => {
@@ -171,6 +185,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
                 key: peer_key,
                 listen: urma_listen,
                 manual: urma_peer,
+                seeds: urma_seed,
+                builtin_seeds: !no_seeds,
+                announce: urma_announce,
                 commit_parents: synchronize,
             };
             let (service, network, overlay) =
@@ -230,7 +247,35 @@ struct OverlayOptions {
     key: Option<PathBuf>,
     listen: Option<SocketAddr>,
     manual: Vec<Multiaddr>,
+    seeds: Vec<Multiaddr>,
+    builtin_seeds: bool,
+    announce: Vec<Multiaddr>,
     commit_parents: bool,
+}
+
+/// Manual hints, then built-in and explicit seeds, merged into the saved book.
+fn load_book(
+    path: &Path,
+    engine: &Engine,
+    chain: Chain,
+    options: &OverlayOptions,
+) -> Result<PeerBook, Box<dyn std::error::Error>> {
+    let mut book = PeerBook::load(path, engine.status()?.chain_genesis)?;
+    let mut changed = false;
+    for address in &options.manual {
+        changed |= book.add(address.clone(), Origin::Manual)?;
+    }
+    let builtin = match options.builtin_seeds {
+        true => config::seeds(chain)?,
+        false => Vec::new(),
+    };
+    for seed in builtin.into_iter().chain(options.seeds.iter().cloned()) {
+        changed |= book.add(seed, Origin::Seed)?;
+    }
+    if changed {
+        book.save(path)?;
+    }
+    Ok(book)
 }
 
 type Overlay = (
@@ -246,22 +291,12 @@ fn attach_overlay(
     chain: Chain,
     options: OverlayOptions,
 ) -> Result<Overlay, Box<dyn std::error::Error>> {
-    let Some(path) = options.key else {
+    let Some(path) = &options.key else {
         return Ok((service, None, None));
     };
-    let identity = read_peer_key(&path)?;
+    let identity = read_peer_key(path)?;
     let book_path = data.join("peers.json");
-    let mut book = PeerBook::load(&book_path, engine.status()?.chain_genesis)?;
-    let mut changed = false;
-    for address in options.manual {
-        let Some(Protocol::P2p(peer)) = address.iter().last() else {
-            return Err("URMA peer address requires a terminal peer identity".into());
-        };
-        changed |= book.insert(PeerAddress::new(peer, address)?, Origin::Manual)?;
-    }
-    if changed {
-        book.save(&book_path)?;
-    }
+    let book = load_book(&book_path, engine, chain, &options)?;
     let listener = options.listen.map(|socket| {
         let mut address = Multiaddr::empty();
         address.push(match socket.ip() {
@@ -272,7 +307,9 @@ fn attach_overlay(
         address
     });
     let network = Arc::new(PeerNetwork::start(Arc::clone(engine), identity, listener)?);
-    let peers: Vec<PeerAddress> = book.entries().into_iter().map(|entry| entry.0).collect();
+    let peers = book.sync_addresses(&engine.omitting_peers()?);
+    let book_size = book.stats().book;
+    let book = Arc::new(Mutex::new(book));
     let sources = peers
         .iter()
         .cloned()
@@ -280,7 +317,14 @@ fn attach_overlay(
         .collect();
     let service = service.with_record_sources(sources)?;
     let service = match options.commit_parents {
-        true => service.with_peer_sync(peer_sync(&network, &peers)?)?,
+        true => service
+            .with_peer_sync(peer_sync(&network, &peers, book_size)?)?
+            .with_discovery(Discovery::new(
+                Arc::clone(&network),
+                book,
+                book_path,
+                options.announce,
+            ))?,
         false => service,
     };
     eprintln!(
@@ -299,6 +343,7 @@ fn attach_overlay(
 fn peer_sync(
     network: &Arc<PeerNetwork>,
     peers: &[PeerAddress],
+    book_size: u64,
 ) -> Result<PeerSync, Box<dyn std::error::Error>> {
     let mut entries: Vec<(String, PeerSource)> = Vec::new();
     for address in peers {
@@ -314,7 +359,7 @@ fn peer_sync(
         info: OverlayInfo {
             peer_id: network.peer_id().to_string(),
             listen: network.listen_address().map(|address| address.to_string()),
-            peer_book: u64::try_from(peers.len())?,
+            peer_book: book_size,
             connected: Arc::new(move || shared.connected_peers()),
         },
     })

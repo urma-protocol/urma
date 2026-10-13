@@ -241,15 +241,15 @@ outbound-only operation. Add explicit peers using
 `--urma-peer /ip4/ADDRESS/tcp/PORT/p2p/PEER_ID` (IPv6 also supported). Addresses
 and their origins are saved in the archive's bounded `peers.json`; identities
 are authenticated during connection setup but are not authorities for URMA data.
-The peer book has no implicit seed, DNS lookup or automatic replacement of
-manual entries. Without `--peer-key`, normal offline/control-only operation does
-not read the peer book or start this transport.
+Manual and seed entries are never replaced or evicted; see Peer discovery below
+for seeds and learned addresses. Without `--peer-key`, normal offline/control-only
+operation does not read the peer book or start this transport.
 
 The service can use configured peers for unpruned background object recovery,
 then fall back to full blocks at known locations. Full-block scanning remains
 the independent completeness check. The standalone peer exchange is currently
-by requested TXID; range discovery, address gossip, relay/DCUtR, distributed
-discovery and two real consumer applications are still pending.
+by requested TXID or inventory range; relay/DCUtR, NAT traversal and two real
+consumer applications are still pending.
 
 Wire messages use `/urma/node/record/4`, a 4-byte big-endian JSON length followed
 by exactly one payload and stream EOF. Requests are capped at 1 KiB and
@@ -326,6 +326,48 @@ The `overlay` status block (null without `--peer-key`) reports the peer ID,
 listener, peer-book size, connected peers, records admitted and packages
 rejected since start, and each peer's cursor, synced height and last error;
 `last_inventory_error` reports a failed step.
+
+### Peer discovery
+
+Discovery works like Bitcoin's: seeds bootstrap a sparse book, then connected
+peers exchange addresses. A successful dial proves only that a Noise identity
+answered at that address, never chain membership, record availability or
+honesty; inventory sync and full-block audit stay the data checks.
+
+Seeds are multiaddrs with seed origin. Litecoin mainnet has the built-in
+`/dnsaddr/ltc-seed.urma.rosint.org` and Litecoin testnet
+`/dnsaddr/tltc-seed.urma.rosint.org` (their DNS records are the operator's job;
+the node dials whatever they resolve to); regtest and the Bitcoin test chains
+have none. Every dial ends with a chain probe, so a node on another chain never
+counts as reached. `--urma-seed MULTIADDR` (repeatable) adds more, `--no-seeds` skips the
+built-in ones. Seeds are dialed at startup while fewer than four book entries
+have ever been reached, and again every 600 rounds while below target.
+
+Each `run(true)` round runs one discovery step before the inventory step: while
+fewer than 8 peers are connected it dials up to 2 non-seed candidates (never-tried
+first, at random, then the oldest expired backoff), and every 30 rounds it asks
+one random connected peer for up to 32 addresses. A round makes at most three
+network operations and checks cancellation between them, each with a 10-second
+bound. A failed dial backs the entry off for 60 s × 2^(failures−1) (60 s after
+the first failure), capped at one day; a success clears it. Each round also
+refreshes the snapshot served to Peers requests: verified book entries, plus
+this node when `--urma-announce MULTIADDR` (repeatable) is given.
+
+`peers.json` (format version 2; older files are refused, not migrated) holds up
+to 1024 entries with identity (once learned), up to four addresses, origin
+(manual, seed or gossip), last success, failure count and backoff. Gossip may
+only add public literal IPs, at most two entries per IPv4 /24 or IPv6 /48;
+loopback, private and DNS addresses come only from the operator. At capacity
+the gossip entry with most failures and oldest success is evicted; manual and
+seed entries never are. Peers with recorded omissions are neither dialed for
+sync nor passed on, and the book never contains this node. Record and commit
+sources are built from identified book entries at startup; the inventory peer
+list follows the book every step, keeping each known peer's in-flight range.
+
+`overlay.discovery` reports `seeds`, `book`, `verified` (entries ever reached),
+`gossip`, and the last seed-round and gossip errors with their times;
+`last_discovery_error` reports a failed step. `GET /v1/overlay/book` returns
+the book entries (at most 1024).
 
 ## Explicit peer probe
 

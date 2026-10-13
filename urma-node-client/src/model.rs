@@ -154,6 +154,8 @@ pub struct ServiceStatus {
     pub last_dependency_error_at: Option<u64>,
     pub last_inventory_error: Option<String>,
     pub last_inventory_error_at: Option<u64>,
+    pub last_discovery_error: Option<String>,
+    pub last_discovery_error_at: Option<u64>,
     pub commit_sources: Vec<CommitSourceStatus>,
     pub cache_limit_bytes: u64,
     pub last_cache_error: Option<String>,
@@ -182,6 +184,21 @@ pub struct OverlayStatus {
     pub admitted: u64,
     pub rejected: u64,
     pub peers: Vec<OverlayPeerStatus>,
+    pub discovery: Option<DiscoveryStatus>,
+}
+
+/// Peer book and discovery counters. `verified` counts entries with a past
+/// successful dial; a dial proves an identity answered, not honesty.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DiscoveryStatus {
+    pub seeds: u64,
+    pub book: u64,
+    pub verified: u64,
+    pub gossip: u64,
+    pub last_seed_round_error: Option<String>,
+    pub last_seed_round_error_at: Option<u64>,
+    pub last_gossip_error: Option<String>,
+    pub last_gossip_error_at: Option<u64>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
