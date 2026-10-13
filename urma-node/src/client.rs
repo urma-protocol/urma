@@ -11,7 +11,10 @@
 
 use crate::{
     Error,
-    model::{ArchivedRecord, ChainPoint, ObjectStatus, PinReceipt, PruneReceipt, ServiceStatus},
+    model::{
+        ArchivedRecord, BookEntry, ChainPoint, ObjectStatus, Omission, PinReceipt, PruneReceipt,
+        ServiceStatus,
+    },
     names::{NamesCursor, NamesPage, NamesResolution, NamesStatus, NamesStep},
     projection::{WireCursor, WirePage},
 };
@@ -78,6 +81,16 @@ impl Client {
     /// occurs, including when a socket failure leaves the commit outcome unknown.
     pub fn prune_cache(&self) -> Result<PruneReceipt, Error> {
         self.inner.prune_cache().map_err(Error::from)
+    }
+
+    /// Recorded peer omissions; HTTP 404 is `Error::Invalid("overlay disabled")`.
+    pub fn overlay_omissions(&self) -> Result<Vec<Omission>, Error> {
+        self.inner.overlay_omissions().map_err(Error::from)
+    }
+
+    /// The peer book's routing hints; HTTP 404 is `Error::Invalid("overlay disabled")`.
+    pub fn overlay_book(&self) -> Result<Vec<BookEntry>, Error> {
+        self.inner.overlay_book().map_err(Error::from)
     }
 
     /// Read one bounded page of Wire records from the configured local operator.

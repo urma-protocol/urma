@@ -34,6 +34,8 @@ enum Command {
         root: Txid,
     },
     Prune,
+    OverlayOmissions,
+    OverlayBook,
     NamesStatus {
         genesis: Txid,
     },
@@ -86,6 +88,8 @@ fn run(args: Args) -> Result<(), Box<dyn std::error::Error>> {
             Command::Pin { root } => serde_json::to_value(client.set_pin(root, true)?)?,
             Command::Unpin { root } => serde_json::to_value(client.set_pin(root, false)?)?,
             Command::Prune => serde_json::to_value(client.prune_cache()?)?,
+            Command::OverlayOmissions => serde_json::to_value(client.overlay_omissions()?)?,
+            Command::OverlayBook => serde_json::to_value(client.overlay_book()?)?,
             Command::NamesStatus { genesis } => {
                 serde_json::to_value(client.names_status(genesis)?)?
             }

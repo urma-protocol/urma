@@ -21,6 +21,7 @@ use std::{
     time::{Duration, Instant},
 };
 use urma_names::name::Name;
+mod overlay;
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(2);
 const OPERATION_TIMEOUT: Duration = Duration::from_secs(5);

@@ -136,7 +136,7 @@ local filesystem.
 
 The separate `urma-node-control` client accepts an explicit `--endpoint`
 loopback address and `--token-file`, followed by `status`, `object TXID`,
-`pin TXID`, `unpin TXID` or `prune`. It does not open an archive or start a
+`pin TXID`, `unpin TXID`, `prune`, `overlay-omissions` or `overlay-book`. It does not open an archive or start a
 daemon. Commands print JSON; failures use stderr and a nonzero exit status.
 Names commands use that same explicit connection and token:
 `names-status GENESIS`, `names-register GENESIS HEIGHT HASH`,
@@ -376,7 +376,9 @@ list follows the book every step, keeping each known peer's in-flight range.
 `reached_ever` (any past success),
 `gossip`, and the last seed-round and gossip errors with their times;
 `last_discovery_error` reports a failed step. `GET /v1/overlay/book` returns
-the book entries (at most 1024).
+the book entries (at most 1024) as `urma-node-client` `BookEntry` values;
+without discovery it answers 404 `overlay disabled`, which `Client::overlay_book`
+reports as `Error::Invalid("overlay disabled")`.
 
 ## Explicit peer probe
 

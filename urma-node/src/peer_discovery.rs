@@ -6,7 +6,7 @@
 use crate::{
     Error,
     engine::Engine,
-    model::DiscoveryStatus,
+    model::{BookEntry, DiscoveryStatus},
     peer::{PeerNetwork, PeerSource},
     peer_protocol::GossipPeer,
     peerbook::PeerBook,
@@ -14,7 +14,6 @@ use crate::{
 };
 use libp2p::{Multiaddr, PeerId};
 use rand::seq::SliceRandom;
-use serde_json::Value;
 use std::{
     path::PathBuf,
     sync::{
@@ -329,7 +328,7 @@ impl Discovery {
         Ok(())
     }
 
-    pub fn book_json(&self) -> Result<Value, Error> {
-        Ok(self.lock()?.json())
+    pub fn book(&self) -> Result<Vec<BookEntry>, Error> {
+        Ok(self.lock()?.listing())
     }
 }

@@ -549,7 +549,8 @@ impl Service {
                 Err(error) => control_error(stream, error),
             },
             "GET /v1/overlay/book HTTP/1.1" => match self.overlay_book() {
-                Ok(book) => respond(stream, 200, book),
+                Ok(Some(book)) => respond(stream, 200, serde_json::to_value(book)?),
+                Ok(None) => respond(stream, 404, json!({"error":"overlay disabled"})),
                 Err(error) => control_error(stream, error),
             },
             "POST /v1/shutdown HTTP/1.1" => {

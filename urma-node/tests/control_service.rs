@@ -8,6 +8,7 @@ mod common;
 
 use bitcoin::{Txid, hashes::Hash};
 use common::{MemorySource, SignedPair, config, readonly_archive, stored_bytes, witness_block};
+use libp2p::{Multiaddr, identity::Keypair};
 use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
 use std::{
@@ -17,18 +18,24 @@ use std::{
     net::{SocketAddr, TcpStream},
     path::{Path, PathBuf},
     process::{Child, Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
 use urma_core::multipart::MultipartRecord;
 use urma_node::{
     Error,
+    client::Client,
     engine::Engine,
-    model::{ArchiveConfig, PinReceipt, PruneReceipt, Retention},
+    model::{ArchiveConfig, BookEntry, PinReceipt, PruneReceipt, Retention},
+    peer::PeerNetwork,
+    peer_discovery::Discovery,
+    peerbook::{Origin, PeerBook},
     retrieval::recover,
     service::Service,
 };
+
+type Worker = JoinHandle<Result<(), Error>>;
 use urma_runtime::multipart::RecoveryLimits;
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
@@ -581,6 +588,68 @@ fn unpruned(control: &Path) {
     assert_eq!(snapshot(&seed.directory), before);
 }
 
+fn book_service(engine: &Arc<Engine>, discovery: Option<Discovery>) -> (SocketAddr, Worker) {
+    let mut service = Service::bind(
+        "127.0.0.1:0".parse().unwrap(),
+        TOKEN.into(),
+        Arc::clone(engine),
+    )
+    .unwrap();
+    for discovery in discovery {
+        service = service.with_discovery(discovery).unwrap();
+    }
+    let address = service.address().unwrap();
+    (address, thread::spawn(move || service.run(false)))
+}
+
+fn book(control: &Path) {
+    let block = witness_block(&[], None, 1);
+    let config = common::config(&block, Retention::Pruned);
+    let engine = Arc::new(Engine::open(&control.join("archive"), config, None).unwrap());
+    let identity = Keypair::generate_ed25519();
+    let network = Arc::new(PeerNetwork::start(engine.clone(), identity, None, Vec::new()).unwrap());
+    let peer = Keypair::generate_ed25519().public().to_peer_id();
+    let manual: Multiaddr = format!("/ip4/127.0.0.1/tcp/4001/p2p/{peer}")
+        .parse()
+        .unwrap();
+    let mut peers = PeerBook::empty(engine.status().unwrap().chain_genesis);
+    assert!(peers.add(manual, Origin::Manual).unwrap());
+    let peers = Arc::new(Mutex::new(peers));
+    let expected = BookEntry {
+        peer_id: Some(peer.to_string()),
+        addrs: vec!["/ip4/127.0.0.1/tcp/4001".into()],
+        origin: Origin::Manual,
+        last_success: None,
+        failures: 0,
+        banned_until: None,
+    };
+    for configured in [true, false] {
+        stage(control, &format!("overlay book, discovery {configured}"));
+        let discovery = configured
+            .then(|| Discovery::new(network.clone(), peers.clone(), control.join("peers.json")));
+        let (address, worker) = book_service(&engine, discovery);
+        let client = Client::new(address, TOKEN.into()).unwrap();
+        let raw = http(address, &request("GET", "/v1/overlay/book", &auth())).unwrap();
+        match configured {
+            true => {
+                assert_eq!(client.overlay_book().unwrap(), vec![expected.clone()]);
+                assert_eq!(raw, (200, json!([expected])));
+            }
+            false => {
+                let refused = client.overlay_book().unwrap_err();
+                assert!(matches!(refused, Error::Invalid(ref m) if m == "overlay disabled"));
+                assert_eq!(raw, (404, json!({"error":"overlay disabled"})));
+            }
+        }
+        assert!(client.overlay_omissions().unwrap().is_empty());
+        let stopped = http(address, &request("POST", "/v1/shutdown", &auth())).unwrap();
+        assert_eq!(stopped, (200, json!({"stopping":true})));
+        worker.join().unwrap().unwrap();
+    }
+    Arc::try_unwrap(network).ok().unwrap().shutdown().unwrap();
+    assert!(!control.join("peers.json").exists());
+}
+
 #[test]
 #[ignore = "owned subprocess host for the control-service cases"]
 fn control_service_host() {
@@ -592,6 +661,7 @@ fn control_service_host() {
         "eligibility" => eligibility(&control),
         "lifecycle" => lifecycle(&control),
         "unpruned" => unpruned(&control),
+        "book" => book(&control),
         _ => panic!("unknown owned test scenario"),
     }
     fs::write(
@@ -716,4 +786,9 @@ fn control_pin_prune_unpin_prune_preserves_raw_history_and_coverage_after_restar
 #[test]
 fn control_prune_unpruned_archive_is_an_exact_noop() {
     run("unpruned");
+}
+
+#[test]
+fn overlay_book_serves_a_manual_peer_and_404s_without_discovery() {
+    run("book");
 }

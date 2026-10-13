@@ -203,6 +203,39 @@ pub struct DiscoveryStatus {
     pub last_gossip_error_at: Option<u64>,
 }
 
+/// A selected record placement a peer's coverage claimed but did not list.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Omission {
+    pub peer: String,
+    pub block: ChainPoint,
+    pub position: u32,
+    pub txid: bitcoin::Txid,
+    pub generation: u64,
+}
+
+/// How a peer-book entry entered the book. Ordered by precedence: learning
+/// never downgrades an entry, and manual and seed entries are never evicted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BookOrigin {
+    Gossip,
+    Seed,
+    Manual,
+}
+
+/// One peer-book entry as served by `GET /v1/overlay/book`: an untrusted
+/// routing hint. Addresses carry no terminal `/p2p`; `peer_id` is set once a
+/// dial has authenticated it. Times are Unix seconds.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BookEntry {
+    pub peer_id: Option<String>,
+    pub addrs: Vec<String>,
+    pub origin: BookOrigin,
+    pub last_success: Option<u64>,
+    pub failures: u32,
+    pub banned_until: Option<u64>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct OverlayPeerStatus {
     pub label: String,

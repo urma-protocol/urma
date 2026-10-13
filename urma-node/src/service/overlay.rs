@@ -3,12 +3,11 @@
 use super::Service;
 use crate::{
     Error,
-    model::OverlayStatus,
+    model::{BookEntry, OverlayStatus},
     peer_discovery::Discovery,
     peer_sync::{PeerSync, Scheduler},
     recorded::{record, unix_seconds},
 };
-use serde_json::Value;
 use std::sync::atomic::Ordering;
 
 impl Service {
@@ -99,10 +98,8 @@ impl Service {
         Ok(Some(overlay))
     }
 
-    pub(super) fn overlay_book(&self) -> Result<Value, Error> {
-        match &self.discovery {
-            Some(discovery) => discovery.book_json(),
-            None => Err(Error::Invalid("peer discovery is not configured".into())),
-        }
+    /// `None` without discovery: the route answers 404 "overlay disabled".
+    pub(super) fn overlay_book(&self) -> Result<Option<Vec<BookEntry>>, Error> {
+        self.discovery.as_ref().map(Discovery::book).transpose()
     }
 }

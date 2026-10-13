@@ -12,8 +12,8 @@ use bitcoin::BlockHash;
 use libp2p::{Multiaddr, PeerId, multiaddr::Protocol};
 use rand::seq::SliceRandom;
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
 use std::{fs, io::ErrorKind, net::IpAddr, path::Path};
+use urma_node_client::model::BookEntry as ListedEntry;
 
 /// A syntactically validated routing hint with an explicit matching identity.
 /// Validation establishes neither reachability nor trust in the named peer.
@@ -56,15 +56,7 @@ impl PeerAddress {
     }
 }
 
-/// How an entry entered the book. Manual and seed entries are never evicted;
-/// learning cannot downgrade an entry's origin.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum Origin {
-    Gossip,
-    Seed,
-    Manual,
-}
+pub use urma_node_client::model::BookOrigin as Origin;
 
 /// One peer (or one not yet identified seed address). Addresses are stored
 /// without a terminal `/p2p`; the identity lives in `peer_id` once learned.
@@ -111,6 +103,7 @@ struct SavedBook {
     entries: Vec<SavedEntry>,
 }
 
+/// The persisted entry: the served `ListedEntry` shape, but strict on load.
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SavedEntry {
@@ -120,6 +113,27 @@ struct SavedEntry {
     last_success: Option<u64>,
     failures: u32,
     banned_until: Option<u64>,
+}
+
+impl From<SavedEntry> for ListedEntry {
+    fn from(saved: SavedEntry) -> Self {
+        let SavedEntry {
+            peer_id,
+            addrs,
+            origin,
+            last_success,
+            failures,
+            banned_until,
+        } = saved;
+        Self {
+            peer_id,
+            addrs,
+            origin,
+            last_success,
+            failures,
+            banned_until,
+        }
+    }
 }
 
 /// Where an address points: a literal IP or a name resolved at dial time.
@@ -527,11 +541,15 @@ impl PeerBook {
     }
 
     /// Bounded JSON snapshot for the local control API.
-    pub fn json(&self) -> Value {
-        let mut entries: Vec<SavedEntry> = self.entries.iter().map(persist).collect();
+    pub fn listing(&self) -> Vec<ListedEntry> {
+        let mut entries: Vec<ListedEntry> = self
+            .entries
+            .iter()
+            .map(|entry| persist(entry).into())
+            .collect();
         entries.sort_by(|a, b| (&a.peer_id, &a.addrs).cmp(&(&b.peer_id, &b.addrs)));
         entries.truncate(Self::CAPACITY);
-        json!(entries)
+        entries
     }
 
     /// Remove a peer's entry from memory without persisting.

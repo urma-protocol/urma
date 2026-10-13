@@ -1,6 +1,6 @@
 //! Control acknowledgements from owned loopback mocks only. No daemon, chain
 //! source, database, user state, DNS or external network is involved.
-use bitcoin::{Txid, hashes::Hash};
+use bitcoin::{BlockHash, Txid, hashes::Hash};
 use serde_json::json;
 use std::{
     io::{self, Read, Write},
@@ -9,7 +9,7 @@ use std::{
     thread::{self, JoinHandle},
     time::{Duration, Instant},
 };
-use urma_node::{Error, client::Client};
+use urma_node::{Error, client::Client, model::BookOrigin};
 
 const TOKEN: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
 const MOCK_TIMEOUT: Duration = Duration::from_secs(9);
@@ -437,6 +437,66 @@ fn post_header_and_body_size_boundaries_are_preserved() {
     );
     assert!(
         matches!(mock.client().prune_cache(), Err(Error::Io(ref cause)) if cause.kind() == io::ErrorKind::UnexpectedEof)
+    );
+    mock.finish();
+}
+
+#[test]
+fn overlay_omissions_and_book_send_exact_gets_and_read_typed_lists() {
+    let omission = json!({"peer":"12D3KooWpeer","block":{"height":7,"hash":BlockHash::all_zeros()},
+        "position":2,"txid":root(),"generation":1});
+    let mock = Mock::raw(reply(200, &serde_json::to_vec(&json!([omission])).unwrap()));
+    let omissions = mock.client().overlay_omissions().unwrap();
+    assert_eq!(omissions.len(), 1);
+    assert_eq!((omissions[0].block.height, omissions[0].position), (7, 2));
+    assert_eq!(omissions[0].txid, root());
+    assert_eq!(
+        mock.request(),
+        expected_request(&mock, "GET", "/v1/overlay/omissions")
+    );
+    mock.finish();
+    let entry = json!({"peer_id":null,"addrs":["/ip4/127.0.0.1/tcp/4001"],"origin":"manual",
+        "last_success":null,"failures":0,"banned_until":null});
+    let mock = Mock::raw(reply(200, &serde_json::to_vec(&json!([entry])).unwrap()));
+    let book = mock.client().overlay_book().unwrap();
+    assert_eq!(book.len(), 1);
+    assert_eq!(book[0].origin, BookOrigin::Manual);
+    assert_eq!(book[0].addrs, ["/ip4/127.0.0.1/tcp/4001"]);
+    assert_eq!(
+        mock.request(),
+        expected_request(&mock, "GET", "/v1/overlay/book")
+    );
+    mock.finish();
+}
+
+#[test]
+fn overlay_404_is_overlay_disabled_and_other_failures_stay_errors() {
+    for read in [0, 1] {
+        let call = |mock: &Mock| match read {
+            0 => mock.client().overlay_omissions().map(|_| ()),
+            _ => mock.client().overlay_book().map(|_| ()),
+        };
+        let mock = Mock::raw(reply(404, br#"{"error":"unknown endpoint"}"#));
+        assert!(
+            matches!(call(&mock), Err(Error::Invalid(ref message)) if message == "overlay disabled")
+        );
+        mock.finish();
+        for (code, body) in [
+            (422, &b"[]"[..]),
+            (500, b"[]"),
+            (200, b"{}"),
+            (200, b"[{}]"),
+        ] {
+            let mock = Mock::raw(reply(code, body));
+            assert!(call(&mock).is_err(), "accepted HTTP {code}");
+            mock.finish();
+        }
+    }
+    let unbounded = json!([{"peer_id":null,"addrs":[],"origin":"seed",
+        "last_success":null,"failures":0,"banned_until":null}]);
+    let mock = Mock::raw(reply(200, &serde_json::to_vec(&unbounded).unwrap()));
+    assert!(
+        matches!(mock.client().overlay_book(), Err(Error::Invalid(ref message)) if message.contains("addresses"))
     );
     mock.finish();
 }

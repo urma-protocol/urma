@@ -455,6 +455,30 @@ fn status_and_object_emit_exact_json_and_404_emits_explicit_null() {
 }
 
 #[test]
+fn overlay_commands_print_lists_and_fail_on_disabled_overlay() {
+    let fixture = Fixture::new(TOKEN.as_bytes());
+    let omission = json!({"peer":"p","block":{"height":1,"hash":OTHER},"position":0,"txid":ROOT,"generation":0});
+    let entry = json!({"peer_id":null,"addrs":["/ip4/127.0.0.1/tcp/1"],"origin":"seed",
+        "last_success":null,"failures":2,"banned_until":60});
+    let disabled = json!({"error":"overlay disabled"});
+    for (command, value) in [("omissions", json!([omission])), ("book", json!([entry]))] {
+        for (code, body) in [(200, &value), (404, &disabled)] {
+            let mock = Mock::new();
+            let child = fixture.spawn(mock.address, &[&format!("overlay-{command}")]);
+            let reply = response(code, &serde_json::to_vec(body).unwrap());
+            mock.respond("GET", &format!("/v1/overlay/{command}"), &reply);
+            let output = child.finish();
+            match code {
+                200 => success(output, value.clone()),
+                _ => failure(&output),
+            }
+            mock.assert_no_connection();
+        }
+    }
+    fixture.assert_only_owned_files();
+}
+
+#[test]
 fn pin_unpin_and_prune_emit_typed_receipts_without_implicit_readback() {
     let fixture = Fixture::new(TOKEN.as_bytes());
     for (args, path, value) in [
