@@ -301,8 +301,8 @@ fn object() -> Value {
         "members_total": 3, "members_local": 1, "members_selected": 3, "pinned": false})
 }
 
-// Complete typed service status; the control binary re-serializes the typed
-// struct, so unknown operator fields are dropped from its output.
+// Complete service status. The control binary dumps the operator JSON
+// verbatim: unknown fields survive and older, partial bodies still print.
 fn service_status() -> Value {
     json!({
         "archive": {"api_version": 1, "chain_genesis": OTHER,
@@ -389,7 +389,14 @@ fn status_and_object_emit_exact_json_and_404_emits_explicit_null() {
             "/v1/status".to_owned(),
             200,
             future_service_status(),
-            service_status(),
+            future_service_status(),
+        ),
+        (
+            vec!["status"],
+            "/v1/status".to_owned(),
+            200,
+            json!({"archive":{"scanned_blocks":0},"last_sync_error":null}),
+            json!({"archive":{"scanned_blocks":0},"last_sync_error":null}),
         ),
         (
             vec!["object", ROOT],
