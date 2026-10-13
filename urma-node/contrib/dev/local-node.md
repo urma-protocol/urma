@@ -38,6 +38,13 @@ The node then runs `serve` in the foreground:
 `--urma-seed MULTIADDR` and `--urma-peer MULTIADDR` (repeatable) pass through
 in `p2p` mode. The built-in seed of the chain is used too.
 
+`--chain-peer IP:PORT` (repeatable, `p2p` only) picks the Litecoin peers for
+headers and blocks. Pinned peers replace DNS discovery entirely:
+
+```sh
+local-node.sh ~/urma-tltc p2p --start-height H --start-hash X --chain-peer 127.0.0.1:19335
+```
+
 If 28331 is taken (another dev node), set `URMA_NODE_LISTEN=127.0.0.1:PORT`.
 The printed `archive` entry follows it. A busy port fails with
 `Address already in use` before anything listens.

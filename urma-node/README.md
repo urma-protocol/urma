@@ -126,7 +126,8 @@ is no fabricated project-start default.
 `urma-node --data DIR --config CONFIG status` opens local state without
 connecting to any peer. `create-token PATH` creates a new private bearer token.
 `serve --token-file PATH` starts on loopback only, offline by default; `--p2p`
-opts into the Litecoin source. `GET /v1/status`, `GET /v1/records/TXID`,
+opts into the Litecoin source. `--chain-peer IP:PORT` (repeatable, requires
+`--p2p`) pins the Litecoin peers it syncs from instead of DNS seeds. `GET /v1/status`, `GET /v1/records/TXID`,
 `GET /v1/objects/TXID`, `POST /v1/objects/TXID/pin`,
 `POST /v1/objects/TXID/unpin`, `POST /v1/cache/prune` and
 `POST /v1/shutdown` require

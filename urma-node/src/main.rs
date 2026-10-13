@@ -55,6 +55,9 @@ enum Command {
         /// Explicit trusted anchor and authenticated preceding header context.
         #[arg(long, requires = "p2p")]
         header_bootstrap: Option<PathBuf>,
+        /// Litecoin peer to sync headers/blocks from (repeatable); replaces DNS seeds.
+        #[arg(long = "chain-peer", requires = "p2p", value_name = "ADDR")]
+        chain_peer: Vec<SocketAddr>,
         /// Loopback cookie RPC for missing commit parents; no default endpoint.
         #[arg(long, requires_all = ["p2p", "commit_rpc_cookie"])]
         commit_rpc_url: Option<String>,
@@ -103,6 +106,33 @@ fn main() -> std::process::ExitCode {
     std::process::ExitCode::SUCCESS
 }
 
+fn open_chain_source(
+    args: &Arguments,
+    chain: Chain,
+    height: u64,
+) -> Result<LitecoinSource, Box<dyn std::error::Error>> {
+    let Command::Serve {
+        header_bootstrap,
+        chain_peer: pinned,
+        ..
+    } = &args.command
+    else {
+        return Err("the chain source belongs to serve".into());
+    };
+    let pinned = pinned.clone();
+    let bootstrap = match header_bootstrap {
+        Some(path) => Some(read_header_bootstrap(path, chain, height)?),
+        None => None,
+    };
+    // Ownership and bootstrap validation both precede mutable cache access.
+    let cache = args.data.join("headers");
+    std::fs::create_dir_all(&cache)?;
+    Ok(match bootstrap {
+        Some(bootstrap) => LitecoinSource::open_bootstrap(&cache, bootstrap, pinned)?,
+        None => LitecoinSource::open(chain, &cache, Anchor::embedded(chain)?, pinned)?,
+    })
+}
+
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let args = Arguments::parse();
     if let Command::CreateToken { path } = &args.command {
@@ -119,20 +149,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let application_height = config.application_start.height;
     let mut engine = Engine::open(&args.data, config, None)?;
     if synchronize {
-        let bootstrap = match &args.command {
-            Command::Serve {
-                header_bootstrap: Some(path),
-                ..
-            } => Some(read_header_bootstrap(path, chain, application_height)?),
-            _ => None,
-        };
-        // Ownership and bootstrap validation both precede mutable cache access.
-        let cache = args.data.join("headers");
-        std::fs::create_dir_all(&cache)?;
-        let source = match bootstrap {
-            Some(bootstrap) => LitecoinSource::open_bootstrap(&cache, bootstrap, Vec::new())?,
-            None => LitecoinSource::open(chain, &cache, Anchor::embedded(chain)?, Vec::new())?,
-        };
+        let source = open_chain_source(&args, chain, application_height)?;
         engine = engine.with_source(Arc::new(source))?;
     }
     let commit_source = connect_commit_source(&args.command, chain)?;
@@ -664,6 +681,14 @@ mod bootstrap_config_tests {
                 ..
             }
         ));
+        let (local, fly) = ("127.0.0.1:19335", "137.66.3.26:19335");
+        let mut pinned = base.to_vec();
+        pinned.extend(["--chain-peer", local, "--chain-peer", fly]);
+        assert!(Arguments::try_parse_from(&pinned).is_err());
+        pinned.push("--p2p");
+        let peers: Vec<SocketAddr> = vec![local.parse().unwrap(), fly.parse().unwrap()];
+        assert!(matches!(Arguments::try_parse_from(pinned).unwrap().command,
+            Command::Serve { chain_peer, .. } if chain_peer == peers));
     }
 }
 

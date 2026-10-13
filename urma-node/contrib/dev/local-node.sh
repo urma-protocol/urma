@@ -11,6 +11,7 @@ usage: local-node.sh DIR offline|p2p [options]
   --retention MODE       unpruned (default) or pruned
   --urma-seed MULTIADDR  p2p only, repeatable
   --urma-peer MULTIADDR  p2p only, repeatable
+  --chain-peer IP:PORT   p2p only, repeatable; Litecoin peers replacing DNS seeds
 env: URMA_NODE (binary, default urma-node in PATH),
      URMA_NODE_LISTEN (control address, default 127.0.0.1:28331),
      URMA_CONFIG (CLI config, default $HOME/.config/urma/config.json)
@@ -37,7 +38,7 @@ while [ $# -gt 0 ]; do
     --start-height) height=$2 ;;
     --start-hash) hash=$2 ;;
     --retention) retention=$2 ;;
-    --urma-seed | --urma-peer)
+    --urma-seed | --urma-peer | --chain-peer)
         [ "$mode" = p2p ] || { echo "$1 needs p2p mode" >&2; exit 2; }
         passthrough+=("$1" "$2")
         ;;
