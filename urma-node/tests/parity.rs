@@ -52,6 +52,16 @@ const CLEANUP_TIMEOUT: Duration = Duration::from_secs(5);
 const HOST_TIMEOUT: Duration = Duration::from_secs(240);
 /// The overlay transport refuses a foreign-network package before admission.
 const TRANSPORT_NETWORK: &str = "peer refused record or returned wrong network";
+/// Extra refusing peers in `Mode::Keep`: with the corpus peers, more refusing
+/// and stale peers than the daemon's eight outbound connection slots.
+const CROWD: usize = 8;
+
+/// Whether a serving peer is stopped once its verdict settles.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Mode {
+    Release,
+    Keep,
+}
 
 /// One admission outcome, comparable across embedded and standalone runs.
 #[derive(Clone, Debug, PartialEq)]
@@ -273,7 +283,7 @@ struct Daemon {
 }
 
 impl Daemon {
-    fn start(root: &Path, main: &Block, peers: &[ServingPeer]) -> Self {
+    fn start(root: &Path, main: &Block, peers: &[&ServingPeer]) -> Self {
         let data = root.join("daemon");
         drop(selected(&data, main));
         let config_path = root.join("config.json");
@@ -304,7 +314,7 @@ impl Daemon {
             .arg(&config_path)
             .args(["serve", "--listen", "127.0.0.1:0", "--token-file"])
             .arg(root.join("service.token"))
-            .args(["--p2p", "--no-commit-public", "--peer-key"])
+            .args(["--p2p", "--no-commit-public", "--no-seeds", "--peer-key"])
             .arg(root.join("peer.key"))
             .args(["--urma-listen", &format!("127.0.0.1:{port}")]);
         for peer in peers {
@@ -361,15 +371,17 @@ impl Daemon {
         http(self.control, "GET", path)
     }
 
-    /// Poll status, taking each case's verdict once it settles. A settled
-    /// peer is then stopped: the daemon keeps at most four outbound
-    /// connections and retries a refusing peer every rotation, so live
-    /// refusing peers would hold every slot and starve the remaining cases.
+    /// Poll status, taking each case's verdict once it settles. With
+    /// `Mode::Release` a settled peer is then stopped, freeing its connection
+    /// slot; with `Mode::Keep` every peer stays up and the daemon must free
+    /// slots itself. A refusal settles only once the peer is backed off, so a
+    /// quiet transport retry is never read as a verdict.
     fn settle(
         &mut self,
         corpus: &Corpus,
         peers: &mut [Option<ServingPeer>],
         expected: &[Verdict],
+        mode: Mode,
     ) -> (Vec<Verdict>, Value) {
         let deadline = Instant::now() + SYNC_TIMEOUT;
         let mut verdicts: Vec<Option<Verdict>> = vec![None; corpus.cases.len()];
@@ -377,19 +389,21 @@ impl Daemon {
             let (code, status) = self.get("/v1/status");
             assert_eq!(code, 200, "{status}");
             for (index, (case, want)) in corpus.cases.iter().zip(expected).enumerate() {
-                let Some(peer) = &peers[index] else {
+                let (None, Some(peer)) = (&verdicts[index], &peers[index]) else {
                     continue;
                 };
                 let entry = peer_status(&status, peer);
                 let settled = match want {
                     Verdict::Stored(_) => entry["synced_through"] == json!(FIRST_HEIGHT),
-                    Verdict::Invalid(_) => !entry["last_error"].is_null(),
+                    Verdict::Invalid(_) => !entry["backoff_until"].is_null(),
                     // Stale leaves no error: a second fetch proves a completed turn.
                     Verdict::Stale => peer.served() >= 2,
                 };
                 if settled {
                     verdicts[index] = Some(standalone(self, &status, case, peer));
-                    peers[index] = None;
+                    if mode == Mode::Release {
+                        peers[index] = None;
+                    }
                 }
             }
             if verdicts.iter().all(Option::is_some) {
@@ -480,7 +494,8 @@ fn assert_parity(case: &Case, embedded: &Verdict, standalone: &Verdict) {
 /// The running daemon serves its archive to a fresh embedded Engine.
 fn reverse(root: &Path, corpus: &Corpus, daemon: &Daemon, expected: &[Verdict]) -> usize {
     let engine = Arc::new(selected(&root.join("reverse"), &corpus.main));
-    let network = PeerNetwork::start(engine.clone(), Keypair::generate_ed25519(), None).unwrap();
+    let key = Keypair::generate_ed25519();
+    let network = PeerNetwork::start(engine.clone(), key, None, Vec::new()).unwrap();
     let source = network.source(daemon.overlay.clone());
     let mut served = 0;
     for (case, want) in corpus.cases.iter().zip(expected) {
@@ -513,7 +528,20 @@ fn reverse(root: &Path, corpus: &Corpus, daemon: &Daemon, expected: &[Verdict]) 
     served
 }
 
-fn parity(root: &Path) -> Value {
+/// Extra refusing peers that, with `Mode::Keep`, outnumber the daemon's
+/// outbound connection slots, so convergence needs the daemon to free them.
+fn crowd(corpus: &Corpus, mode: Mode) -> Vec<ServingPeer> {
+    if mode == Mode::Release {
+        return Vec::new();
+    }
+    let refused = corpus.cases.iter().find(|c| c.name == "commit mismatch");
+    let offer = &refused.unwrap().offer;
+    (0..CROWD)
+        .map(|_| ServingPeer::start(offer.clone()))
+        .collect()
+}
+
+fn parity(root: &Path, mode: Mode) -> Value {
     let corpus = corpus();
     let expected = embedded(&root.join("embedded"), &corpus);
     let started: Vec<ServingPeer> = corpus
@@ -521,9 +549,11 @@ fn parity(root: &Path) -> Value {
         .iter()
         .map(|c| ServingPeer::start(c.offer.clone()))
         .collect();
-    let mut daemon = Daemon::start(root, &corpus.main, &started);
+    let crowd = crowd(&corpus, mode);
+    let everyone: Vec<&ServingPeer> = started.iter().chain(&crowd).collect();
+    let mut daemon = Daemon::start(root, &corpus.main, &everyone);
     let mut peers: Vec<Option<ServingPeer>> = started.into_iter().map(Some).collect();
-    let (verdicts, status) = daemon.settle(&corpus, &mut peers, &expected);
+    let (verdicts, status) = daemon.settle(&corpus, &mut peers, &expected, mode);
     let mut report = Vec::new();
     for ((case, got), want) in corpus.cases.iter().zip(&verdicts).zip(&expected) {
         assert_parity(case, want, got);
@@ -562,14 +592,19 @@ fn parity(root: &Path) -> Value {
     assert!(!reference.is_empty());
     assert_eq!(bytes("daemon"), reference, "standalone stored bytes differ");
     assert_eq!(bytes("reverse"), reference, "reverse stored bytes differ");
-    json!({"cases":report,"stored":stored,"refused":refused,"reverse_served":served})
+    json!({"cases":report,"stored":stored,"refused":refused,"reverse_served":served,"crowd":crowd.len()})
 }
 
 #[test]
 #[ignore = "owned loopback-only namespace host, not a standalone case"]
 fn parity_host() {
     let root = PathBuf::from(std::env::var_os("PARITY_TEMP").expect("owned TEMP"));
-    let report = parity(&root);
+    let mode = match std::env::var("PARITY_MODE").unwrap().as_str() {
+        "release" => Mode::Release,
+        "keep" => Mode::Keep,
+        other => panic!("unknown parity mode {other}"),
+    };
+    let report = parity(&root, mode);
     fs::write(
         root.join("result.json"),
         serde_json::to_vec(&report).unwrap(),
@@ -590,7 +625,7 @@ fn bounded_text(path: &Path) -> String {
     text
 }
 
-fn run_host() -> Value {
+fn run_host(mode: &str) -> Value {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path();
     let mut child = Command::new("unshare")
@@ -603,6 +638,7 @@ fn run_host() -> Value {
         .env("PATH", "/usr/bin:/bin")
         .env("TMPDIR", path)
         .env("PARITY_TEMP", path)
+        .env("PARITY_MODE", mode)
         .process_group(0)
         .stdin(Stdio::null())
         .stdout(File::create(path.join("stdout")).unwrap())
@@ -634,11 +670,20 @@ fn run_host() -> Value {
     }
 }
 
-#[test]
-fn embedded_and_standalone_engines_reach_identical_verdicts_and_bytes() {
-    let report = run_host();
+fn assert_report(report: &Value, crowd: usize) {
     assert_eq!(report["cases"].as_array().unwrap().len(), 8, "{report}");
     assert_eq!(report["stored"], 2, "{report}");
     assert_eq!(report["refused"], 4, "{report}");
     assert_eq!(report["reverse_served"], 2, "{report}");
+    assert_eq!(report["crowd"], crowd, "{report}");
+}
+
+#[test]
+fn embedded_and_standalone_engines_reach_identical_verdicts_and_bytes() {
+    assert_report(&run_host("release"), 0);
+}
+
+#[test]
+fn standalone_converges_with_refusing_peers_beyond_its_connection_slots() {
+    assert_report(&run_host("keep"), CROWD);
 }

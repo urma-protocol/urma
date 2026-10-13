@@ -92,6 +92,8 @@ fn answer(offer: &Offer, kind: &Kind, served: &AtomicUsize) -> Reply {
             Reply::Record(Box::new(offer.package.clone()))
         }
         Kind::Record { .. } | Kind::Parent { .. } => Reply::Missing,
+        // Gossip and chain probes: same network, no routing hints to share.
+        Kind::Peers { .. } => Reply::Peers(Vec::new()),
     }
 }
 
