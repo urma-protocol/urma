@@ -17,13 +17,14 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use urma_chain::observation::Chain;
 
-pub(super) struct Peer {
+pub struct Peer {
     stream: TcpStream,
     magic: [u8; 4],
-    pub(super) address: SocketAddr,
-    pub(super) services: ServiceFlags,
-    pub(super) start_height: u64,
-    pub(super) learned: Vec<SocketAddr>,
+    pub address: SocketAddr,
+    pub services: ServiceFlags,
+    pub start_height: u64,
+    pub learned: Vec<SocketAddr>,
+    pub version: Option<VersionMessage>,
 }
 
 enum Waited<T> {
@@ -32,11 +33,7 @@ enum Waited<T> {
 }
 
 impl Peer {
-    pub(super) fn connect(
-        chain: Chain,
-        address: SocketAddr,
-        our_height: u64,
-    ) -> Result<Self, Error> {
+    pub fn connect(chain: Chain, address: SocketAddr, our_height: u64) -> Result<Self, Error> {
         let stream =
             TcpStream::connect_timeout(&address, Duration::from_secs(P2P_CONNECT_TIMEOUT_SECS))?;
         stream.set_read_timeout(Some(Duration::from_secs(P2P_READ_TIMEOUT_SECS)))?;
@@ -49,6 +46,7 @@ impl Peer {
             services: ServiceFlags::NONE,
             start_height: 0,
             learned: Vec::new(),
+            version: None,
         };
         peer.handshake(our_height)?;
         Ok(peer)
@@ -89,6 +87,7 @@ impl Peer {
                     );
                     self.services = theirs.services;
                     self.start_height = u64::try_from(theirs.start_height.max(0))?;
+                    self.version = Some(theirs);
                     self.send(NetworkMessage::Verack)?;
                     versioned = true;
                 }
@@ -110,6 +109,11 @@ impl Peer {
 
     fn receive(&mut self) -> Result<Message, Error> {
         wire::receive(&mut self.stream, self.magic)
+    }
+
+    pub fn absorb_next(&mut self) -> Result<(), Error> {
+        let message = self.receive()?;
+        self.absorb(message)
     }
 
     fn absorb(&mut self, message: Message) -> Result<(), Error> {
