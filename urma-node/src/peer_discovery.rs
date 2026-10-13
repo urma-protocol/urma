@@ -195,6 +195,8 @@ impl Discovery {
         let mut book = self.lock()?;
         match &outcome {
             Ok(peer) => book.succeeded(address, *peer, self.network.peer_id(), at),
+            // Our own capacity or a busy peer says nothing about the address.
+            Err(Error::DialDenied(_) | Error::Busy(_) | Error::PeerBusy) => (),
             Err(_failure) => book.failed(address, at),
         }
         Ok(outcome)

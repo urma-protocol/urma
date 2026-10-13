@@ -513,6 +513,9 @@ impl Scheduler {
         let mut slot = peer.range.lock().map_err(|_| poisoned())?;
         if slot.is_none() {
             *slot = open(peer, engine)?;
+            // Nothing left to ask a fully synced peer: as fresh as progress,
+            // so surplus synced peers are not evicted every IDLE_BACKOFF.
+            round.progressed |= slot.is_none();
         }
         // A peer error or our own failure abandons the range; it is requested
         // again from the persisted cursor on this peer's next turn.
