@@ -176,7 +176,7 @@ impl PeerNetwork {
         let (startup, ready) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let connected = Arc::new(AtomicU64::new(0));
-        let shared = Arc::new(Shared::default());
+        let shared = Arc::new(Shared::new(peer));
         let control = Control {
             commands: receiver,
             stop: stop.clone(),
@@ -398,11 +398,19 @@ struct Control {
 
 /// Remote address per live connection, so gossip can tell loopback requesters.
 #[derive(Default)]
-struct Remotes(HashMap<ConnectionId, Multiaddr>);
+struct Remotes(HashMap<ConnectionId, (Multiaddr, bool)>);
 
 impl Remotes {
     fn loopback(&self, connection: ConnectionId) -> bool {
-        self.0.get(&connection).is_some_and(is_loopback)
+        self.0
+            .get(&connection)
+            .is_some_and(|(address, _)| is_loopback(address))
+    }
+
+    fn outbound(&self, connection: ConnectionId) -> bool {
+        self.0
+            .get(&connection)
+            .is_some_and(|(_, outbound)| *outbound)
     }
 }
 
@@ -500,7 +508,7 @@ async fn run(
                 }
                 SwarmEvent::ListenerError { error, .. } if ready.is_some() => break Err(Error::Io(error)),
                 SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, num_established, .. } => {
-                    remotes.0.insert(connection_id, endpoint.get_remote_address().clone());
+                    remotes.0.insert(connection_id, (endpoint.get_remote_address().clone(), endpoint.is_dialer()));
                     dials.established(connection_id, peer_id);
                     if num_established.get() == 1 {
                         connected.fetch_add(1, Ordering::Relaxed);
@@ -521,8 +529,9 @@ async fn run(
                     }
                     dials.failed(connection_id, &error);
                 }
-                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
-                    shared.observe(info.observed_addr);
+                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { connection_id, peer_id, info })) => {
+                    // Inbound peers could steer our address; only dialed peers witness it.
+                    if remotes.outbound(connection_id) { shared.observe(info.observed_addr, peer_id); }
                 }
                 SwarmEvent::Behaviour(BehaviourEvent::Records(event)) => match event {
                     request_response::Event::Message { peer, connection_id, message: Message::Request { request_id, request, channel } } => {

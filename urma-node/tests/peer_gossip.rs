@@ -10,14 +10,14 @@ use std::{
     fs,
     path::Path,
     sync::{Arc, atomic::AtomicBool},
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use urma_node::{
     Error,
     engine::Engine,
     model::Retention,
     peer::PeerNetwork,
-    peer_gossip::{is_public, validate_dial},
+    peer_gossip::{ObservedAddrs, is_public, validate_dial, validate_gossip_address},
     peer_protocol::GossipPeer,
 };
 
@@ -61,7 +61,23 @@ fn dial_probes_the_chain_and_loopback_requesters_receive_private_gossip() {
     let other = Keypair::generate_ed25519().public().to_peer_id();
     let private = hint(other, &["/ip4/10.0.0.1/tcp/8333", "/ip4/8.8.8.8/tcp/8333"]);
     let requester = hint(network_a.peer_id(), &["/ip4/8.8.4.4/tcp/1"]);
-    network_b.set_gossip(vec![requester, private.clone()]);
+    let itself = hint(network_b.peer_id(), &["/ip4/8.8.4.4/tcp/2"]);
+    let named_only = hint(
+        Keypair::generate_ed25519().public().to_peer_id(),
+        &["/dns4/seed.example.org/tcp/8333"],
+    );
+    let mut future = hint(
+        Keypair::generate_ed25519().public().to_peer_id(),
+        &["/ip4/9.9.9.9/tcp/1"],
+    );
+    future.last_seen = u64::MAX;
+    network_b.set_gossip(vec![
+        requester,
+        itself,
+        named_only,
+        private.clone(),
+        future.clone(),
+    ]);
     let listen_b = network_b.listen_address().unwrap();
     let dialed = network_a
         .dial(without_peer(&listen_b), &idle, deadline())
@@ -75,10 +91,20 @@ fn dial_probes_the_chain_and_loopback_requesters_receive_private_gossip() {
     );
     let gossip = network_a.peers_of(dialed, 32, &idle, deadline()).unwrap();
     assert_eq!(
-        gossip,
-        vec![private.clone()],
-        "loopback gets private, never itself"
+        gossip.len(),
+        2,
+        "no requester, no server, no DNS-only entry"
     );
+    assert_eq!(
+        gossip[0], private,
+        "loopback requesters get private literals"
+    );
+    assert_eq!(gossip[1].peer_id, future.peer_id);
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    assert!(gossip[1].last_seen <= now, "future last_seen is clamped");
     assert!(
         network_a
             .peers_of(dialed, 0, &idle, deadline())
@@ -133,6 +159,15 @@ fn dial_addresses_and_public_classes_are_explicit() {
     }
     for (text, public) in [
         ("/ip4/8.8.8.8/tcp/1", true),
+        ("/ip4/0.1.2.3/tcp/1", false),
+        ("/ip4/192.0.0.8/tcp/1", false),
+        ("/ip4/198.19.255.1/tcp/1", false),
+        ("/ip4/198.20.0.1/tcp/1", true),
+        ("/ip4/240.0.0.1/tcp/1", false),
+        ("/ip6/::ffff:10.0.0.1/tcp/1", false),
+        ("/ip6/::ffff:127.0.0.1/tcp/1", false),
+        ("/ip6/::ffff:8.8.8.8/tcp/1", true),
+        ("/ip6/2001:db8::1/tcp/1", false),
         ("/ip4/127.0.0.1/tcp/1", false),
         ("/ip4/192.168.1.1/tcp/1", false),
         ("/ip4/100.64.0.1/tcp/1", false),
@@ -144,4 +179,43 @@ fn dial_addresses_and_public_classes_are_explicit() {
     ] {
         assert_eq!(is_public(&text.parse().unwrap()), public, "{text}");
     }
+    for text in [
+        "/dns4/seed.example.org/tcp/1",
+        "/dns/seed.example.org/tcp/1",
+        "/dnsaddr/bootstrap.example.org",
+    ] {
+        let address = text.parse().unwrap();
+        assert!(validate_dial(&address).is_ok(), "operators may name {text}");
+        assert!(
+            validate_gossip_address(&address).is_err(),
+            "gossip never names {text}"
+        );
+    }
+    assert!(validate_gossip_address(&"/ip6/2001:4860::1/tcp/9".parse().unwrap()).is_ok());
+}
+
+#[test]
+fn observed_addresses_need_two_distinct_witnesses() {
+    let witness = || Keypair::generate_ed25519().public().to_peer_id();
+    let (first, second) = (witness(), witness());
+    let public: Multiaddr = "/ip4/8.8.8.8/tcp/28332".parse().unwrap();
+    let mut observed = ObservedAddrs::default();
+    observed.observe(public.clone(), first);
+    observed.observe(public.clone(), first);
+    assert!(
+        observed.confirmed().is_empty(),
+        "one witness repeating is not two"
+    );
+    for rejected in ["/ip4/10.0.0.1/tcp/1", "/dns4/me.example.org/tcp/1"] {
+        observed.observe(rejected.parse().unwrap(), first);
+        observed.observe(rejected.parse().unwrap(), second);
+    }
+    assert!(
+        observed.confirmed().is_empty(),
+        "private and named never confirm"
+    );
+    observed.observe(public.clone(), second);
+    assert_eq!(observed.confirmed(), vec![public.clone()]);
+    observed.observe(public.clone(), witness());
+    assert_eq!(observed.confirmed(), vec![public]);
 }

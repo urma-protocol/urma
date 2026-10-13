@@ -20,28 +20,86 @@ use libp2p::{
 };
 use std::{
     collections::{BTreeSet, HashMap},
-    net::Ipv4Addr,
+    net::{Ipv4Addr, Ipv6Addr},
     sync::{
         Mutex,
         atomic::{AtomicBool, Ordering},
         mpsc::{self, RecvTimeoutError},
     },
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 /// State shared between the network thread and the owner: the gossip snapshot
 /// the scheduler hands over, and public addresses peers observed for us.
-#[derive(Default)]
 pub(crate) struct Shared {
+    local: PeerId,
     gossip: Mutex<Vec<GossipPeer>>,
-    observed: Mutex<Vec<Multiaddr>>,
+    observed: Mutex<ObservedAddrs>,
     connected: Mutex<BTreeSet<PeerId>>,
+}
+
+/// Public addresses outbound peers reported observing for this node. A
+/// candidate is confirmed only once WITNESSES distinct peers reported it.
+#[derive(Default)]
+pub struct ObservedAddrs {
+    candidates: Vec<(Multiaddr, BTreeSet<PeerId>)>,
+    confirmed: Vec<Multiaddr>,
+}
+
+impl ObservedAddrs {
+    pub const WITNESSES: usize = 2;
+    const CANDIDATES_MAX: usize = 32;
+    const CONFIRMED_MAX: usize = 8;
+
+    /// Record one report; non-public or non-literal addresses are ignored.
+    pub fn observe(&mut self, address: Multiaddr, reporter: PeerId) {
+        if !is_public(&address)
+            || validate_gossip_address(&address).is_err()
+            || self.confirmed.contains(&address)
+        {
+            return;
+        }
+        let index = match self
+            .candidates
+            .iter()
+            .position(|(known, _)| *known == address)
+        {
+            Some(index) => index,
+            None => {
+                if self.candidates.len() == Self::CANDIDATES_MAX {
+                    self.candidates.remove(0);
+                }
+                self.candidates.push((address, BTreeSet::new()));
+                self.candidates.len() - 1
+            }
+        };
+        self.candidates[index].1.insert(reporter);
+        if self.candidates[index].1.len() >= Self::WITNESSES {
+            let (address, _) = self.candidates.remove(index);
+            if self.confirmed.len() == Self::CONFIRMED_MAX {
+                self.confirmed.remove(0);
+            }
+            self.confirmed.push(address);
+        }
+    }
+
+    pub fn confirmed(&self) -> Vec<Multiaddr> {
+        self.confirmed.clone()
+    }
 }
 
 impl Shared {
     const GOSSIP_MAX: usize = 256;
-    const OBSERVED_MAX: usize = 8;
     const ENVELOPE: usize = 1024;
+
+    pub(crate) fn new(local: PeerId) -> Self {
+        Self {
+            local,
+            gossip: Mutex::new(Vec::new()),
+            observed: Mutex::new(ObservedAddrs::default()),
+            connected: Mutex::new(BTreeSet::new()),
+        }
+    }
 
     fn set_gossip(&self, mut peers: Vec<GossipPeer>) {
         peers.truncate(Self::GOSSIP_MAX);
@@ -52,8 +110,8 @@ impl Shared {
 
     fn observed(&self) -> Vec<Multiaddr> {
         match self.observed.lock() {
-            Ok(observed) => observed.clone(),
-            Err(poisoned) => poisoned.into_inner().clone(),
+            Ok(observed) => observed.confirmed(),
+            Err(poisoned) => poisoned.into_inner().confirmed(),
         }
     }
 
@@ -76,24 +134,16 @@ impl Shared {
         };
     }
 
-    /// Keep the newest distinct public observations; others are discarded.
-    pub(crate) fn observe(&self, address: Multiaddr) {
-        if !is_public(&address) {
-            return;
-        }
+    /// One identify report, counted only from outbound connections.
+    pub(crate) fn observe(&self, address: Multiaddr, reporter: PeerId) {
         if let Ok(mut observed) = self.observed.lock() {
-            if observed.contains(&address) {
-                return;
-            }
-            if observed.len() == Self::OBSERVED_MAX {
-                observed.remove(0);
-            }
-            observed.push(address);
+            observed.observe(address, reporter);
         }
     }
 
-    /// Answer a Peers request from the snapshot. Private and loopback addresses
-    /// go only to loopback requesters; the requester never receives itself.
+    /// Answer a Peers request from the snapshot. Only IP-literal addresses are
+    /// forwarded, private and loopback ones only to loopback requesters. Neither
+    /// the requester nor this node is listed; future `last_seen` is clamped.
     pub(crate) fn serve(&self, requester: PeerId, loopback: bool, limit: u32) -> Reply {
         let Ok(limit) = usize::try_from(limit) else {
             return Reply::Refused;
@@ -104,14 +154,19 @@ impl Shared {
         let Ok(snapshot) = self.gossip.lock() else {
             return Reply::Busy;
         };
+        let now = unix_now();
         let mut peers = Vec::new();
-        for entry in snapshot.iter().filter(|entry| entry.peer_id != requester) {
+        let listed = snapshot
+            .iter()
+            .filter(|entry| entry.peer_id != requester && entry.peer_id != self.local);
+        for entry in listed {
             if peers.len() == limit {
                 break;
             }
             let addrs: Vec<Multiaddr> = entry
                 .addrs
                 .iter()
+                .filter(|address| validate_gossip_address(address).is_ok())
                 .filter(|address| loopback || is_public(address))
                 .take(PEER_ADDRESSES_MAX)
                 .cloned()
@@ -120,7 +175,7 @@ impl Shared {
                 peers.push(GossipPeer {
                     peer_id: entry.peer_id,
                     addrs,
-                    last_seen: entry.last_seen,
+                    last_seen: entry.last_seen.min(now),
                 });
             }
         }
@@ -137,26 +192,15 @@ impl Shared {
     }
 }
 
-/// Globally routable IP, or a DNS name other than localhost.
+/// Globally routable IP, or a DNS name other than localhost. IPv4-mapped IPv6
+/// addresses are judged as the IPv4 address they carry.
 pub fn is_public(address: &Multiaddr) -> bool {
     match address.iter().next() {
-        Some(Protocol::Ip4(ip)) => {
-            !(ip.is_loopback()
-                || ip.is_private()
-                || ip.is_link_local()
-                || ip.is_unspecified()
-                || ip.is_broadcast()
-                || ip.is_multicast()
-                || ip.is_documentation()
-                || shared_address_space(ip))
-        }
-        Some(Protocol::Ip6(ip)) => {
-            !(ip.is_loopback()
-                || ip.is_unspecified()
-                || ip.is_multicast()
-                || ip.is_unique_local()
-                || ip.is_unicast_link_local())
-        }
+        Some(Protocol::Ip4(ip)) => public_v4(ip),
+        Some(Protocol::Ip6(ip)) => match ip.to_ipv4_mapped() {
+            Some(mapped) => public_v4(mapped),
+            None => public_v6(ip),
+        },
         Some(
             Protocol::Dns(name)
             | Protocol::Dns4(name)
@@ -167,9 +211,36 @@ pub fn is_public(address: &Multiaddr) -> bool {
     }
 }
 
-fn shared_address_space(ip: Ipv4Addr) -> bool {
-    let [first, second, ..] = ip.octets();
-    first == 100 && (second & 0xc0) == 64
+fn public_v4(ip: Ipv4Addr) -> bool {
+    let [first, second, third, _] = ip.octets();
+    let reserved = first == 0
+        || (first == 100 && (second & 0xc0) == 64)
+        || (first == 192 && second == 0 && third == 0)
+        || (first == 198 && (second & 0xfe) == 18)
+        || first >= 240;
+    !(reserved
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_multicast()
+        || ip.is_documentation())
+}
+
+fn public_v6(ip: Ipv6Addr) -> bool {
+    let documentation = ip.segments()[..2] == [0x2001, 0x0db8];
+    !(documentation
+        || ip.is_loopback()
+        || ip.is_unspecified()
+        || ip.is_multicast()
+        || ip.is_unique_local()
+        || ip.is_unicast_link_local())
+}
+
+fn unix_now() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(elapsed) => elapsed.as_secs(),
+        Err(_clock_before_epoch) => 0,
+    }
 }
 
 pub(crate) fn is_loopback(address: &Multiaddr) -> bool {
@@ -180,8 +251,19 @@ pub(crate) fn is_loopback(address: &Multiaddr) -> bool {
     }
 }
 
-/// `/ip4|ip6|dns|dns4|dns6/<host>/tcp/<port>[/p2p/<id>]` or
-/// `/dnsaddr/<name>[/p2p/<id>]`. Returns the expected identity, if any.
+/// Gossip carries only `/ip4|ip6/<literal>/tcp/<port>[/p2p/<id>]`: names come
+/// from operators (seeds, manual entries), never from peers.
+pub fn validate_gossip_address(address: &Multiaddr) -> Result<Option<PeerId>, Error> {
+    match address.iter().next() {
+        Some(Protocol::Ip4(_) | Protocol::Ip6(_)) => validate_dial(address),
+        _ => Err(Error::Invalid(
+            "gossiped addresses must be IP literals with TCP".into(),
+        )),
+    }
+}
+
+/// Operator-supplied dial targets: `/ip4|ip6|dns|dns4|dns6/<host>/tcp/<port>`
+/// or `/dnsaddr/<name>`, each with optional `/p2p`. Returns the named identity.
 pub fn validate_dial(address: &Multiaddr) -> Result<Option<PeerId>, Error> {
     let invalid = || Error::Invalid("peer dial requires host, TCP port and optional /p2p".into());
     let mut parts = address.iter();
@@ -249,7 +331,7 @@ fn check_gossip(entry: &GossipPeer) -> Result<(), Error> {
         ));
     }
     for address in &entry.addrs {
-        if validate_dial(address)?.is_some_and(|named| named != peer) {
+        if validate_gossip_address(address)?.is_some_and(|named| named != peer) {
             return Err(Error::Invalid(
                 "peer gossip address names another peer".into(),
             ));
@@ -345,6 +427,9 @@ fn dial_error(error: &DialError) -> Error {
     match error {
         DialError::Denied { cause } if cause.downcast_ref::<LimitDenied>().is_some() => {
             Error::Busy("peer dial denied by local connection limit".into())
+        }
+        DialError::DialPeerConditionFalse(condition) => {
+            Error::Busy(format!("peer dial already pending ({condition:?})"))
         }
         other => Error::Invalid(format!("peer dial: {other}")),
     }
