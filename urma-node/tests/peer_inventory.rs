@@ -449,6 +449,47 @@ fn peer_status<'a>(status: &'a Value, id: &PeerId) -> &'a Value {
         .unwrap_or_else(|| panic!("no status for {label}"))
 }
 
+/// Three proxies list every entry in an unselected block (a stale fork) ahead
+/// of one honest peer. Stale turns are never blamed, but three of them in a
+/// row release the stale peer's slot; the honest peer syncs within 60 s.
+fn stale_crowd(root: &Path) -> Value {
+    let pairs = vectors();
+    let blocks = chain(&pairs, 4, 1);
+    let b = server(root, &blocks, 4);
+    let stale: Vec<RawPeer> = (0..3)
+        .map(|_| RawPeer::start(Some((b.address.clone(), Rewrite::Stale))))
+        .collect();
+    let stale_ids: Vec<PeerId> = stale.iter().map(|p| p.address().peer_id()).collect();
+    let honest_id = b.address.peer_id();
+    let a = Client::new(root, &blocks);
+    stage(root, "a stale crowd releases its slots to the honest peer");
+    let mut peers: Vec<PeerAddress> = stale.iter().map(RawPeer::address).collect();
+    peers.push(b.address.clone());
+    let began = Instant::now();
+    let running = Running::start(a.offline(), peers);
+    let seen = running
+        .until(|s| height(&peer_status(s, &honest_id)["synced_through"]) == Some(tip(&blocks)));
+    let synced_in = began.elapsed();
+    assert!(synced_in < Duration::from_secs(60), "{synced_in:?}");
+    let honest = peer_status(seen.last().unwrap(), &honest_id);
+    assert!(honest["last_progress_at"].is_u64(), "{honest}");
+    let released = running.until(|s| {
+        stale_ids
+            .iter()
+            .all(|id| peer_status(s, id)["backoff_until"].is_u64())
+    });
+    for id in &stale_ids {
+        let entry = peer_status(released.last().unwrap(), id);
+        assert!(entry["last_progress_at"].is_null(), "{entry}");
+        assert!(entry["last_error"].is_null(), "stale turns blamed: {entry}");
+    }
+    running.stop();
+    for pair in &pairs {
+        assert_record(&a.offline(), pair);
+    }
+    json!({"honest_synced":true,"stale_released":stale_ids.len(),"seconds":synced_in.as_secs()})
+}
+
 fn rejecting(root: &Path) -> Value {
     let pairs = vectors();
     let blocks = chain(&pairs, 4, 1);
@@ -616,6 +657,7 @@ fn peer_inventory_host() {
         "honest" => honest(&root),
         "omission" => omission(&root),
         "rejecting" => rejecting(&root),
+        "stale" => stale_crowd(&root),
         "paging" => paging(&root),
         "reorg" => reorg(&root),
         "limits" => limits(&root),
@@ -717,6 +759,13 @@ fn fresh_node_admits_every_record_from_inventory_before_its_own_scan() {
 fn own_scan_detects_an_omitting_peer_and_the_scheduler_stops_asking_it() {
     let checks = run("omission");
     assert_eq!(checks["liar_skipped"], true);
+}
+
+#[test]
+fn a_stale_crowd_releases_its_slots_and_the_honest_peer_syncs() {
+    let checks = run("stale");
+    assert_eq!(checks["honest_synced"], true);
+    assert_eq!(checks["stale_released"], 3);
 }
 
 #[test]

@@ -6,7 +6,7 @@ use crate::{
     peer::{
         Answer, Behaviour, CALL_TIMEOUT, Command, PeerNetwork, Pending, bind_response, request,
     },
-    peer_limits::LimitDenied,
+    peer_limits::{LimitDenied, dial_denied},
     peer_protocol::{
         GossipPeer, Kind, PEER_ADDRESSES_MAX, PEERS_LIMIT, PEERS_MAX, Reply, Response,
     },
@@ -146,6 +146,13 @@ impl Shared {
         match self.observed.lock() {
             Ok(observed) => observed.confirmed(),
             Err(poisoned) => poisoned.into_inner().confirmed(),
+        }
+    }
+
+    pub(crate) fn is_connected(&self, peer: PeerId) -> bool {
+        match self.connected.lock() {
+            Ok(connected) => connected.contains(&peer),
+            Err(poisoned) => poisoned.into_inner().contains(&peer),
         }
     }
 
@@ -477,7 +484,7 @@ impl Dials {
 fn dial_error(error: &DialError) -> Error {
     match error {
         DialError::Denied { cause } if cause.downcast_ref::<LimitDenied>().is_some() => {
-            Error::Busy("peer dial denied by local connection limit".into())
+            dial_denied()
         }
         DialError::DialPeerConditionFalse(condition) => {
             Error::Busy(format!("peer dial already pending ({condition:?})"))

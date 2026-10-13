@@ -1,6 +1,7 @@
 //! Fixed connection admission limits for the public record transport.
 //! Compose this behaviour before request-response so denial precedes its setup.
 //! Only pending and established connection IDs are retained, never peer history.
+use crate::Error;
 use libp2p::{
     Multiaddr, PeerId,
     core::{ConnectedPoint, Endpoint, transport::PortUse},
@@ -31,6 +32,18 @@ impl fmt::Display for LimitDenied {
 }
 
 impl std::error::Error for LimitDenied {}
+
+const DIAL_DENIED: &str = "dial denied by local connection limit";
+
+/// A request or dial refused by our own outbound limit: transport, not the
+/// peer's fault, and a signal that a slot must be freed for it.
+pub(crate) fn dial_denied() -> Error {
+    Error::Transport(DIAL_DENIED.into())
+}
+
+pub(crate) fn is_dial_denied(error: &Error) -> bool {
+    matches!(error, Error::Transport(message) if message == DIAL_DENIED)
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum Direction {

@@ -10,7 +10,7 @@ use crate::{
     peer_codec::Codec,
     peer_gossip::{Dial, Dials, Shared, is_loopback, validate_announce, validate_peers},
     peer_inventory::{lookup, validate_inventory},
-    peer_limits::{LimitDenied, Limits},
+    peer_limits::{LimitDenied, Limits, dial_denied},
     peer_parent::{Parent, validate_parent},
     peer_protocol::{GossipPeer, InventoryPage, Kind, PROTOCOL, Reply, Request, Response, VERSION},
     peer_rate::{Bucket, Count, peer_rate},
@@ -77,6 +77,7 @@ pub struct PeerSource {
     address: PeerAddress,
     commands: async_mpsc::Sender<Command>,
     stop: Arc<AtomicBool>,
+    shared: Arc<Shared>,
 }
 
 pub(crate) enum Command {
@@ -240,6 +241,7 @@ impl PeerNetwork {
             address,
             commands: self.commands.clone(),
             stop: self.stop.clone(),
+            shared: Arc::clone(&self.shared),
         }
     }
 
@@ -313,6 +315,11 @@ impl PeerSource {
 
     pub(crate) fn parent(&self, txid: Txid, deadline: Instant) -> Result<Parent, Error> {
         self.request(Kind::Parent { txid }, deadline, Answer::Parent)
+    }
+
+    /// Whether this peer has an established connection right now.
+    pub(crate) fn connected(&self) -> bool {
+        self.shared.is_connected(self.address.peer_id())
     }
 
     /// Fire and forget; a full queue only delays the idle-connection timeout.
@@ -659,9 +666,7 @@ fn release_denied(pending: &mut HashMap<OutboundRequestId, Pending>, peer: PeerI
         if value.peer != peer {
             return true;
         }
-        value.answer.fail(Error::Busy(
-            "peer dial denied by local connection limit".into(),
-        ));
+        value.answer.fail(dial_denied());
         false
     });
 }

@@ -1,8 +1,10 @@
 //! Test-side codec peer for peer_inventory.rs and peer_discovery.rs: a raw
 //! client, a proxy to an upstream node that rewrites its inventory pages
 //! (drops every entry naming one txid, or moves every entry out of the
-//! requested range), or a responder answering Peers with a fixed list.
+//! requested range, or into an unselected block), or a responder answering
+//! Peers with a fixed list.
 //! Loaded with #[path]; it is not part of the shared common module.
+use bitcoin::{BlockHash, hashes::Hash};
 use libp2p::{
     Multiaddr, StreamProtocol, Swarm, SwarmBuilder,
     futures::StreamExt,
@@ -36,10 +38,12 @@ const CALL_BOUND: Duration = Duration::from_secs(12);
 
 type Answer = mpsc::SyncSender<Result<Response, String>>;
 
-/// How the proxy rewrites upstream inventory pages.
+/// How the proxy rewrites upstream inventory pages. `Stale` lists every entry
+/// in a block outside the selected chain, as a peer on another fork would.
 pub enum Rewrite {
     Hide(String),
     OutOfRange,
+    Stale,
 }
 
 struct Call {
@@ -92,6 +96,11 @@ fn rewrite(mut response: Response, rewrite: &Rewrite) -> Response {
             Rewrite::OutOfRange => {
                 for entry in &mut page.entries {
                     entry.height = u64::MAX;
+                }
+            }
+            Rewrite::Stale => {
+                for entry in &mut page.entries {
+                    entry.block_hash = BlockHash::all_zeros();
                 }
             }
         }

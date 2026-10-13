@@ -212,4 +212,6 @@ pub struct OverlayPeerStatus {
     pub last_error_at: Option<u64>,
     /// Unix second until which sync skips this peer after a peer error.
     pub backoff_until: Option<u64>,
+    /// Unix second of this peer's last turn with an admission or coverage.
+    pub last_progress_at: Option<u64>,
 }

@@ -5,12 +5,16 @@
 //! Full-block audit (`indexed_through`) remains the separate, stronger claim.
 //! A peer that answers with an invalid page, package or reply is disconnected
 //! and backed off; one that stays Busy for many turns is disconnected so the
-//! connection slot it holds frees up for others.
+//! connection slot it holds frees up for others. So is one that answers turn
+//! after turn without anything we can use (stale listings, unscanned pages),
+//! and a peer refused by the local connection limit gets the slot of the
+//! connected peer that progressed longest ago.
 use crate::{
     Error,
     engine::Engine,
     model::{OverlayPeerStatus, OverlayStatus, RecordReceipt},
     peer::PeerSource,
+    peer_limits::is_dial_denied,
     peer_protocol::{InventoryPage, Placement},
     recorded::{RecordedError, unix_seconds},
 };
@@ -63,6 +67,8 @@ struct Peer {
     last_error: Mutex<Option<RecordedError>>,
     backoff: Mutex<Backoff>,
     busy_turns: AtomicU32,
+    idle_turns: AtomicU32,
+    last_progress: Mutex<Option<u64>>,
 }
 
 /// Sync backoff after peer errors: consecutive blamed turns and the Unix
@@ -76,6 +82,10 @@ impl Peer {
     fn backoff_until(&self, now: u64) -> Result<Option<u64>, Error> {
         let backoff = self.backoff.lock().map_err(|_| poisoned())?;
         Ok(backoff.until.filter(|until| *until > now))
+    }
+
+    fn last_progress(&self) -> Result<Option<u64>, Error> {
+        Ok(*self.last_progress.lock().map_err(|_| poisoned())?)
     }
 }
 
@@ -114,12 +124,16 @@ impl From<Error> for Pause {
     }
 }
 
-/// Per-round budgets for one peer: request spacing, fetch count, wall clock.
+/// Per-round budgets for one peer: request spacing, fetch count, wall clock;
+/// whether the peer was asked anything and whether an admission or coverage
+/// came of it.
 struct Round<'a> {
     stop: &'a AtomicBool,
     deadline: Instant,
     fetched: usize,
     requested_page: bool,
+    contacted: bool,
+    progressed: bool,
 }
 
 impl Round<'_> {
@@ -138,6 +152,7 @@ pub(crate) struct Scheduler {
     admitted: AtomicU64,
     rejected: AtomicU64,
     penalized: Mutex<Vec<PeerId>>,
+    starved: Mutex<Option<PeerId>>,
 }
 
 fn poisoned() -> Error {
@@ -164,6 +179,8 @@ fn inventory_peer(label: String, source: PeerSource) -> Result<Peer, Error> {
             until: None,
         }),
         busy_turns: AtomicU32::new(0),
+        idle_turns: AtomicU32::new(0),
+        last_progress: Mutex::new(None),
     })
 }
 
@@ -185,6 +202,10 @@ impl Scheduler {
     pub const BUSY_TURNS: u32 = 10;
     /// Consecutive Missing answers for advertised records that blame a peer.
     pub const MISSING_ANSWERS: u32 = 2;
+    /// Consecutive answered turns without an admission or coverage after
+    /// which a peer's slot is released for `IDLE_BACKOFF` seconds, unblamed.
+    pub const IDLE_TURNS: u32 = 3;
+    pub const IDLE_BACKOFF: u64 = 60;
     const MAX_PEERS: usize = 1024;
 
     pub(crate) fn new(sync: PeerSync) -> Result<Self, Error> {
@@ -206,6 +227,7 @@ impl Scheduler {
             admitted: AtomicU64::new(0),
             rejected: AtomicU64::new(0),
             penalized: Mutex::new(Vec::new()),
+            starved: Mutex::new(None),
         })
     }
 
@@ -224,13 +246,72 @@ impl Scheduler {
             deadline: Instant::now() + Self::ROUND_TIME,
             fetched: 0,
             requested_page: false,
+            contacted: false,
+            progressed: false,
         };
         let outcome = self.advance(peer, engine, &mut round);
         if stop.load(Ordering::Acquire) {
             return Ok(());
         }
+        self.track_progress(peer, &outcome, &round, now)?;
+        let denied = matches!(&outcome, Ok(Turn::Retry(error)) if is_dial_denied(error));
         let result = self.judge(peer, outcome, now)?;
         *peer.last_error.lock().map_err(|_| poisoned())? = RecordedError::from_result(&result);
+        if denied {
+            self.free_slot_for(peer)?;
+        }
+        Ok(())
+    }
+
+    /// An admission or coverage resets the idle streak. `IDLE_TURNS` quiet
+    /// turns in a row that asked the peer and got nothing usable release its
+    /// slot for `IDLE_BACKOFF`: no blame, no book penalty, failures untouched.
+    fn track_progress(
+        &self,
+        peer: &Peer,
+        outcome: &Result<Turn, Error>,
+        round: &Round,
+        now: u64,
+    ) -> Result<(), Error> {
+        if round.progressed {
+            peer.idle_turns.store(0, Ordering::Relaxed);
+            *peer.last_progress.lock().map_err(|_| poisoned())? = Some(now);
+            return Ok(());
+        }
+        if !round.contacted || !matches!(outcome, Ok(Turn::Quiet)) {
+            return Ok(());
+        }
+        let idle = peer.idle_turns.fetch_add(1, Ordering::Relaxed) + 1;
+        if idle < Self::IDLE_TURNS {
+            return Ok(());
+        }
+        peer.idle_turns.store(0, Ordering::Relaxed);
+        peer.source.disconnect();
+        let until = now.checked_add(Self::IDLE_BACKOFF).unwrap_or(u64::MAX);
+        let mut backoff = peer.backoff.lock().map_err(|_| poisoned())?;
+        backoff.until = Some(backoff.until.map_or(until, |current| current.max(until)));
+        Ok(())
+    }
+
+    /// Our outbound limit refused a dial to `starved`: disconnect the
+    /// connected inventory peer that progressed longest ago (never first),
+    /// and give `starved` the next turn. One eviction per step; the scheduler
+    /// runs one request at a time, so no other inventory peer is mid-request.
+    fn free_slot_for(&self, starved: &Peer) -> Result<(), Error> {
+        let mut oldest: Option<(Arc<Peer>, Option<u64>)> = None;
+        for peer in self.snapshot()? {
+            if peer.id == starved.id || !peer.source.connected() {
+                continue;
+            }
+            let progress = peer.last_progress()?;
+            if oldest.as_ref().is_none_or(|(_, best)| progress < *best) {
+                oldest = Some((peer, progress));
+            }
+        }
+        if let Some((victim, _)) = oldest {
+            victim.source.disconnect();
+            *self.starved.lock().map_err(|_| poisoned())? = Some(starved.peer_id);
+        }
         Ok(())
     }
 
@@ -318,8 +399,20 @@ impl Scheduler {
         Ok(self.peers.lock().map_err(|_| poisoned())?.clone())
     }
 
+    /// A peer starved by the connection limit goes first; otherwise rotation.
     fn next_peer(&self, omitting: &[String], now: u64) -> Result<Option<Arc<Peer>>, Error> {
         let peers = self.snapshot()?;
+        let starved = self.starved.lock().map_err(|_| poisoned())?.take();
+        if let Some(peer_id) = starved {
+            for peer in &peers {
+                if peer.peer_id == peer_id
+                    && !omitting.contains(&peer.id)
+                    && peer.backoff_until(now)?.is_none()
+                {
+                    return Ok(Some(Arc::clone(peer)));
+                }
+            }
+        }
         let count = peers.len();
         for _ in 0..count {
             let peer = &peers[self.turn.fetch_add(1, Ordering::Relaxed) % count];
@@ -378,7 +471,8 @@ impl Scheduler {
                     round.fetched += 1;
                     pace(peer, round)?;
                     let missing = &mut range.missing;
-                    self.acquire(peer, engine, &entry, missing, round.deadline)?;
+                    round.progressed |=
+                        self.acquire(peer, engine, &entry, missing, round.deadline)?;
                 }
                 range.next += 1;
             } else if range.more {
@@ -406,6 +500,7 @@ impl Scheduler {
             } else {
                 let through = range.to.min(range.scanned_through);
                 engine.record_peer_coverage(&peer.id, range.from, through, range.generation)?;
+                round.progressed = true;
                 *slot = None;
             }
         }
@@ -416,7 +511,7 @@ impl Scheduler {
     /// peer that answers Missing leaves the entry listed-only: it neither blocks
     /// coverage nor is retried within this range. `MISSING_ANSWERS` Missing
     /// answers in a row within one range blame the peer; an invalid package
-    /// always does.
+    /// always does. Returns whether a record was admitted.
     fn acquire(
         &self,
         peer: &Peer,
@@ -424,7 +519,7 @@ impl Scheduler {
         entry: &Placement,
         missing: &mut u32,
         deadline: Instant,
-    ) -> Result<(), Pause> {
+    ) -> Result<bool, Pause> {
         let fetched = peer
             .source
             .fetch_until(entry.txid, deadline)
@@ -432,7 +527,7 @@ impl Scheduler {
         let Some(package) = fetched else {
             *missing += 1;
             if *missing < Self::MISSING_ANSWERS {
-                return Ok(());
+                return Ok(false);
             }
             return Err(Pause::Blame(Error::Invalid(
                 "peer reported advertised records missing".into(),
@@ -453,7 +548,7 @@ impl Scheduler {
                 "peer inventory placement disagrees with its proven record".into(),
             )));
         }
-        Ok(())
+        Ok(true)
     }
 
     pub(crate) fn status(&self, engine: &Engine) -> Result<OverlayStatus, Error> {
@@ -473,6 +568,7 @@ impl Scheduler {
                 last_error,
                 last_error_at,
                 backoff_until: peer.backoff_until(now)?,
+                last_progress_at: peer.last_progress()?,
             });
         }
         Ok(OverlayStatus {
@@ -489,8 +585,9 @@ impl Scheduler {
 }
 
 /// Keep requests to one peer at least `REQUEST_SPACING` apart, waiting in
-/// short slices so cancellation and the round deadline stay responsive.
-fn pace(peer: &Peer, round: &Round) -> Result<(), Pause> {
+/// short slices so cancellation and the round deadline stay responsive. The
+/// round counts as having asked the peer once pacing lets a request through.
+fn pace(peer: &Peer, round: &mut Round) -> Result<(), Pause> {
     let mut last = peer.last_request.lock().map_err(|_| poisoned())?;
     if let Some(previous) = *last {
         let ready = previous + Scheduler::REQUEST_SPACING;
@@ -502,6 +599,7 @@ fn pace(peer: &Peer, round: &Round) -> Result<(), Pause> {
     }
     round.open()?;
     *last = Some(Instant::now());
+    round.contacted = true;
     Ok(())
 }
 
