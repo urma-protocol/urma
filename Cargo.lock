@@ -3651,7 +3651,7 @@ dependencies = [
  "urma-io",
  "urma-names",
  "urma-node",
- "urma-node-client 0.3.1",
+ "urma-node-client 0.4.0",
  "urma-profiles",
  "urma-runtime",
  "urma-wallet",
@@ -3813,7 +3813,7 @@ dependencies = [
 
 [[package]]
 name = "urma-node-client"
-version = "0.3.1"
+version = "0.4.0"
 dependencies = [
  "bitcoin",
  "hex",
