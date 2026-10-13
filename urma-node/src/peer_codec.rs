@@ -1,7 +1,7 @@
 //! Bounded framing for untrusted peer JSON. No record or chain verification.
 //! The request-response layer owns timeouts, including waiting for stream EOF.
 use crate::peer_protocol::{
-    INVENTORY_LIMIT, PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
+    INVENTORY_LIMIT, PEERS_LIMIT, PROTOCOL, REQUEST_LIMIT, RESPONSE_LIMIT, Reply, Request, Response,
 };
 use async_trait::async_trait;
 use libp2p::{
@@ -24,10 +24,11 @@ fn protocol(protocol: &StreamProtocol) -> io::Result<()> {
     Ok(())
 }
 
-/// Inventory pages have their own, smaller frame bound on both sides.
+/// Inventory pages and peer gossip have their own, smaller frame bounds.
 fn response_limit(response: &Response) -> usize {
     match response.result {
         Reply::Inventory(_) => INVENTORY_LIMIT,
+        Reply::Peers(_) => PEERS_LIMIT,
         _ => RESPONSE_LIMIT,
     }
 }
@@ -141,7 +142,7 @@ impl libp2p::request_response::Codec for Codec {
         if length > response_limit(&response) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
-                "peer inventory frame exceeds its limit",
+                "peer inventory or gossip frame exceeds its limit",
             ));
         }
         Ok(response)

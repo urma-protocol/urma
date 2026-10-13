@@ -3,10 +3,11 @@
 //! record validity or completeness. URMA V0 records and proofs are unchanged.
 use crate::model::RecordPackage;
 use bitcoin::{BlockHash, Txid, Wtxid};
+use libp2p::Multiaddr;
 use serde::{Deserialize, Serialize};
 
-pub const PROTOCOL: &str = "/urma/node/record/3";
-pub const VERSION: u32 = 3;
+pub const PROTOCOL: &str = "/urma/node/record/4";
+pub const VERSION: u32 = 4;
 pub const REQUEST_LIMIT: usize = 1024;
 pub const RESPONSE_LIMIT: usize = 32 * 1024 * 1024;
 /// Raw parent bytes, matching the local RPC 16M-hex admission cap.
@@ -17,6 +18,12 @@ pub const INVENTORY_SPAN: u64 = 4096;
 pub const INVENTORY_ENTRIES: u32 = 512;
 /// Encoded inventory response frame, enforced by both writer and reader.
 pub const INVENTORY_LIMIT: usize = 256 * 1024;
+/// Most peers in one gossip reply; `limit: 0` is a bare chain probe.
+pub const PEERS_MAX: u32 = 32;
+/// Most addresses gossiped per peer.
+pub const PEER_ADDRESSES_MAX: usize = 4;
+/// Encoded peers response frame, enforced by both writer and reader.
+pub const PEERS_LIMIT: usize = 32 * 1024;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "kebab-case", deny_unknown_fields)]
@@ -35,6 +42,20 @@ pub enum Kind {
         after: Option<Placement>,
         limit: u32,
     },
+    /// Routing hints the answering node has recently reached; untrusted.
+    Peers {
+        limit: u32,
+    },
+}
+
+/// A gossiped routing hint: base58 peer identity, its addresses and the Unix
+/// second the answering node last reached it. Never chain or record evidence.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GossipPeer {
+    pub peer_id: String,
+    pub addrs: Vec<Multiaddr>,
+    pub last_seen: u64,
 }
 
 /// One transaction's position in a block the answering node fully scanned.
@@ -86,6 +107,7 @@ pub enum Reply {
     /// Lowercase hex of at most PARENT_LIMIT raw bytes.
     Parent(String),
     Inventory(InventoryPage),
+    Peers(Vec<GossipPeer>),
     /// Unknown in this peer's selected retained snapshot, never global absence.
     Missing,
     WrongNetwork,

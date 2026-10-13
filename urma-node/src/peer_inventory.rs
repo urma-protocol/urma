@@ -35,6 +35,8 @@ pub(crate) fn lookup(engine: &Engine, request: &Request) -> Reply {
             after,
             limit,
         } => inventory(engine, (from_height, to_height), after, limit),
+        // Gossip is served by the network thread from memory, never from here.
+        Kind::Peers { .. } => Reply::Refused,
     }
 }
 
@@ -86,7 +88,7 @@ pub(crate) fn validate_inventory(
     match response.result {
         Reply::Inventory(page) => check_page(&response.kind, page).map(Some),
         Reply::Missing | Reply::Busy => Ok(None),
-        Reply::Record(_) | Reply::Parent(_) => Err(Error::Invalid(
+        Reply::Record(_) | Reply::Parent(_) | Reply::Peers(_) => Err(Error::Invalid(
             "peer answered an inventory request with another kind".into(),
         )),
         Reply::Refused | Reply::TooLarge | Reply::WrongNetwork | Reply::UnsupportedVersion => {

@@ -17,8 +17,8 @@ use std::{
 };
 
 const PENDING_PER_DIRECTION: usize = 4;
-pub(crate) const ESTABLISHED_PER_DIRECTION: usize = 4;
-const ESTABLISHED_TOTAL: usize = 8;
+pub(crate) const ESTABLISHED_PER_DIRECTION: usize = 8;
+const ESTABLISHED_TOTAL: usize = 16;
 
 /// Typed local admission refusal, recognisable by downcast instead of text.
 #[derive(Debug)]
@@ -331,23 +331,23 @@ mod tests {
     }
 
     #[test]
-    fn established_direction_limits_allow_four_each_and_eight_total() {
+    fn established_direction_limits_allow_eight_each_and_sixteen_total() {
         let mut limits = Limits::default();
-        for (direction, offset) in [(Direction::Inbound, 0), (Direction::Outbound, 10)] {
-            for value in 0..4 {
+        for (direction, offset) in [(Direction::Inbound, 0), (Direction::Outbound, 20)] {
+            for value in 0..ESTABLISHED_PER_DIRECTION {
                 let id = id(offset + value);
                 let peer = PeerId::random();
                 begin(&mut limits, id, direction).unwrap();
                 admit(&mut limits, id, peer, direction).unwrap();
                 established(&mut limits, id, peer, direction);
             }
-            let denied_id = id(offset + 4);
+            let denied_id = id(offset + ESTABLISHED_PER_DIRECTION);
             begin(&mut limits, denied_id, direction).unwrap();
             assert!(admit(&mut limits, denied_id, PeerId::random(), direction).is_err());
             assert!(!limits.pending_in.contains(&denied_id));
             assert!(!limits.pending_out.contains(&denied_id));
         }
-        assert_eq!(limits.established.len(), 8);
+        assert_eq!(limits.established.len(), ESTABLISHED_TOTAL);
         for direction in [Direction::Inbound, Direction::Outbound] {
             assert!(admit(&mut limits, id(99), PeerId::random(), direction).is_err());
         }

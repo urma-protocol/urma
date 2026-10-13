@@ -251,9 +251,10 @@ the independent completeness check. The standalone peer exchange is currently
 by requested TXID; range discovery, address gossip, relay/DCUtR, distributed
 discovery and two real consumer applications are still pending.
 
-Wire messages use `/urma/node/record/1`, a 4-byte big-endian JSON length followed
-by exactly one payload and stream EOF. Requests are capped at 256 bytes and
-responses at 32 MiB. Connections are capped at eight (four each direction),
+Wire messages use `/urma/node/record/4`, a 4-byte big-endian JSON length followed
+by exactly one payload and stream EOF. Requests are capped at 1 KiB and
+responses at 32 MiB (inventory pages 256 KiB, peer gossip 32 KiB). Connections
+are capped at sixteen (eight each direction),
 one per peer, with at most four pending handshakes per direction. Request-response
 streams are limited to two per connection; Yamux uses its bounded 0.12 backend
 with four streams and 256 KiB buffering per stream. Application queues, active

@@ -1,18 +1,19 @@
 //! Explicitly started URMA peer transport. Noise authenticates the remote
 //! transport identity; packages still need independent Engine admission.
-//! There are no built-in seeds, DNS lookups, wallet keys or implicit listeners.
+//! There are no built-in seeds, wallet keys or implicit listeners. Names in
+//! explicitly dialed `/dns*` addresses resolve through the system resolver.
 pub use crate::peer_parent::OverlayCommitSource;
 use crate::{
     Error,
     engine::Engine,
     model::RecordPackage,
     peer_codec::Codec,
+    peer_gossip::{Dial, Dials, Shared, is_loopback, validate_peers},
     peer_inventory::{lookup, validate_inventory},
-    peer_limits::LimitDenied,
+    peer_limits::{LimitDenied, Limits},
     peer_parent::{Parent, validate_parent},
-    peer_protocol::{
-        InventoryPage, Kind, PROTOCOL, RESPONSE_LIMIT, Reply, Request, Response, VERSION,
-    },
+    peer_protocol::{GossipPeer, InventoryPage, Kind, PROTOCOL, Reply, Request, Response, VERSION},
+    peer_rate::{Bucket, Count, peer_rate},
     peerbook::PeerAddress,
     retrieval::RecordSource,
 };
@@ -20,11 +21,12 @@ use bitcoin::{BlockHash, Txid};
 use libp2p::{
     Multiaddr, PeerId, StreamProtocol, Swarm, SwarmBuilder,
     futures::StreamExt,
+    identify,
     identity::Keypair,
     multiaddr::Protocol,
     noise,
     request_response::{self, Message, OutboundRequestId, ResponseChannel},
-    swarm::{DialError, NetworkBehaviour, SwarmEvent},
+    swarm::{ConnectionId, DialError, NetworkBehaviour, SwarmEvent},
     tcp, yamux,
 };
 use std::{
@@ -44,12 +46,14 @@ use urma_chain::observation::Chain;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 pub(crate) const CALL_TIMEOUT: Duration = Duration::from_secs(10);
 const MAX_PENDING: usize = 8;
+const IDENTIFY_PROTOCOL: &str = "/urma/node/4";
 
 #[derive(NetworkBehaviour)]
-struct Behaviour {
+pub(crate) struct Behaviour {
     // Admission must precede request-response connection side effects.
-    limits: crate::peer_limits::Limits,
+    limits: Limits,
     records: request_response::Behaviour<Codec>,
+    identify: identify::Behaviour,
 }
 
 /// Owns one network thread and one bounded archive-reader thread. Drop requests
@@ -58,9 +62,10 @@ struct Behaviour {
 pub struct PeerNetwork {
     peer: PeerId,
     listen: Option<Multiaddr>,
-    commands: async_mpsc::Sender<Command>,
-    stop: Arc<AtomicBool>,
+    pub(crate) commands: async_mpsc::Sender<Command>,
+    pub(crate) stop: Arc<AtomicBool>,
     connected: Arc<AtomicU64>,
+    pub(crate) shared: Arc<Shared>,
     worker: Option<JoinHandle<Result<(), Error>>>,
 }
 
@@ -74,14 +79,17 @@ pub struct PeerSource {
     stop: Arc<AtomicBool>,
 }
 
-enum Command {
+pub(crate) enum Command {
     Fetch(Fetch),
     /// Fire and forget: frees the slot held by a peer whose reply was rejected.
     Disconnect(PeerId),
+    Dial(Dial),
 }
 
-struct Fetch {
-    address: PeerAddress,
+/// A request to one peer, over its existing connection or the given addresses.
+pub(crate) struct Fetch {
+    peer: PeerId,
+    addresses: Vec<Multiaddr>,
     kind: Kind,
     deadline: Instant,
     answer: Answer,
@@ -89,7 +97,7 @@ struct Fetch {
 
 pub(crate) struct Pending {
     peer: PeerId,
-    kind: Kind,
+    pub(crate) kind: Kind,
     deadline: Instant,
     answer: Answer,
 }
@@ -99,6 +107,7 @@ pub(crate) enum Answer {
     Record(mpsc::SyncSender<Result<Option<RecordPackage>, Error>>),
     Parent(mpsc::SyncSender<Result<Parent, Error>>),
     Inventory(mpsc::SyncSender<Result<Option<InventoryPage>, Error>>),
+    Peers(mpsc::SyncSender<Result<Vec<GossipPeer>, Error>>),
 }
 
 impl Answer {
@@ -111,6 +120,9 @@ impl Answer {
                 let _ = sender.try_send(Err(error));
             }
             Answer::Inventory(sender) => {
+                let _ = sender.try_send(Err(error));
+            }
+            Answer::Peers(sender) => {
                 let _ = sender.try_send(Err(error));
             }
         }
@@ -126,6 +138,9 @@ impl Answer {
             }
             Answer::Inventory(sender) => {
                 let _ = sender.try_send(validate_inventory(genesis, peer, pending, response));
+            }
+            Answer::Peers(sender) => {
+                let _ = sender.try_send(validate_peers(genesis, peer, pending, response));
             }
         }
     }
@@ -161,14 +176,20 @@ impl PeerNetwork {
         let (startup, ready) = mpsc::sync_channel(1);
         let stop = Arc::new(AtomicBool::new(false));
         let connected = Arc::new(AtomicU64::new(0));
-        let (flag, count) = (stop.clone(), connected.clone());
+        let shared = Arc::new(Shared::default());
+        let control = Control {
+            commands: receiver,
+            stop: stop.clone(),
+            connected: connected.clone(),
+            startup,
+            shared: shared.clone(),
+        };
         let worker = std::thread::Builder::new()
             .name("urma-peer".into())
             .spawn(move || {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
                     .build()?;
-                let control = (receiver, flag, count, startup);
                 runtime.block_on(run(engine, identity, listen, control))
             })?;
         let actual = match ready.recv_timeout(Duration::from_secs(5)) {
@@ -191,6 +212,7 @@ impl PeerNetwork {
             commands,
             stop,
             connected,
+            shared,
             worker: Some(worker),
         })
     }
@@ -242,34 +264,46 @@ impl Drop for PeerNetwork {
     }
 }
 
+/// One bounded request: CALL_TIMEOUT and the caller's own deadline, if earlier.
+/// Without addresses the peer must already be connected or known to the swarm.
+pub(crate) fn request<T>(
+    commands: &async_mpsc::Sender<Command>,
+    stop: &AtomicBool,
+    (peer, addresses): (PeerId, Vec<Multiaddr>),
+    kind: Kind,
+    limit: Instant,
+    answer: fn(mpsc::SyncSender<Result<T, Error>>) -> Answer,
+) -> Result<T, Error> {
+    if stop.load(Ordering::Acquire) {
+        return Err(Error::Busy("peer network stopped".into()));
+    }
+    let deadline = limit.min(Instant::now() + CALL_TIMEOUT);
+    let (sender, receiver) = mpsc::sync_channel(1);
+    commands
+        .try_send(Command::Fetch(Fetch {
+            peer,
+            addresses,
+            kind,
+            deadline,
+            answer: answer(sender),
+        }))
+        .map_err(|_| Error::Busy("peer command queue unavailable".into()))?;
+    receiver
+        .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+        .map_err(|_| Error::Busy("peer acquisition deadline or shutdown".into()))?
+}
+
 impl PeerSource {
-    /// Bounded by CALL_TIMEOUT and by the caller's own deadline, if earlier.
     pub(crate) fn request<T>(
         &self,
         kind: Kind,
         limit: Instant,
         answer: fn(mpsc::SyncSender<Result<T, Error>>) -> Answer,
     ) -> Result<T, Error> {
-        if self.stop.load(Ordering::Acquire) {
-            return Err(Error::Busy("peer network stopped".into()));
-        }
-        let deadline = limit.min(Instant::now() + CALL_TIMEOUT);
-        let (sender, receiver) = mpsc::sync_channel(1);
-        self.commands
-            .try_send(Command::Fetch(Fetch {
-                address: self.address.clone(),
-                kind,
-                deadline,
-                answer: answer(sender),
-            }))
-            .map_err(|_| Error::Busy("peer command queue unavailable".into()))?;
-        receiver
-            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
-            .map_err(|_| Error::Busy("peer acquisition deadline or shutdown".into()))?
+        let target = (self.address.peer_id(), vec![self.address.address().clone()]);
+        request(&self.commands, &self.stop, target, kind, limit, answer)
     }
-}
 
-impl PeerSource {
     pub(crate) fn parent(&self, txid: Txid, deadline: Instant) -> Result<Parent, Error> {
         self.request(Kind::Parent { txid }, deadline, Answer::Parent)
     }
@@ -314,7 +348,11 @@ fn swarm(identity: Keypair) -> Result<Swarm<Behaviour>, Error> {
             .with_request_timeout(REQUEST_TIMEOUT)
             .with_max_concurrent_streams(2),
     );
-    let limits = crate::peer_limits::Limits::default();
+    let identify = identify::Behaviour::new(
+        identify::Config::new(IDENTIFY_PROTOCOL.into(), identity.public())
+            .with_agent_version(format!("urma-node/{}", env!("CARGO_PKG_VERSION"))),
+    );
+    let limits = Limits::default();
     Ok(SwarmBuilder::with_existing_identity(identity)
         .with_tokio()
         .with_tcp(
@@ -330,7 +368,13 @@ fn swarm(identity: Keypair) -> Result<Swarm<Behaviour>, Error> {
             },
         )
         .map_err(|e| Error::Invalid(format!("peer transport: {e}")))?
-        .with_behaviour(|_| Behaviour { limits, records })
+        .with_dns()
+        .map_err(|e| Error::Invalid(format!("peer DNS resolver: {e}")))?
+        .with_behaviour(|_| Behaviour {
+            limits,
+            records,
+            identify,
+        })
         .map_err(|e| Error::Invalid(format!("peer behaviour: {e}")))?
         .with_swarm_config(|config| {
             config
@@ -344,12 +388,23 @@ fn swarm(identity: Keypair) -> Result<Swarm<Behaviour>, Error> {
         .build())
 }
 
-type Control = (
-    async_mpsc::Receiver<Command>,
-    Arc<AtomicBool>,
-    Arc<AtomicU64>,
-    Startup,
-);
+struct Control {
+    commands: async_mpsc::Receiver<Command>,
+    stop: Arc<AtomicBool>,
+    connected: Arc<AtomicU64>,
+    startup: Startup,
+    shared: Arc<Shared>,
+}
+
+/// Remote address per live connection, so gossip can tell loopback requesters.
+#[derive(Default)]
+struct Remotes(HashMap<ConnectionId, Multiaddr>);
+
+impl Remotes {
+    fn loopback(&self, connection: ConnectionId) -> bool {
+        self.0.get(&connection).is_some_and(is_loopback)
+    }
+}
 
 async fn run(
     engine: Arc<Engine>,
@@ -357,7 +412,13 @@ async fn run(
     listen: Option<Multiaddr>,
     control: Control,
 ) -> Result<(), Error> {
-    let (mut commands, stop, connected, startup) = control;
+    let Control {
+        mut commands,
+        stop,
+        connected,
+        startup,
+        shared,
+    } = control;
     let genesis = engine.status()?.chain_genesis;
     let mut swarm = swarm(identity)?;
     let mut ready = Some(startup);
@@ -372,49 +433,14 @@ async fn run(
     let serving_stop = stop.clone();
     let serving = std::thread::Builder::new()
         .name("urma-peer-read".into())
-        .spawn(move || {
-            while let Ok(job) = input.recv() {
-                if serving_stop.load(Ordering::Acquire) {
-                    break;
-                }
-                if !job.channel.is_open() || Instant::now() >= job.deadline {
-                    continue;
-                }
-                let result = lookup(&engine, &job.request);
-                if serving_stop.load(Ordering::Acquire)
-                    || !job.channel.is_open()
-                    || Instant::now() >= job.deadline
-                {
-                    continue;
-                }
-                let mut response = Response {
-                    version: VERSION,
-                    chain_genesis: genesis,
-                    kind: job.request.kind,
-                    result,
-                };
-                let mut count = Count(0);
-                if serde_json::to_writer(&mut count, &response).is_err() {
-                    response.result = Reply::TooLarge;
-                    count.0 = 256;
-                }
-                if served
-                    .blocking_send(Served {
-                        channel: job.channel,
-                        response,
-                        bytes: count.0,
-                    })
-                    .is_err()
-                {
-                    break;
-                }
-            }
-        })?;
+        .spawn(move || serve(&engine, genesis, &serving_stop, input, served))?;
     if !listening {
         let _ = ready.take().unwrap().send(Ok(None));
     }
     let mut pending = HashMap::<OutboundRequestId, Pending>::new();
     let mut inbound = HashSet::new();
+    let mut remotes = Remotes::default();
+    let mut dials = Dials::default();
     let mut rates = HashMap::<PeerId, Bucket>::new();
     let mut requests = Bucket::new(16, 16);
     let mut bytes = Bucket::new(64 * 1024 * 1024, 4 * 1024 * 1024);
@@ -437,6 +463,7 @@ async fn run(
                         let _ = swarm.disconnect_peer_id(value.peer);
                     }
                 }
+                dials.expire();
             }
             command = commands.recv() => {
                 let command = match command {
@@ -446,23 +473,23 @@ async fn run(
                         if !pending.values().any(|p| p.peer == peer) { let _ = swarm.disconnect_peer_id(peer); }
                         continue;
                     }
+                    Some(Command::Dial(dial)) => { dials.start(&mut swarm, dial); continue; }
                     None => break Ok(()),
                 };
                 if Instant::now() >= command.deadline || pending.len() >= MAX_PENDING
-                    || pending.values().any(|p| p.peer == command.address.peer_id()) {
+                    || pending.values().any(|p| p.peer == command.peer) {
                     command.answer.fail(Error::Busy("peer acquisition capacity or deadline".into()));
                     continue;
                 }
-                let peer = command.address.peer_id();
                 let request = Request { version: VERSION, chain_genesis: genesis, kind: command.kind };
                 let id = swarm.behaviour_mut().records.send_request_with_addresses(
-                    &peer, request, vec![command.address.address().clone()]);
-                pending.insert(id, Pending { peer, kind: command.kind, deadline: command.deadline, answer: command.answer });
+                    &command.peer, request, command.addresses);
+                pending.insert(id, Pending { peer: command.peer, kind: command.kind, deadline: command.deadline, answer: command.answer });
             }
             response = responses.recv() => {
                 let Some(mut response) = response else { break Err(Error::Invalid("peer archive reader stopped".into())); };
                 if response.channel.is_open() {
-                    if !bytes.take(response.bytes.saturating_sub(256) as u64) { response.response.result = Reply::Busy; }
+                    if !bytes.take(u64::try_from(response.bytes.saturating_sub(256)).unwrap_or(u64::MAX)) { response.response.result = Reply::Busy; }
                     let _ = swarm.behaviour_mut().records.send_response(response.channel, response.response);
                 }
             }
@@ -472,13 +499,27 @@ async fn run(
                     if let Some(ready) = ready.take() { let _ = ready.send(Ok(Some(address))); }
                 }
                 SwarmEvent::ListenerError { error, .. } if ready.is_some() => break Err(Error::Io(error)),
-                SwarmEvent::ConnectionEstablished { num_established, .. } if num_established.get() == 1 => { connected.fetch_add(1, Ordering::Relaxed); }
-                SwarmEvent::ConnectionClosed { num_established: 0, .. } => { connected.fetch_sub(1, Ordering::Relaxed); }
-                // Queued before request-response reports the same DialFailure.
-                SwarmEvent::OutgoingConnectionError { peer_id: Some(peer), error: DialError::Denied { cause }, .. }
-                    if cause.downcast_ref::<LimitDenied>().is_some() => release_denied(&mut pending, peer),
+                SwarmEvent::ConnectionEstablished { peer_id, connection_id, endpoint, num_established, .. } => {
+                    remotes.0.insert(connection_id, endpoint.get_remote_address().clone());
+                    dials.established(connection_id, peer_id);
+                    if num_established.get() == 1 { connected.fetch_add(1, Ordering::Relaxed); }
+                }
+                SwarmEvent::ConnectionClosed { connection_id, num_established, .. } => {
+                    remotes.0.remove(&connection_id);
+                    if num_established == 0 { connected.fetch_sub(1, Ordering::Relaxed); }
+                }
+                SwarmEvent::OutgoingConnectionError { connection_id, peer_id, error } => {
+                    // Queued before request-response reports the same DialFailure.
+                    if let (Some(peer), DialError::Denied { cause }) = (peer_id, &error) {
+                        if cause.downcast_ref::<LimitDenied>().is_some() { release_denied(&mut pending, peer); }
+                    }
+                    dials.failed(connection_id, &error);
+                }
+                SwarmEvent::Behaviour(BehaviourEvent::Identify(identify::Event::Received { info, .. })) => {
+                    shared.observe(info.observed_addr);
+                }
                 SwarmEvent::Behaviour(BehaviourEvent::Records(event)) => match event {
-                    request_response::Event::Message { peer, message: Message::Request { request_id, request, channel }, .. } => {
+                    request_response::Event::Message { peer, connection_id, message: Message::Request { request_id, request, channel } } => {
                         // Every request, including refusals, consumes rate and
                         // response allowance. Over-rate requests get an explicit
                         // Busy; only an exhausted byte allowance drops the channel.
@@ -489,6 +530,10 @@ async fn run(
                         let refusal = if over_rate { Some(Reply::Busy) }
                             else if request.version != VERSION { Some(Reply::UnsupportedVersion) }
                             else if request.chain_genesis != genesis { Some(Reply::WrongNetwork) }
+                            else if let Kind::Peers { limit } = request.kind {
+                                // Gossip is answered from memory, never by the archive reader.
+                                Some(shared.serve(peer, remotes.loopback(connection_id), limit))
+                            }
                             else if inbound.len() >= 2 || inbound.iter().any(|(p, _)| *p == peer)
                                 { Some(Reply::Busy) }
                             else { None };
@@ -524,6 +569,7 @@ async fn run(
             .answer
             .fail(Error::Busy("peer network stopped".into()));
     }
+    dials.close();
     // Drop channels before joining: the archive reader must not wait for a
     // consumer which is already shutting down. No socket belongs to that reader.
     drop(swarm);
@@ -533,6 +579,48 @@ async fn run(
         return Err(Error::Invalid("peer archive reader panicked".into()));
     }
     result
+}
+
+/// The bounded archive reader: one local lookup per job, sized before sending.
+fn serve(
+    engine: &Engine,
+    genesis: BlockHash,
+    stop: &AtomicBool,
+    input: mpsc::Receiver<ServeJob>,
+    served: async_mpsc::Sender<Served>,
+) {
+    while let Ok(job) = input.recv() {
+        if stop.load(Ordering::Acquire) {
+            break;
+        }
+        if !job.channel.is_open() || Instant::now() >= job.deadline {
+            continue;
+        }
+        let result = lookup(engine, &job.request);
+        if stop.load(Ordering::Acquire) || !job.channel.is_open() || Instant::now() >= job.deadline
+        {
+            continue;
+        }
+        let mut response = Response {
+            version: VERSION,
+            chain_genesis: genesis,
+            kind: job.request.kind,
+            result,
+        };
+        let mut count = Count(0);
+        if serde_json::to_writer(&mut count, &response).is_err() {
+            response.result = Reply::TooLarge;
+            count.0 = 256;
+        }
+        let reply = Served {
+            channel: job.channel,
+            response,
+            bytes: count.0,
+        };
+        if served.blocking_send(reply).is_err() {
+            break;
+        }
+    }
 }
 
 /// A dial refused by our own limits is local capacity, answered as Busy.
@@ -586,90 +674,10 @@ fn validate_response(
     }
 }
 
-struct Count(usize);
-impl std::io::Write for Count {
-    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
-        self.0 = self
-            .0
-            .checked_add(bytes.len())
-            .filter(|n| *n <= RESPONSE_LIMIT)
-            .ok_or_else(|| std::io::Error::other("peer response size limit"))?;
-        Ok(bytes.len())
-    }
-    fn flush(&mut self) -> std::io::Result<()> {
-        Ok(())
-    }
-}
-
-struct Bucket {
-    available: u64,
-    capacity: u64,
-    per_second: u64,
-    updated: Instant,
-}
-impl Bucket {
-    fn new(capacity: u64, per_second: u64) -> Self {
-        Self {
-            available: capacity,
-            capacity,
-            per_second,
-            updated: Instant::now(),
-        }
-    }
-    fn take(&mut self, amount: u64) -> bool {
-        self.take_at(amount, Instant::now())
-    }
-    fn refill(&mut self, now: Instant) {
-        let added = (now.duration_since(self.updated).as_nanos() * u128::from(self.per_second)
-            / 1_000_000_000)
-            .min(u128::from(self.capacity)) as u64;
-        if added > 0 {
-            self.available = self.available.saturating_add(added).min(self.capacity);
-            self.updated = now;
-        }
-    }
-    fn take_at(&mut self, amount: u64, now: Instant) -> bool {
-        self.refill(now);
-        if self.available < amount {
-            return false;
-        }
-        self.available -= amount;
-        true
-    }
-}
-
-fn peer_rate(rates: &mut HashMap<PeerId, Bucket>, peer: PeerId) -> bool {
-    peer_rate_at(rates, peer, Instant::now())
-}
-
-fn peer_rate_at(rates: &mut HashMap<PeerId, Bucket>, peer: PeerId, now: Instant) -> bool {
-    // Retain spent allowance across disconnects. Only fully replenished
-    // identities may be forgotten: recreating those buckets changes no budget.
-    // History is bounded independently of connection churn; at capacity a new
-    // identity is refused instead of evicting another identity's spent budget.
-    rates.retain(|_, bucket| {
-        bucket.refill(now);
-        bucket.available < bucket.capacity
-    });
-    if !rates.contains_key(&peer) && rates.len() >= 256 {
-        return false;
-    }
-    rates
-        .entry(peer)
-        .or_insert_with(|| Bucket {
-            available: 4,
-            capacity: 4,
-            per_second: 4,
-            updated: now,
-        })
-        .take_at(1, now)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use bitcoin::hashes::Hash;
-    use std::io::Write;
 
     #[test]
     fn public_response_metadata_is_bound_but_is_not_record_verification() {
@@ -715,64 +723,6 @@ mod tests {
             validate_response(genesis, peer, &expired, response),
             Err(Error::Busy(_))
         ));
-    }
-
-    #[test]
-    fn request_rate_history_and_response_serialization_are_bounded() {
-        let mut rates = HashMap::new();
-        let mut peers = Vec::new();
-        let now = Instant::now();
-        for _ in 0..256 {
-            let peer = Keypair::generate_ed25519().public().to_peer_id();
-            assert!(peer_rate_at(&mut rates, peer, now));
-            peers.push(peer);
-        }
-        assert!(!peer_rate_at(
-            &mut rates,
-            Keypair::generate_ed25519().public().to_peer_id(),
-            now
-        ));
-        assert_eq!(rates.len(), 256);
-        rates.get_mut(&peers[0]).unwrap().per_second = 0;
-        for _ in 0..3 {
-            assert!(peer_rate_at(&mut rates, peers[0], now));
-        }
-        assert!(!peer_rate_at(&mut rates, peers[0], now));
-        let mut count = Count(RESPONSE_LIMIT - 1);
-        count.write_all(&[0]).unwrap();
-        assert!(count.write_all(&[0]).is_err());
-        assert_eq!(count.0, RESPONSE_LIMIT);
-        let mut bytes = Bucket::new(1024, 0);
-        assert!(bytes.take(1024));
-        assert!(!bytes.take(1));
-    }
-
-    #[test]
-    fn identity_rate_survives_reconnect_until_allowance_replenishes() {
-        let mut rates = HashMap::new();
-        let peer = Keypair::generate_ed25519().public().to_peer_id();
-        let now = Instant::now();
-        for _ in 0..4 {
-            assert!(peer_rate_at(&mut rates, peer, now));
-        }
-        // Connection lifetime has no effect on the identity accounting.
-        assert!(!peer_rate_at(&mut rates, peer, now));
-        let later = now + Duration::from_millis(250);
-        assert!(peer_rate_at(&mut rates, peer, later));
-        assert!(!peer_rate_at(&mut rates, peer, later));
-        let replenished = later + Duration::from_secs(1);
-        for _ in 0..4 {
-            assert!(peer_rate_at(&mut rates, peer, replenished));
-        }
-        assert!(!peer_rate_at(&mut rates, peer, replenished));
-        let other = Keypair::generate_ed25519().public().to_peer_id();
-        assert!(peer_rate_at(
-            &mut rates,
-            other,
-            replenished + Duration::from_secs(1)
-        ));
-        assert_eq!(rates.len(), 1);
-        assert!(!rates.contains_key(&peer));
     }
 
     #[test]

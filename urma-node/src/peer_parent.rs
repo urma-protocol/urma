@@ -38,9 +38,9 @@ pub(crate) fn validate_parent(
         Reply::Missing | Reply::TooLarge | Reply::WrongNetwork | Reply::UnsupportedVersion => {
             Ok(Parent::Absent)
         }
-        Reply::Record(_) | Reply::Inventory(_) | Reply::Refused => Err(Error::Invalid(
-            "peer answered a parent request with another kind or a refusal".into(),
-        )),
+        Reply::Record(_) | Reply::Inventory(_) | Reply::Peers(_) | Reply::Refused => Err(
+            Error::Invalid("peer answered a parent request with another kind or a refusal".into()),
+        ),
     }
 }
 
