@@ -1,0 +1,22 @@
+# Operator user unit: Litecoin testnet URMA Node with the archive in
+# ~/.local/share/urma/node-testnet (config.json, service.token, peer.key, data/).
+# Install: cp to ~/.config/systemd/user/ && systemctl --user daemon-reload.
+# Litecoin Core is optional: the local-rpc commit source follows litecoind live.
+[Unit]
+Description=URMA Node (Litecoin testnet)
+After=litecoin-testnet.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/urma-node --data %h/.local/share/urma/node-testnet/data --config %h/.local/share/urma/node-testnet/config.json serve --listen 127.0.0.1:28331 --token-file %h/.local/share/urma/node-testnet/service.token --p2p --peer-key %h/.local/share/urma/node-testnet/peer.key --urma-listen 0.0.0.0:28332 --commit-rpc-url http://127.0.0.1:19332 --commit-rpc-cookie %h/.local/share/litecoin/testnet4/.cookie
+Restart=on-failure
+RestartSec=10s
+UMask=0077
+KillSignal=SIGTERM
+KillMode=control-group
+# Cooperative stop first; an unfinished stop is forcibly terminated after 30s.
+TimeoutStopSec=30s
+SendSIGKILL=yes
+
+[Install]
+WantedBy=default.target
