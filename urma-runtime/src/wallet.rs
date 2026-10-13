@@ -43,6 +43,11 @@ fn path_text<S: Serializer>(path: &KeyPath, serializer: S) -> Result<S::Ok, S::E
     serializer.collect_str(&format_args!("{}/{}", path.branch.index(), path.index))
 }
 
+pub(crate) fn coin_amount(value: &Value) -> Result<Amount, Error> {
+    let coins = value.as_f64().context("missing coin amount")?;
+    Ok(Amount::from_float_in(coins, Denomination::Bitcoin)?)
+}
+
 fn covered(total: u64, inputs: usize, minimum: u64, per_input: u64) -> Result<bool, Error> {
     let needed = per_input
         .checked_mul(u64::try_from(inputs)?)
@@ -52,6 +57,8 @@ fn covered(total: u64, inputs: usize, minimum: u64, per_input: u64) -> Result<bo
 }
 
 impl Node {
+    /// Unspent-only discovery: `next_change` is fresh until the change coin is
+    /// spent; history-based discovery is a follow-up.
     pub fn wallet(&self, account: &Account) -> Result<WalletView, Error> {
         self.verify_network()?;
         ensure!(
@@ -169,8 +176,7 @@ impl Node {
                     txid: row["txid"].as_str().context("missing UTXO txid")?.parse()?,
                     vout: u32::try_from(row["vout"].as_u64().context("missing UTXO vout")?)?,
                 },
-                value: Amount::from_str_in(&row["amount"].to_string(), Denomination::Bitcoin)?
-                    .to_sat(),
+                value: coin_amount(&row["amount"])?.to_sat(),
                 height: row["height"].as_u64().context("missing UTXO height")?,
                 path,
             });
@@ -243,7 +249,7 @@ impl Node {
             unspent["scriptPubKey"]["hex"] == hex::encode(account.script(coin.path)?.as_bytes()),
             "live coin script disagrees with its wallet path"
         );
-        let amount = Amount::from_str_in(&unspent["value"].to_string(), Denomination::Bitcoin)?;
+        let amount = coin_amount(&unspent["value"])?;
         ensure!(
             amount.to_sat() == coin.value,
             "live coin value disagrees with the wallet scan"

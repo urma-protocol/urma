@@ -28,11 +28,7 @@ pub const PHRASE: &str =
 
 pub fn funder() -> Account {
     let root = Root::from_phrase(&IdentityPhrase::parse(PHRASE).unwrap()).unwrap();
-    Account::new(
-        Chain::BitcoinRegtest,
-        root.account(Chain::BitcoinRegtest).unwrap(),
-    )
-    .unwrap()
+    Account::from_root(Chain::BitcoinRegtest, &root).unwrap()
 }
 
 pub struct Fixture {

@@ -85,11 +85,7 @@ fn litecoin_standard_full_record_and_dust() {
         .active()
         .unwrap();
     let root = Root::from_phrase(&phrase).unwrap();
-    let funder = Account::new(
-        Chain::LitecoinTestnet,
-        root.account(Chain::LitecoinTestnet).unwrap(),
-    )
-    .unwrap();
+    let funder = Account::from_root(Chain::LitecoinTestnet, &root).unwrap();
     let expected = funder.receive_script().unwrap();
     let descriptor: Value = rpc
         .call(
@@ -258,14 +254,7 @@ fn quote_uses_256k_geometry_and_chain_dust_budget() {
     let quote = urma_runtime::quote::multipart(
         480 * Geometry::DATA_BYTES as u64,
         &signer,
-        &Account::new(
-            Chain::LitecoinTestnet,
-            Root::from_phrase(&phrase)
-                .unwrap()
-                .account(Chain::LitecoinTestnet)
-                .unwrap(),
-        )
-        .unwrap(),
+        &Account::from_root(Chain::LitecoinTestnet, &Root::from_phrase(&phrase).unwrap()).unwrap(),
         1,
     )
     .unwrap();

@@ -1,10 +1,10 @@
 use bitcoin::{
     Amount, BlockHash, CompressedPublicKey, OutPoint, Transaction, TxIn, TxOut, Txid, absolute,
-    ecdsa::Signature, hashes::Hash, transaction::Version,
+    bip32::ChildNumber, ecdsa::Signature, hashes::Hash, secp256k1::Secp256k1, transaction::Version,
 };
 use std::num::NonZeroU64;
 use urma_chain::observation::{Chain, ChainId};
-use urma_identity::{phrase::IdentityPhrase, root::Root};
+use urma_identity::{ckd::derive_normal, phrase::IdentityPhrase, root::Root};
 use urma_wallet::{
     account::{Account, Branch, KeyPath},
     signing::verify_p2wpkh_signature,
@@ -14,7 +14,7 @@ use urma_wallet::{
 fn account(chain: Chain) -> Account {
     let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
     let root = Root::from_phrase(&phrase).unwrap();
-    Account::new(chain, root.account(chain).unwrap()).unwrap()
+    Account::from_root(chain, &root).unwrap()
 }
 
 fn budget(maximum: u64) -> FeeBudget {
@@ -45,14 +45,18 @@ fn receive_address_is_the_bip84_external_zero() {
 }
 
 #[test]
-fn account_refuses_a_key_of_another_network() {
+fn normal_child_derivation_matches_bip32() {
     let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
-    let root = Root::from_phrase(&phrase).unwrap();
-    let mainnet = root.account(Chain::LitecoinMainnet).unwrap();
-    assert!(matches!(
-        Account::new(Chain::LitecoinTestnet, mainnet),
-        Err(WalletError::WrongNetwork)
-    ));
+    let key = Root::from_phrase(&phrase)
+        .unwrap()
+        .account(Chain::LitecoinTestnet)
+        .unwrap();
+    let ours = derive_normal(&key, &[1, 7]).unwrap();
+    let path = [
+        ChildNumber::from_normal_idx(1).unwrap(),
+        ChildNumber::from_normal_idx(7).unwrap(),
+    ];
+    assert_eq!(ours, key.derive_priv(&Secp256k1::new(), &path).unwrap());
 }
 
 #[test]

@@ -7,7 +7,10 @@ use bitcoin::{CompressedPublicKey, OutPoint, ScriptBuf, Transaction, TxOut, ecds
 use std::collections::HashSet;
 use urma_chain::observation::Chain;
 use urma_core::{envelope, format::Urma};
-use urma_wallet::signing::{FundingSignatureError, verify_p2wpkh_signature};
+use urma_wallet::{
+    account::Account,
+    signing::{FundingSignatureError, verify_p2wpkh_signature},
+};
 
 fn transaction(raw: &str) -> Result<Transaction, Error> {
     decode(raw, usize::MAX).map_err(|cause| match cause {
@@ -23,6 +26,10 @@ pub(crate) fn return_script(hex_script: &str) -> Result<ScriptBuf, Error> {
         "publication return requires native P2WPKH"
     );
     Ok(script)
+}
+
+pub(crate) fn funded_by(hex_script: &str, funder: &Account) -> Result<bool, Error> {
+    Ok(return_script(hex_script)? == funder.receive_script()?)
 }
 
 fn funding_error(cause: FundingSignatureError) -> Error {

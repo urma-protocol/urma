@@ -24,7 +24,7 @@ use urma_wallet::account::Account;
 pub fn funder(chain: Chain) -> Account {
     let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
     let root = Root::from_phrase(&phrase).unwrap();
-    Account::new(chain, root.account(chain).unwrap()).unwrap()
+    Account::from_root(chain, &root).unwrap()
 }
 
 #[derive(Default)]
@@ -55,6 +55,10 @@ pub struct Mock {
 
 impl Mock {
     pub fn new(directory: &Path) -> Self {
+        Self::funded(directory, 100_000_000)
+    }
+
+    pub fn funded(directory: &Path, value: u64) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         let address = listener.local_addr().unwrap();
         let signer =
@@ -65,7 +69,7 @@ impl Mock {
             lock_time: absolute::LockTime::ZERO,
             input: vec![TxIn::default()],
             output: vec![TxOut {
-                value: Amount::from_sat(100_000_000),
+                value: Amount::from_sat(value),
                 script_pubkey: funder.receive_script().unwrap(),
             }],
         };
@@ -177,10 +181,10 @@ fn respond(
         "getblockheader" => Ok(json!({"height":100})),
         "getindexinfo" => Ok(json!({"txindex":{"synced":true}})),
         "scantxoutset" => Ok(
-            json!({"success":true,"unspents":[{"txid":funding.compute_txid(),"vout":0,"amount":1,"height":1,"scriptPubKey":hex::encode(funding.output[0].script_pubkey.as_bytes())}]}),
+            json!({"success":true,"unspents":[{"txid":funding.compute_txid(),"vout":0,"amount":funding.output[0].value.to_btc(),"height":1,"scriptPubKey":hex::encode(funding.output[0].script_pubkey.as_bytes())}]}),
         ),
         "gettxout" => Ok(
-            json!({"value":1,"confirmations":100,"scriptPubKey":{"hex":hex::encode(funding.output[0].script_pubkey.as_bytes())}}),
+            json!({"value":funding.output[0].value.to_btc(),"confirmations":100,"scriptPubKey":{"hex":hex::encode(funding.output[0].script_pubkey.as_bytes())}}),
         ),
         "getrawmempool" => Ok(json!(
             state

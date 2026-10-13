@@ -6,7 +6,7 @@
     unused_assignments
 )]
 pub mod bip85;
-mod ckd;
+pub mod ckd;
 pub mod descriptor;
 pub mod error;
 pub mod identity;

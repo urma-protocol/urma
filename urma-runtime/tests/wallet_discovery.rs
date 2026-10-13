@@ -109,11 +109,7 @@ fn wallet_view_refuses_an_account_of_another_chain() {
     let account = funder();
     let (_fixture, mock) = start(&account, &[(external(0), 10_000)]);
     let root = Root::from_phrase(&IdentityPhrase::parse(PHRASE).unwrap()).unwrap();
-    let litecoin = Account::new(
-        Chain::LitecoinTestnet,
-        root.account(Chain::LitecoinTestnet).unwrap(),
-    )
-    .unwrap();
+    let litecoin = Account::from_root(Chain::LitecoinTestnet, &root).unwrap();
     assert!(mock.node().wallet(&litecoin).is_err());
     assert!(mock.node().select_coins(&litecoin, 1_000, 0).is_err());
 }

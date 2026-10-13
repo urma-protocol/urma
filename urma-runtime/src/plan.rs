@@ -47,6 +47,18 @@ impl PublicationPlan {
         validation::validate(self)
     }
 
+    pub fn funded_by(&self, funder: &Account) -> Result<bool, Error> {
+        validation::funded_by(&self.return_script, funder)
+    }
+
+    pub fn require_funder(&self, funder: &Account) -> Result<(), Error> {
+        ensure!(
+            self.funded_by(funder)?,
+            "plan returns to another funding account"
+        );
+        Ok(())
+    }
+
     pub fn save_new(&self, path: &Path) -> Result<(), Error> {
         self.validate()?;
         let bytes = serde_json::to_vec_pretty(self)?;

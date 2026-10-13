@@ -1,4 +1,3 @@
-use bitcoin::{NetworkKind, bip32::Xpriv};
 use serde_json::Value;
 use std::{collections::HashSet, path::PathBuf};
 use urma_chain::observation::Chain;
@@ -50,7 +49,7 @@ fn account_reproduces_the_published_xpub_and_addresses_per_chain() {
     assert_eq!(rows.len(), CHAINS.len());
     for row in rows {
         let chain = chain(text(&row["chain"]));
-        let account = Account::new(chain, root.account(chain).unwrap()).unwrap();
+        let account = Account::from_root(chain, &root).unwrap();
         assert_eq!(account.chain().address_hrp(), text(&row["hrp"]));
         assert_eq!(account.xpub().to_string(), text(&row["account_xpub"]));
         let external = |index| {
@@ -75,7 +74,7 @@ fn receive_script_is_the_witness_script_of_the_published_receive_address() {
     let root = root(&v);
     for row in v["chains"].as_array().unwrap() {
         let chain = chain(text(&row["chain"]));
-        let account = Account::new(chain, root.account(chain).unwrap()).unwrap();
+        let account = Account::from_root(chain, &root).unwrap();
         let script = account.receive_script().unwrap();
         assert!(script.is_p2wpkh());
         assert_eq!(
@@ -95,7 +94,7 @@ fn every_branch_and_index_matches_the_root_and_never_repeats() {
     let v = vectors();
     let root = root(&v);
     for chain in CHAINS {
-        let account = Account::new(chain, root.account(chain).unwrap()).unwrap();
+        let account = Account::from_root(chain, &root).unwrap();
         let mut seen = HashSet::new();
         for branch in [Branch::External, Branch::Internal] {
             for index in 0..25 {
@@ -124,21 +123,13 @@ fn testnet_contexts_share_one_key_under_their_own_prefixes() {
     ]
     .into_iter()
     .map(|chain| {
-        let account = Account::new(chain, root.account(chain).unwrap()).unwrap();
+        let account = Account::from_root(chain, &root).unwrap();
         account.script(KeyPath::new(Branch::Internal, 3)).unwrap()
     })
     .collect();
     assert!(scripts.windows(2).all(|pair| pair[0] == pair[1]));
-    let bitcoin = Account::new(
-        Chain::BitcoinMainnet,
-        root.account(Chain::BitcoinMainnet).unwrap(),
-    )
-    .unwrap();
-    let litecoin = Account::new(
-        Chain::LitecoinMainnet,
-        root.account(Chain::LitecoinMainnet).unwrap(),
-    )
-    .unwrap();
+    let bitcoin = Account::from_root(Chain::BitcoinMainnet, &root).unwrap();
+    let litecoin = Account::from_root(Chain::LitecoinMainnet, &root).unwrap();
     assert_ne!(
         bitcoin.receive_script().unwrap(),
         litecoin.receive_script().unwrap()
@@ -146,44 +137,10 @@ fn testnet_contexts_share_one_key_under_their_own_prefixes() {
 }
 
 #[test]
-fn account_refuses_keys_of_another_depth_or_network() {
-    let v = vectors();
-    let root = root(&v);
-    let master: Xpriv = text(&v["master_xprv"]).parse().unwrap();
-    assert!(matches!(
-        Account::new(Chain::BitcoinMainnet, master),
-        Err(WalletError::WrongNetwork)
-    ));
-    let mainnet = root.account(Chain::BitcoinMainnet).unwrap();
-    assert_eq!(mainnet.network, NetworkKind::Main);
-    for chain in [
-        Chain::BitcoinTestnet4,
-        Chain::BitcoinRegtest,
-        Chain::LitecoinTestnet,
-    ] {
-        assert!(matches!(
-            Account::new(chain, mainnet),
-            Err(WalletError::WrongNetwork)
-        ));
-    }
-    let testnet = root.account(Chain::BitcoinRegtest).unwrap();
-    for chain in [Chain::BitcoinMainnet, Chain::LitecoinMainnet] {
-        assert!(matches!(
-            Account::new(chain, testnet),
-            Err(WalletError::WrongNetwork)
-        ));
-    }
-}
-
-#[test]
 fn hardened_child_indexes_are_refused() {
     let v = vectors();
     let root = root(&v);
-    let account = Account::new(
-        Chain::LitecoinMainnet,
-        root.account(Chain::LitecoinMainnet).unwrap(),
-    )
-    .unwrap();
+    let account = Account::from_root(Chain::LitecoinMainnet, &root).unwrap();
     let hardened = KeyPath::new(Branch::External, 1 << 31);
     assert!(matches!(
         account.address(hardened),

@@ -95,6 +95,18 @@ impl DiskPlan {
         Ok(hex::encode(Sha256::digest(serde_json::to_vec(self)?)))
     }
 
+    pub fn funded_by(&self, funder: &Account) -> Result<bool, Error> {
+        validation::funded_by(&self.return_script, funder)
+    }
+
+    pub fn require_funder(&self, funder: &Account) -> Result<(), Error> {
+        ensure!(
+            self.funded_by(funder)?,
+            "plan returns to another funding account"
+        );
+        Ok(())
+    }
+
     pub fn record(&self, index: u32) -> Result<PublicPlan, Error> {
         ensure!(index < self.record_count, "record index exceeds plan");
         let mut offsets = File::open(self.directory.join("index.bin"))?;

@@ -2,8 +2,9 @@ use crate::config;
 use crate::error::{Context, Error, ensure};
 use crate::transaction::decode;
 use crate::transport::{BlockEncoding, Evidence, Provider};
+use crate::wallet::coin_amount;
 use crate::{endpoints::PublicEndpoint, esplora};
-use bitcoin::{Amount, BlockHash, Denomination, Txid};
+use bitcoin::{BlockHash, Txid};
 use serde_json::{Value, json};
 use std::{
     io::Read,
@@ -415,7 +416,7 @@ fn validate_output(value: &Value) -> Result<(), Error> {
     value["coinbase"]
         .as_bool()
         .context("invalid public coinbase status")?;
-    Amount::from_str_in(&value["value"].to_string(), Denomination::Bitcoin)?;
+    coin_amount(&value["value"])?;
     let script = value["scriptPubKey"]["hex"]
         .as_str()
         .context("invalid public output script")?;

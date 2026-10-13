@@ -48,6 +48,37 @@ fn a_child_is_submitted_even_when_the_preflight_node_lags_its_parent() {
 }
 
 #[test]
+fn local_wallet_reads_a_publication_return_sized_coin_exactly() {
+    let directory = tempfile::tempdir().unwrap();
+    let mock = Mock::funded(directory.path(), 1_000);
+    let view = mock.node().wallet(&mock.funder).unwrap();
+    assert!(view.verified);
+    assert_eq!(view.coins.len(), 1);
+    assert_eq!(view.coins[0].value, 1_000);
+}
+
+#[test]
+fn plans_name_their_funder() {
+    let directory = tempfile::tempdir().unwrap();
+    let mock = Mock::new(directory.path());
+    let plan = prepare_atomic(
+        &mock.node(),
+        &mock.signer,
+        &mock.funder,
+        &PublicRecord::Post("fixture".into()),
+        PlanLimits {
+            fee_rate: 1,
+            max_fee: 10_000,
+            max_records: 1,
+        },
+    )
+    .unwrap();
+    plan.require_funder(&mock.funder).unwrap();
+    let other = publication_node::funder(urma_chain::observation::Chain::BitcoinMainnet);
+    assert!(plan.require_funder(&other).is_err());
+}
+
+#[test]
 fn an_unconfirmed_answer_is_mempool_presence_without_a_second_opinion() {
     let directory = tempfile::tempdir().unwrap();
     let mock = Mock::new(directory.path());

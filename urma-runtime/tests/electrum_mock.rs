@@ -42,14 +42,9 @@ struct Fixture {
 impl Fixture {
     fn new() -> Self {
         let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
-        let funder = Account::new(
-            Chain::BitcoinRegtest,
-            Root::from_phrase(&phrase)
-                .unwrap()
-                .account(Chain::BitcoinRegtest)
-                .unwrap(),
-        )
-        .unwrap();
+        let funder =
+            Account::from_root(Chain::BitcoinRegtest, &Root::from_phrase(&phrase).unwrap())
+                .unwrap();
         let funding = Transaction {
             version: TxVersion::TWO,
             lock_time: absolute::LockTime::ZERO,

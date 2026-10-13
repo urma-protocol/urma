@@ -7,10 +7,22 @@ use bitcoin::{
 use zeroize::Zeroizing;
 
 pub(crate) fn derive_hardened(parent: &Xpriv, path: &[u32]) -> Result<Xpriv, IdentityError> {
+    derive(parent, path, hardened_child)
+}
+
+pub fn derive_normal(parent: &Xpriv, path: &[u32]) -> Result<Xpriv, IdentityError> {
+    derive(parent, path, normal_child)
+}
+
+fn derive(
+    parent: &Xpriv,
+    path: &[u32],
+    step: fn(&Secp256k1<SignOnly>, &Xpriv, u32) -> Result<Xpriv, IdentityError>,
+) -> Result<Xpriv, IdentityError> {
     let secp = Secp256k1::signing_only();
     let mut node = *parent;
     for index in path {
-        let next = hardened_child(&secp, &node, *index);
+        let next = step(&secp, &node, *index);
         node.private_key.non_secure_erase();
         node = next?;
     }
@@ -26,6 +38,26 @@ fn hardened_child(
     let mut engine = HmacEngine::<sha512::Hash>::new(&parent.chain_code[..]);
     engine.input(&[0]);
     engine.input(Zeroizing::new(parent.private_key.secret_bytes()).as_ref());
+    child(secp, parent, child_number, engine)
+}
+
+fn normal_child(
+    secp: &Secp256k1<SignOnly>,
+    parent: &Xpriv,
+    index: u32,
+) -> Result<Xpriv, IdentityError> {
+    let child_number = ChildNumber::from_normal_idx(index)?;
+    let mut engine = HmacEngine::<sha512::Hash>::new(&parent.chain_code[..]);
+    engine.input(&parent.private_key.public_key(secp).serialize());
+    child(secp, parent, child_number, engine)
+}
+
+fn child(
+    secp: &Secp256k1<SignOnly>,
+    parent: &Xpriv,
+    child_number: ChildNumber,
+    mut engine: HmacEngine<sha512::Hash>,
+) -> Result<Xpriv, IdentityError> {
     engine.input(&u32::from(child_number).to_be_bytes());
     let mac = Zeroizing::new(Hmac::<sha512::Hash>::from_engine(engine).to_byte_array());
     let left = Zeroizing::new(<[u8; 32]>::try_from(&mac[..32])?);

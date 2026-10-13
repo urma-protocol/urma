@@ -115,6 +115,10 @@ Electrum servers commonly use self-signed certificates, so the TLS session does 
 
 A routed node never reports `local_validating_node`. Signed records are authenticated by their own signatures at every tier; the tier only states what the inclusion and confirmation counts rest on.
 
+## Funding wallet
+
+`Node::wallet` discovers a BIP84 account from unspent outputs only: a local node scans the first 1000 addresses of each branch, public providers walk each branch until 20 consecutive addresses hold nothing. Publication change and returns go to the designated receive address; transfer change goes to the next internal address, one past the highest internal index that still holds a coin. That change address is fresh until the change coin is spent, after which it can be reused; history-based discovery is a follow-up.
+
 ## Where it fits
 
 A typical application prepares and reviews a plan, approves its funding and fees, then publishes while retaining the plan and journal for recovery or continuation. [urma-git](https://crates.io/crates/urma-git), [urma-files](https://crates.io/crates/urma-files) and [urma-cli](https://crates.io/crates/urma-cli) compose these primitives into user workflows.

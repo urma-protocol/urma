@@ -10,6 +10,7 @@ use bitcoin::{
 use std::collections::HashSet;
 use urma_chain::observation::Chain;
 pub use urma_identity::root::Branch;
+use urma_identity::{ckd::derive_normal, root::Root};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct KeyPath {
@@ -42,7 +43,11 @@ pub struct Account {
 }
 
 impl Account {
-    pub fn new(chain: Chain, key: Xpriv) -> Result<Self, WalletError> {
+    pub fn from_root(chain: Chain, root: &Root) -> Result<Self, WalletError> {
+        Self::new(chain, root.account(chain).map_err(WalletError::Identity)?)
+    }
+
+    fn new(chain: Chain, key: Xpriv) -> Result<Self, WalletError> {
         let expected = match chain {
             Chain::BitcoinMainnet | Chain::LitecoinMainnet => NetworkKind::Main,
             Chain::BitcoinTestnet4 | Chain::BitcoinRegtest | Chain::LitecoinTestnet => {
@@ -126,10 +131,8 @@ impl Account {
                 .p2wpkh_signature_hash(index, &expected, previous.value, EcdsaSighashType::All)
                 .map_err(|cause| WalletError::Protocol(cause.into()))?;
             let message = Message::from_digest(digest.to_byte_array());
-            let mut child = self
-                .key
-                .derive_priv(&secp, &path.children()?)
-                .map_err(WalletError::Derivation)?;
+            let mut child = derive_normal(&self.key, &[path.branch.index(), path.index])
+                .map_err(WalletError::Identity)?;
             let signature = secp.sign_ecdsa(&message, &child.private_key);
             let public = child.private_key.public_key(&secp);
             child.private_key.non_secure_erase();

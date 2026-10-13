@@ -15,7 +15,7 @@ const PHRASE: &str = "abandon amount liar amount expire adjust cage candy arch g
 
 fn account(chain: Chain) -> Account {
     let root = Root::from_phrase(&IdentityPhrase::parse(PHRASE).unwrap()).unwrap();
-    Account::new(chain, root.account(chain).unwrap()).unwrap()
+    Account::from_root(chain, &root).unwrap()
 }
 
 fn budget() -> FeeBudget {

@@ -91,13 +91,7 @@ pub fn prepare_snapshot(
         if existing.chain.genesis().map_err(RuntimeError::from)?
             == node.chain().genesis().map_err(RuntimeError::from)?
             && existing.author == author.public_key().inner.x_only_public_key().0.to_string()
-            && existing.return_script
-                == hex::encode(
-                    funder
-                        .receive_script()
-                        .map_err(RuntimeError::from)?
-                        .as_bytes(),
-                )
+            && existing.funded_by(funder)?
             && first.fee_rate == budget.fee_rate
             && existing.maximum_fee <= budget.max_fee
             && funding_unspent(node, funder, &first.funding)?

@@ -78,14 +78,8 @@ fn signed_publication_restart_reorg_and_recovery() {
         .unwrap()
         .active()
         .unwrap();
-    let funder = Account::new(
-        Chain::BitcoinRegtest,
-        Root::from_phrase(&phrase)
-            .unwrap()
-            .account(Chain::BitcoinRegtest)
-            .unwrap(),
-    )
-    .unwrap();
+    let funder =
+        Account::from_root(Chain::BitcoinRegtest, &Root::from_phrase(&phrase).unwrap()).unwrap();
     let address = funder.receive_address().unwrap();
     node.call("generatetoaddress", &[json!(102), json!(address)])
         .unwrap();

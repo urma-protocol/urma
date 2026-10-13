@@ -34,7 +34,7 @@ fn signer(byte: u8) -> Keypair {
 fn account(chain: Chain) -> Account {
     let phrase = IdentityPhrase::parse(&format!("{}about", "abandon ".repeat(11))).unwrap();
     let root = Root::from_phrase(&phrase).unwrap();
-    Account::new(chain, root.account(chain).unwrap()).unwrap()
+    Account::from_root(chain, &root).unwrap()
 }
 
 fn funding(script: ScriptBuf, value: u64) -> Funding {
