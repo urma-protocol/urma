@@ -96,10 +96,15 @@ pub fn offline(root: &Path, name: &str) -> Arc<Engine> {
 }
 
 pub fn node_on(engine: Arc<Engine>, ip: Option<&str>) -> Node {
+    let listen = ip.map(|ip| format!("/ip4/{ip}/tcp/0").parse().unwrap());
+    start(engine, listen, Vec::new())
+}
+
+fn start(engine: Arc<Engine>, listen: Option<Multiaddr>, announce: Vec<Multiaddr>) -> Node {
     let key = Keypair::generate_ed25519();
     let id = key.public().to_peer_id();
-    let listen = ip.map(|ip| format!("/ip4/{ip}/tcp/0").parse().unwrap());
-    let network = Arc::new(PeerNetwork::start(engine.clone(), key, listen).unwrap());
+    let network = PeerNetwork::start(engine.clone(), key, listen, announce).unwrap();
+    let network = Arc::new(network);
     let address = network.listen_address();
     Node {
         engine,
@@ -113,23 +118,35 @@ pub fn node(root: &Path, name: &str, ip: Option<&str>) -> Node {
     node_on(offline(root, name), ip)
 }
 
-/// Discovery over `book`, saved at `<root>/<name>/peers.json`, announcing
-/// nothing. Each step hands the network its gossip snapshot from the book.
-pub fn discover(root: &Path, name: &str, node: &Node, book: PeerBook) -> (Discovery, PathBuf) {
-    announcing(root, name, node, book, Vec::new())
+/// A node listening on a free port of `ip` that announces that address.
+pub fn announcing_node(root: &Path, name: &str, ip: &str) -> Node {
+    let port = std::net::TcpListener::bind((ip, 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port();
+    let listen: Multiaddr = format!("/ip4/{ip}/tcp/{port}").parse().unwrap();
+    start(offline(root, name), Some(listen.clone()), vec![listen])
 }
 
-pub fn announcing(
+/// Discovery over `book`, saved at `<root>/<name>/peers.json`. Each step
+/// hands the network its gossip snapshot from the book.
+pub fn discover(root: &Path, name: &str, node: &Node, book: PeerBook) -> (Discovery, PathBuf) {
+    let (discovery, path, _) = discover_shared(root, name, node, book);
+    (discovery, path)
+}
+
+/// As `discover`, also returning the book the Discovery works on.
+pub fn discover_shared(
     root: &Path,
     name: &str,
     node: &Node,
     book: PeerBook,
-    announce: Vec<Multiaddr>,
-) -> (Discovery, PathBuf) {
+) -> (Discovery, PathBuf, Arc<Mutex<PeerBook>>) {
     let path = root.join(name).join("peers.json");
     let book = Arc::new(Mutex::new(book));
-    let discovery = Discovery::new(node.network.clone(), book, path.clone(), announce);
-    (discovery, path)
+    let discovery = Discovery::new(node.network.clone(), book.clone(), path.clone());
+    (discovery, path, book)
 }
 
 pub fn rounds(discovery: &Discovery, node: &Node, count: u64) {

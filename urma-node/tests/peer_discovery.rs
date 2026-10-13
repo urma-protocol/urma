@@ -100,15 +100,6 @@ impl Drop for Sink {
     }
 }
 
-fn closed_port() -> Multiaddr {
-    let port = TcpListener::bind("127.0.0.1:0")
-        .unwrap()
-        .local_addr()
-        .unwrap()
-        .port();
-    format!("/ip4/127.0.0.1/tcp/{port}").parse().unwrap()
-}
-
 fn fresh_id() -> PeerId {
     Keypair::generate_ed25519().public().to_peer_id()
 }
@@ -162,8 +153,14 @@ fn discovers(root: &Path) -> Value {
         "seed identified"
     );
     let status = a_discovery.status().unwrap();
-    let counts = (status.seeds, status.book, status.verified, status.gossip);
-    assert_eq!(counts, (1, 2, 2, 1));
+    let counts = (
+        status.seeds,
+        status.book,
+        status.reached,
+        status.reached_ever,
+        status.gossip,
+    );
+    assert_eq!(counts, (1, 2, 2, 2, 1));
     assert!(status.last_seed_round_error.is_none(), "{status:?}");
     assert!(status.last_gossip_error.is_none(), "{status:?}");
     json!({"connected":connected.len(),"learned":c.id.to_string()})
@@ -349,42 +346,65 @@ fn omitting(root: &Path) -> Value {
     json!({"gossiped":ids.len(),"liar_dialed":false})
 }
 
-fn seeds(root: &Path) -> Value {
-    let seed = Sink::start();
+fn seed_entry(address: &Multiaddr, failures: u32, banned_until: Option<u64>) -> Value {
+    json!({"peer_id":null,"addrs":[address.to_string()],"origin":"seed",
+        "last_success":null,"failures":failures,"banned_until":banned_until})
+}
+
+/// The startup pass ignores persisted backoff; afterwards an isolated node
+/// retries each seed every round once that seed's own backoff has expired.
+fn isolated_seeds(root: &Path) -> Value {
+    let (stale, fresh) = (Sink::start(), Sink::start());
     let a = node(root, "a", None);
-    let mut book = PeerBook::empty(a.genesis());
-    book.add(seed.address.clone(), Origin::Seed).unwrap();
+    let entries = vec![
+        seed_entry(&stale.address, 2, Some(now() + 3600)),
+        seed_entry(&fresh.address, 0, None),
+    ];
+    let book = write_book(&root.join("a").join("peers.json"), a.genesis(), entries);
     let (discovery, _) = discover(root, "a", &a, book);
-    stage(root, "seeds at startup, then every 600 rounds under target");
+    stage(
+        root,
+        "startup pass dials both seeds despite a persisted backoff",
+    );
+    let started = Instant::now();
     rounds(&discovery, &a, 1);
-    assert_eq!(seed.count(), 1);
+    assert_eq!((stale.count(), fresh.count()), (1, 1));
     let status = discovery.status().unwrap();
     assert!(status.last_seed_round_error.is_some() && status.last_seed_round_error_at.is_some());
-    rounds(&discovery, &a, Discovery::SEED_EVERY - 1);
-    assert_eq!(seed.count(), 1, "seeds idle between passes");
+    rounds(&discovery, &a, 20);
+    assert_eq!((stale.count(), fresh.count()), (1, 1), "backoff holds");
+    stage(root, "an isolated node redials the fresh seed after 60 s");
+    let retried = discovery_host::until(Duration::from_secs(80), || {
+        rounds(&discovery, &a, 1);
+        fresh.count() == 2
+    });
+    let waited = started.elapsed();
+    assert!(retried && waited >= Duration::from_secs(59), "{waited:?}");
+    assert_eq!(stale.count(), 1, "the stale seed still backs off");
+    json!({"retried_after":waited.as_secs() >= 59})
+}
+
+/// A connected node below target asks seeds only every SEED_EVERY rounds.
+fn connected_seeds(root: &Path) -> Value {
+    let live = node(root, "l", Some("127.0.0.1"));
+    let a = node(root, "a", None);
+    let mut book = PeerBook::empty(a.genesis());
+    book.add(live.listening(), Origin::Manual).unwrap();
+    let (discovery, _, shared) = discovery_host::discover_shared(root, "a", &a, book);
     rounds(&discovery, &a, 1);
-    assert_eq!(seed.count(), 2, "seeds re-queried while under target");
-    stage(root, "four verified entries skip the startup seed pass");
-    let late = Sink::start();
-    let b = node(root, "b", None);
-    let mut entries: Vec<Value> = (0..4)
-        .map(|_| {
-            manual_entry(
-                Some(fresh_id()),
-                &closed_port(),
-                (Some(now() - 10), 0, None),
-            )
-        })
-        .collect();
-    entries.push(
-        json!({"peer_id":null,"addrs":[late.address.to_string()],"origin":"seed",
-        "last_success":null,"failures":0,"banned_until":null}),
-    );
-    let book = write_book(&root.join("b").join("peers.json"), b.genesis(), entries);
-    let (discovery, _) = discover(root, "b", &b, book);
-    rounds(&discovery, &b, 1);
-    assert_eq!(late.count(), 0);
-    json!({"seed_passes":seed.count(),"bootstrap_skipped":true})
+    assert_eq!(a.connected(), vec![live.id]);
+    let seed = Sink::start();
+    shared
+        .lock()
+        .unwrap()
+        .add(seed.address.clone(), Origin::Seed)
+        .unwrap();
+    stage(root, "connected under target: seeds every 600 rounds");
+    rounds(&discovery, &a, Discovery::SEED_EVERY - 1);
+    assert_eq!(seed.count(), 0, "no seed pass between periods");
+    rounds(&discovery, &a, 1);
+    assert_eq!(seed.count(), 1, "seed pass at round 600");
+    json!({"seed_passes":seed.count()})
 }
 
 fn budget(root: &Path) -> Value {
@@ -484,10 +504,11 @@ fn service(root: &Path) -> Value {
     let counts = (
         discovery.seeds,
         discovery.book,
-        discovery.verified,
+        discovery.reached,
+        discovery.reached_ever,
         discovery.gossip,
     );
-    assert_eq!(counts, (1, 1, 0, 0));
+    assert_eq!(counts, (1, 1, 0, 0, 0));
     assert!(discovery.last_seed_round_error_at.is_some());
     assert!(discovery.last_gossip_error.is_none());
     let body = http(address, "/v1/overlay/book").unwrap();
@@ -514,7 +535,8 @@ fn peer_discovery_host() {
         "private" => private(&root),
         "backoff" => backoff(&root),
         "omitting" => omitting(&root),
-        "seeds" => seeds(&root),
+        "isolated_seeds" => isolated_seeds(&root),
+        "connected_seeds" => connected_seeds(&root),
         "budget" => budget(&root),
         "service" => service(&root),
         _ => panic!("unknown owned scenario"),
@@ -549,9 +571,15 @@ fn an_omitting_peer_is_neither_dialed_nor_synced_nor_gossiped() {
 }
 
 #[test]
-fn seeds_are_dialed_at_startup_and_requeried_every_600_rounds_under_target() {
-    let checks = run(HOST, "seeds");
-    assert_eq!(checks["seed_passes"], 2);
+fn startup_ignores_persisted_seed_backoff_and_isolated_nodes_retry_after_it() {
+    let checks = run(HOST, "isolated_seeds");
+    assert_eq!(checks["retried_after"], true);
+}
+
+#[test]
+fn a_connected_node_under_target_queries_seeds_every_600_rounds() {
+    let checks = run(HOST, "connected_seeds");
+    assert_eq!(checks["seed_passes"], 1);
 }
 
 #[test]

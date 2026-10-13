@@ -237,7 +237,7 @@ fn named_seeds_stay_unidentified_and_the_local_node_is_dropped() {
     book.add(ourselves.clone(), Origin::Seed).unwrap();
     book.succeeded(&ourselves, peer(LOCAL), peer(LOCAL), NOW);
     assert_eq!(book.entries().len(), 1, "the book never holds this node");
-    assert_eq!(book.seeds(&[]), vec![named_seed]);
+    assert_eq!(book.seeds(&[], None), vec![named_seed]);
 }
 
 #[test]
@@ -261,5 +261,6 @@ fn gossip_export_is_bounded_newest_first_and_merge_takes_four_addresses() {
     merge(&mut book, &[gossip(peer(100), &refs)]);
     assert_eq!(find(&book, peer(100)).addrs.len(), PeerBook::ADDRESSES);
     let stats = book.stats();
-    assert_eq!((stats.book, stats.verified, stats.gossip), (41, 40, 1));
+    let counts = (stats.book, stats.reached, stats.reached_ever, stats.gossip);
+    assert_eq!(counts, (41, 40, 40, 1));
 }
