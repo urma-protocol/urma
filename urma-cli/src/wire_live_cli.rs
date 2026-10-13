@@ -62,6 +62,8 @@ pub(crate) struct ReadSource {
         help = "Read only the local index, even when an operator archive is configured"
     )]
     local: bool,
+    #[arg(long, help = "Use Litecoin testnet instead of mainnet")]
+    testnet: bool,
 }
 #[derive(Subcommand)]
 pub(crate) enum ReadCommand {
@@ -131,7 +133,7 @@ pub(crate) fn index(args: IndexArgs) -> Result<Value, Error> {
 /// with its coverage; any failure warns and falls back to the local index.
 fn open_index(source: &ReadSource) -> Result<(Index, Value), Error> {
     if !source.local {
-        if let Some(view) = operator_index() {
+        if let Some(view) = operator_index(source.testnet) {
             return Ok(view);
         }
     }
@@ -141,14 +143,14 @@ fn open_index(source: &ReadSource) -> Result<(Index, Value), Error> {
 
 /// The operator archive's view, or nothing: an unreadable configuration, a
 /// network mismatch or an unavailable archive all leave the local index.
-fn operator_index() -> Option<(Index, Value)> {
+fn operator_index(testnet: bool) -> Option<(Index, Value)> {
     let attempt = || -> Result<Option<(Index, Value)>, Error> {
         let Some(settings) = config::load()?.archive else {
             return Ok(None);
         };
         Ok(Some(wire_archive::read(
             &settings,
-            config::explicit_chain()?,
+            config::explicit_chain(testnet)?,
         )?))
     };
     match attempt() {

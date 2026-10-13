@@ -266,29 +266,30 @@ pub(crate) fn load() -> Result<Settings, Error> {
     )?)
 }
 
-/// The network named by URMA_NETWORK, or none when it is not set.
-pub(crate) fn explicit_chain() -> Result<Option<Chain>, Error> {
-    match std::env::var_os("URMA_NETWORK") {
-        Some(_named) => Ok(Some(chain(false)?)),
-        None => Ok(None),
+/// The network the user selected explicitly (`--testnet` or URMA_NETWORK),
+/// or none; every network decision and check resolves through this one place.
+pub(crate) fn explicit_chain(testnet: bool) -> Result<Option<Chain>, Error> {
+    if testnet {
+        return Ok(Some(Chain::LitecoinTestnet));
+    }
+    let Some(name) = std::env::var_os("URMA_NETWORK") else {
+        return Ok(None);
+    };
+    match name.to_str().context("URMA_NETWORK must be UTF-8")? {
+        "bitcoin-mainnet" => Ok(Some(Chain::BitcoinMainnet)),
+        "litecoin-mainnet" => Ok(Some(Chain::LitecoinMainnet)),
+        "litecoin-testnet" => Ok(Some(Chain::LitecoinTestnet)),
+        "bitcoin-regtest" => Ok(Some(Chain::BitcoinRegtest)),
+        "bitcoin-testnet4" => Ok(Some(Chain::BitcoinTestnet4)),
+        other => Err(Error::Invalid(format!("invalid URMA_NETWORK {other}"))),
     }
 }
 
+/// The selected network, Litecoin mainnet when none was chosen explicitly.
 pub(crate) fn chain(testnet: bool) -> Result<Chain, Error> {
-    if testnet {
-        return Ok(Chain::LitecoinTestnet);
-    }
-    let name = match std::env::var_os("URMA_NETWORK") {
-        Some(name) => name,
-        None => return Ok(Chain::LitecoinMainnet),
-    };
-    match name.to_str().context("URMA_NETWORK must be UTF-8")? {
-        "bitcoin-mainnet" => Ok(Chain::BitcoinMainnet),
-        "litecoin-mainnet" => Ok(Chain::LitecoinMainnet),
-        "litecoin-testnet" => Ok(Chain::LitecoinTestnet),
-        "bitcoin-regtest" => Ok(Chain::BitcoinRegtest),
-        "bitcoin-testnet4" => Ok(Chain::BitcoinTestnet4),
-        other => Err(Error::Invalid(format!("invalid URMA_NETWORK {other}"))),
+    match explicit_chain(testnet)? {
+        Some(chain) => Ok(chain),
+        None => Ok(Chain::LitecoinMainnet),
     }
 }
 
