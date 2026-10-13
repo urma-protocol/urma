@@ -102,11 +102,12 @@ fn report_funding_check() {
     }
 }
 
+/// The snapshot and its scan report are written before the vault is unlocked,
+/// so a missing identity still leaves scan.json for review.
 fn prepare(
     args: &PublishArgs,
-    vault: &UnlockedVault,
     directory: &std::path::Path,
-) -> Result<workflows::PreparedReport, Error> {
+) -> Result<(workflows::PreparedReport, UnlockedVault), Error> {
     let guard = urma_git::workspace::lock(directory).map_err(boundary)?;
     urma_git::workspace::ensure_unpublished(directory).map_err(boundary)?;
     let mut limits = config::git_limits()?;
@@ -116,9 +117,10 @@ fn prepare(
         urma_git::workspace::snapshot(&args.repo, directory, &limits, &name)
     })
     .map_err(boundary)?;
+    let vault = stage("Unlocking the active identity...", || args.access.open())?;
     let signer = vault.keyring().active()?;
     let length = directory.join("object.bin").metadata()?.len();
-    let funder = funding_account(vault, args.node.chain()?)?;
+    let funder = funding_account(&vault, args.node.chain()?)?;
     let quote = quote::multipart(length, &signer, &funder, args.fee_rate)?;
     report_snapshot(directory, &snapshot, &quote);
     let ceiling =
@@ -157,7 +159,7 @@ fn prepare(
     .map_err(boundary)?;
     funding_cli::preflight(&node, directory)?;
     drop(guard);
-    Ok(report)
+    Ok((report, vault))
 }
 
 fn describe(
@@ -269,19 +271,19 @@ pub(crate) fn run(args: PublishArgs) -> Result<Value, Error> {
             args.node.chain()?.label()
         ));
     }
-    let vault = stage("Unlocking the active identity...", || args.access.open())?;
-    let (directory, report) = match &args.plan {
+    let (directory, report, vault) = match &args.plan {
         Some(path) => (
             path.clone(),
             workflows::inspect_plan(path).map_err(boundary)?,
+            stage("Unlocking the active identity...", || args.access.open())?,
         ),
         None => {
             let directory = config::publication_directory(
                 &args.repo,
                 config::PublicationOutput(args.output.clone()),
             )?;
-            let report = prepare(&args, &vault, &directory)?;
-            (directory, report)
+            let (report, vault) = prepare(&args, &directory)?;
+            (directory, report, vault)
         }
     };
     require_git_funder(&directory, &funding_account(&vault, args.node.chain()?)?)?;
