@@ -256,43 +256,34 @@ fn discovers(root: &Path) -> Value {
 fn private(root: &Path) -> Value {
     let d = node(root, "d", Some(PUBLIC[2]));
     let a = node(root, "a", Some(PUBLIC[0]));
-    let at = |text: &str| -> Multiaddr { text.parse().unwrap() };
-    let other = || {
-        Keypair::generate_ed25519()
-            .public()
-            .to_peer_id()
-            .to_string()
+    let other = || Keypair::generate_ed25519().public().to_peer_id();
+    let hint = |addrs: &[&str]| GossipPeer {
+        peer_id: other(),
+        addrs: addrs.iter().map(|text| text.parse().unwrap()).collect(),
+        last_seen: now(),
     };
     let listed = vec![
         GossipPeer {
-            peer_id: d.id.to_string(),
+            peer_id: d.id,
             addrs: vec![bare(&d.listening())],
             last_seen: now(),
         },
+        hint(&[
+            "/ip4/127.0.0.1/tcp/1",
+            "/ip4/10.0.0.1/tcp/1",
+            "/ip4/192.168.0.1/tcp/1",
+            "/ip4/169.254.1.1/tcp/1",
+        ]),
+        hint(&["/ip6/::1/tcp/1", "/ip6/fd00::1/tcp/1", "/ip6/fe80::1/tcp/1"]),
+        // Names and mapped or reserved literals are refused from gossip too.
+        hint(&[
+            "/dns4/peer.example/tcp/1",
+            "/dnsaddr/peer.example",
+            "/ip6/::ffff:8.8.8.8/tcp/1",
+            "/ip4/240.0.0.1/tcp/1",
+        ]),
         GossipPeer {
-            peer_id: other(),
-            addrs: [
-                "/ip4/127.0.0.1/tcp/1",
-                "/ip4/10.0.0.1/tcp/1",
-                "/ip4/192.168.0.1/tcp/1",
-            ]
-            .map(at)
-            .to_vec(),
-            last_seen: now(),
-        },
-        GossipPeer {
-            peer_id: other(),
-            addrs: [
-                "/ip6/::1/tcp/1",
-                "/ip6/fd00::1/tcp/1",
-                "/ip4/169.254.1.1/tcp/1",
-            ]
-            .map(at)
-            .to_vec(),
-            last_seen: now(),
-        },
-        GossipPeer {
-            peer_id: a.id.to_string(),
+            peer_id: a.id,
             addrs: vec![bare(&a.listening())],
             last_seen: now(),
         },
@@ -423,8 +414,8 @@ fn omitting(root: &Path) -> Value {
     let Reply::Peers(listed) = client.call(&to, VERSION, Kind::Peers { limit: 32 }) else {
         panic!("Peers refused");
     };
-    let ids: Vec<&str> = listed.iter().map(|peer| peer.peer_id.as_str()).collect();
-    assert_eq!(ids, vec![honest.id.to_string()]);
+    let ids: Vec<PeerId> = listed.iter().map(|peer| peer.peer_id).collect();
+    assert_eq!(ids, vec![honest.id]);
     json!({"gossiped":ids.len(),"liar_dialed":false})
 }
 

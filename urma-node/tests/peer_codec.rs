@@ -542,10 +542,7 @@ fn gossip_peer() -> GossipPeer {
         .map(|text| text.parse().unwrap())
         .to_vec();
     GossipPeer {
-        peer_id: Keypair::generate_ed25519()
-            .public()
-            .to_peer_id()
-            .to_string(),
+        peer_id: Keypair::generate_ed25519().public().to_peer_id(),
         addrs,
         last_seen: 1_800_000_000,
     }
@@ -580,7 +577,7 @@ fn v4_peers_request_and_reply_have_stable_shapes_and_round_trip() {
             .unwrap();
         assert_eq!(serde_json::to_value(&decoded).unwrap(), value);
         let peers = gossip_peers();
-        let id = peers[0].peer_id.clone();
+        let id = peers[0].peer_id;
         for listed in [peers, Vec::new()] {
             let answer = response(Reply::Peers(listed));
             let expected = serde_json::to_vec(&answer).unwrap();
@@ -598,8 +595,9 @@ fn v4_peers_request_and_reply_have_stable_shapes_and_round_trip() {
             assert_eq!(serde_json::to_vec(&decoded).unwrap(), expected);
         }
         let mut listed = gossip_peers();
-        listed[0].peer_id = id.clone();
+        listed[0].peer_id = id;
         let shaped = serde_json::to_value(response(Reply::Peers(listed))).unwrap();
+        let id = id.to_string();
         assert_eq!(
             shaped["result"],
             json!({"status":"peers","package":[{"peer_id":id,
@@ -664,6 +662,8 @@ fn malformed_peers_requests_and_replies_are_rejected() {
         unknown["result"]["package"][0]["extra"] = true.into();
         let mut numeric_id = good.clone();
         numeric_id["result"]["package"][0]["peer_id"] = 7.into();
+        let mut bad_id = good.clone();
+        bad_id["result"]["package"][0]["peer_id"] = "bad".into();
         let mut bad_addr = good.clone();
         bad_addr["result"]["package"][0]["addrs"] = json!(["not a multiaddr"]);
         let mut missing = good.clone();
@@ -671,8 +671,7 @@ fn malformed_peers_requests_and_replies_are_rejected() {
             .as_object_mut()
             .unwrap()
             .remove("last_seen");
-        // Base58 identity checks belong to the client's reply validation.
-        for body in [unknown, numeric_id, bad_addr, missing] {
+        for body in [unknown, numeric_id, bad_id, bad_addr, missing] {
             let body = serde_json::to_vec(&body).unwrap();
             let error = Codec
                 .read_response(&protocol, &mut Cursor::new(frame(&body)))

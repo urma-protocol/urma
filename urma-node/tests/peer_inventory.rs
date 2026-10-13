@@ -9,6 +9,7 @@
 #![cfg(target_os = "linux")]
 #[allow(dead_code)]
 mod common;
+#[allow(dead_code)]
 #[path = "common/inventory_peer.rs"]
 mod inventory_peer;
 use bitcoin::{
