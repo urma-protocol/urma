@@ -13,6 +13,7 @@ pub use crate::light::{LightSync, Progress};
 pub use bootstrap::{HeaderBootstrap, context_headers};
 pub use discovery::{Discovery, Next};
 pub use headers::{Anchor, HeaderChain};
-pub use peer::Peer;
+pub use peer::{Hello, Peer};
 pub use provider::P2pProvider;
 pub use source::VerifiedBlock;
+pub use wire::Message;

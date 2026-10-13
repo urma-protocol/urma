@@ -32,8 +32,36 @@ enum Waited<T> {
     Keep,
 }
 
+#[derive(Clone, Debug)]
+pub struct Hello {
+    pub services: ServiceFlags,
+    pub user_agent: String,
+    pub relay: bool,
+    pub negotiate: bool,
+}
+
+impl Hello {
+    pub fn light() -> Self {
+        Self {
+            services: ServiceFlags::NONE,
+            user_agent: P2P_USER_AGENT.to_owned(),
+            relay: false,
+            negotiate: false,
+        }
+    }
+}
+
 impl Peer {
     pub fn connect(chain: Chain, address: SocketAddr, our_height: u64) -> Result<Self, Error> {
+        Self::connect_with(chain, address, our_height, &Hello::light())
+    }
+
+    pub fn connect_with(
+        chain: Chain,
+        address: SocketAddr,
+        our_height: u64,
+        hello: &Hello,
+    ) -> Result<Self, Error> {
         let stream =
             TcpStream::connect_timeout(&address, Duration::from_secs(P2P_CONNECT_TIMEOUT_SECS))?;
         stream.set_read_timeout(Some(Duration::from_secs(P2P_READ_TIMEOUT_SECS)))?;
@@ -48,11 +76,11 @@ impl Peer {
             learned: Vec::new(),
             version: None,
         };
-        peer.handshake(our_height)?;
+        peer.handshake(our_height, hello)?;
         Ok(peer)
     }
 
-    fn handshake(&mut self, our_height: u64) -> Result<(), Error> {
+    fn handshake(&mut self, our_height: u64, hello: &Hello) -> Result<(), Error> {
         let elapsed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .map_err(|error| {
@@ -60,15 +88,16 @@ impl Peer {
             })?;
         let now = i64::try_from(elapsed.as_secs())?;
         let mut version = VersionMessage::new(
-            ServiceFlags::NONE,
+            hello.services,
             now,
             Address::new(&self.address, ServiceFlags::NONE),
-            Address::new(&"0.0.0.0:0".parse::<SocketAddr>()?, ServiceFlags::NONE),
+            Address::new(&"0.0.0.0:0".parse::<SocketAddr>()?, hello.services),
             rand::random(),
-            P2P_USER_AGENT.to_owned(),
+            hello.user_agent.clone(),
             i32::try_from(our_height)?,
         );
         version.version = P2P_PROTOCOL_VERSION;
+        version.relay = hello.relay;
         self.send(NetworkMessage::Version(version))?;
         let deadline = Instant::now() + Duration::from_secs(P2P_HANDSHAKE_TIMEOUT_SECS);
         let mut versioned = false;
@@ -88,12 +117,19 @@ impl Peer {
                     self.services = theirs.services;
                     self.start_height = u64::try_from(theirs.start_height.max(0))?;
                     self.version = Some(theirs);
+                    if hello.negotiate {
+                        self.send(NetworkMessage::WtxidRelay)?;
+                        self.send(NetworkMessage::SendAddrV2)?;
+                    }
                     self.send(NetworkMessage::Verack)?;
                     versioned = true;
                 }
                 Message::Verack => acknowledged = true,
                 other => self.absorb(other)?,
             }
+        }
+        if hello.negotiate {
+            self.send(NetworkMessage::SendHeaders)?;
         }
         self.send(NetworkMessage::GetAddr)?;
         Ok(())
@@ -104,11 +140,19 @@ impl Peer {
     }
 
     fn send(&mut self, payload: NetworkMessage) -> Result<(), Error> {
+        tracing::trace!(peer = %self.address, command = payload.cmd(), "p2p send");
         wire::send(&mut self.stream, self.magic, payload)
     }
 
-    fn receive(&mut self) -> Result<Message, Error> {
-        wire::receive(&mut self.stream, self.magic)
+    pub fn receive(&mut self) -> Result<Message, Error> {
+        let received = wire::receive(&mut self.stream, self.magic);
+        match &received {
+            Ok(message) => {
+                tracing::trace!(peer = %self.address, command = %message.command(), "p2p receive")
+            }
+            Err(error) => tracing::trace!(peer = %self.address, %error, "p2p receive failed"),
+        }
+        received
     }
 
     pub fn absorb_next(&mut self) -> Result<(), Error> {
@@ -116,7 +160,7 @@ impl Peer {
         self.absorb(message)
     }
 
-    fn absorb(&mut self, message: Message) -> Result<(), Error> {
+    pub fn absorb(&mut self, message: Message) -> Result<(), Error> {
         match message {
             Message::Ping(nonce) => self.send(NetworkMessage::Pong(nonce)),
             Message::Addr(rows) => {

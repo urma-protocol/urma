@@ -1,5 +1,6 @@
 use bitcoin::p2p::ServiceFlags;
-use std::collections::BTreeMap;
+use bitcoin::p2p::address::AddrV2;
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::{SocketAddr, ToSocketAddrs};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock, mpsc};
@@ -10,17 +11,10 @@ use urma_runtime::config::{
     LITECOIN_MAINNET_CHECKPOINT, LITECOIN_TESTNET_CHECKPOINT, P2P_LITECOIN_NODE_MWEB,
 };
 use urma_runtime::error::Error;
-use urma_runtime::p2p::{Discovery, Next, Peer};
+use urma_runtime::p2p::{Discovery, Hello, Message, Next, P2pProvider, Peer};
 
 const SAMPLE: usize = 20;
-static START: OnceLock<Instant> = OnceLock::new();
-
-fn at() -> String {
-    format!(
-        "{:>5.1}s",
-        START.get_or_init(Instant::now).elapsed().as_secs_f64()
-    )
-}
+const FIRST: usize = 6;
 const SERVICES: [(&str, u64); 8] = [
     ("NETWORK", 1),
     ("GETUTXO", 1 << 1),
@@ -31,6 +25,15 @@ const SERVICES: [(&str, u64); 8] = [
     ("P2P_V2", 1 << 11),
     ("MWEB", P2P_LITECOIN_NODE_MWEB),
 ];
+static START: OnceLock<Instant> = OnceLock::new();
+
+fn at() -> String {
+    format!("{:>6.1}s", elapsed())
+}
+
+fn elapsed() -> f64 {
+    START.get_or_init(Instant::now).elapsed().as_secs_f64()
+}
 
 struct Options {
     chain: Chain,
@@ -38,19 +41,33 @@ struct Options {
     seconds: u64,
     seeds: Vec<String>,
     verbose: bool,
+    quiet: bool,
+    hello: Hello,
+    marks: Vec<u64>,
+    catchup: Option<u64>,
+    pinned: Vec<SocketAddr>,
+    trace: bool,
 }
 
-struct Reached {
+struct Session {
     address: SocketAddr,
     agent: String,
     height: u64,
+    opened: f64,
+    closed: Option<f64>,
+    reason: Option<String>,
+    messages: usize,
+    first: Vec<String>,
     advertised: usize,
 }
 
 #[derive(Default)]
-struct Tally {
-    reached: Vec<Reached>,
-    refused: usize,
+struct Stats {
+    seeded: HashSet<SocketAddr>,
+    gossip: HashMap<String, &'static str>,
+    dials: usize,
+    failures: BTreeMap<String, usize>,
+    sessions: Vec<Session>,
 }
 
 struct Shared {
@@ -58,15 +75,34 @@ struct Shared {
     height: u64,
     deadline: Instant,
     verbose: bool,
+    quiet: bool,
+    hello: Hello,
     discovery: Mutex<Discovery>,
-    tally: Mutex<Tally>,
+    stats: Mutex<Stats>,
 }
 
 fn usage() -> Error {
     Error::Invalid(
-        "usage: litecoin-peers [--testnet|--mainnet] [--peers N] [--seconds S] [--seed HOST]... [--verbose]"
+        "usage: litecoin-peers [--testnet|--mainnet] [--peers N] [--seconds S] [--seed HOST]... \
+         [--services none|LIST] [--agent UA] [--relay true|false] [--marks 120,300,600] \
+         [--catchup BLOCKS] [--peer ADDR]... [--negotiate] [--trace] [--quiet] [--verbose]"
             .into(),
     )
+}
+
+fn service_flags(list: &str) -> Result<ServiceFlags, Error> {
+    let mut bits = 0u64;
+    for name in list.split(',').filter(|name| *name != "none") {
+        let upper = name.to_ascii_uppercase();
+        let found = SERVICES.iter().find(|(known, _)| {
+            *known == upper || (upper == "LIMITED" && *known == "NETWORK_LIMITED")
+        });
+        let Some((_, bit)) = found else {
+            return Err(Error::Invalid(format!("unknown service {name}")));
+        };
+        bits |= bit;
+    }
+    Ok(ServiceFlags::from(bits))
 }
 
 fn options() -> Result<Options, Error> {
@@ -76,6 +112,12 @@ fn options() -> Result<Options, Error> {
         seconds: 60,
         seeds: Vec::new(),
         verbose: false,
+        quiet: false,
+        hello: Hello::light(),
+        marks: vec![120, 300, 600],
+        catchup: None,
+        pinned: Vec::new(),
+        trace: false,
     };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
@@ -85,6 +127,26 @@ fn options() -> Result<Options, Error> {
             "--peers" => options.peers = args.next().ok_or_else(usage)?.parse()?,
             "--seconds" => options.seconds = args.next().ok_or_else(usage)?.parse()?,
             "--seed" => options.seeds.push(args.next().ok_or_else(usage)?),
+            "--services" => {
+                options.hello.services = service_flags(&args.next().ok_or_else(usage)?)?
+            }
+            "--agent" => options.hello.user_agent = args.next().ok_or_else(usage)?,
+            "--relay" => {
+                options.hello.relay = match args.next().ok_or_else(usage)?.as_str() {
+                    "true" => true,
+                    "false" => false,
+                    _ => return Err(usage()),
+                }
+            }
+            "--catchup" => options.catchup = Some(args.next().ok_or_else(usage)?.parse()?),
+            "--marks" => {
+                let list = args.next().ok_or_else(usage)?;
+                options.marks = list.split(',').map(str::parse).collect::<Result<_, _>>()?;
+            }
+            "--peer" => options.pinned.push(args.next().ok_or_else(usage)?.parse()?),
+            "--negotiate" => options.hello.negotiate = true,
+            "--trace" => options.trace = true,
+            "--quiet" => options.quiet = true,
             "--verbose" => options.verbose = true,
             _ => return Err(usage()),
         }
@@ -110,11 +172,14 @@ fn services(flags: ServiceFlags) -> String {
     if bits & !known != 0 {
         names.push(format!("0x{:x}", bits & !known));
     }
-    names.join("|")
+    match names.is_empty() {
+        true => "NONE".into(),
+        false => names.join("|"),
+    }
 }
 
-fn resolve(chain: Chain, extra: &[String]) -> Vec<SocketAddr> {
-    let params = chain.params();
+fn resolve(shared: &Shared, extra: &[String]) -> Vec<SocketAddr> {
+    let params = shared.chain.params();
     let hosts: Vec<String> = params
         .dns_seeds
         .iter()
@@ -139,55 +204,146 @@ fn resolve(chain: Chain, extra: &[String]) -> Vec<SocketAddr> {
     for (host, outcome) in answers.iter().take(hosts.len()) {
         match outcome {
             Ok(found) => {
-                println!("{} seed  {host:<36} {} addresses", at(), found.len());
+                let v6 = found.iter().filter(|address| address.is_ipv6()).count();
+                println!(
+                    "{} seed  {host:<36} {} addresses ({v6} ipv6)",
+                    at(),
+                    found.len()
+                );
                 addresses.extend(found);
             }
             Err(error) => println!("{} seed  {host:<36} failed: {error}", at()),
         }
     }
+    lock(&shared.stats).seeded.extend(addresses.iter().copied());
     addresses
 }
 
-fn connected(shared: &Shared, peer: &Peer) {
-    let Some(version) = &peer.version else {
-        return;
-    };
-    println!(
-        "{} peer  {:<26} {} proto {} height {} relay {} [{}]",
-        at(),
-        peer.address,
-        version.user_agent,
-        version.version,
-        version.start_height,
-        version.relay,
-        services(version.services)
-    );
-    if shared.verbose {
-        println!("       version {version:?}");
+fn family_v2(address: &AddrV2) -> &'static str {
+    match address {
+        AddrV2::Ipv4(_) => "ipv4",
+        AddrV2::Ipv6(_) => "ipv6",
+        AddrV2::TorV2(_) | AddrV2::TorV3(_) => "onion",
+        AddrV2::I2p(_) => "i2p",
+        AddrV2::Cjdns(_) => "cjdns",
+        AddrV2::Unknown(..) => "other",
     }
 }
 
-fn advertised(shared: &Shared, peer: &mut Peer, total: &mut usize) {
+fn gossip(shared: &Shared, message: &Message) {
+    let mut stats = lock(&shared.stats);
+    match message {
+        Message::Addr(rows) => {
+            for (_, address) in rows {
+                let (key, family) = match address.socket_addr() {
+                    Ok(socket) if socket.is_ipv4() => (socket.to_string(), "ipv4"),
+                    Ok(socket) => (socket.to_string(), "ipv6"),
+                    Err(_) => (format!("{:?}:{}", address.address, address.port), "onion"),
+                };
+                stats.gossip.insert(key, family);
+            }
+        }
+        Message::AddrV2(rows) => {
+            for row in rows {
+                stats
+                    .gossip
+                    .insert(format!("{:?}:{}", row.addr, row.port), family_v2(&row.addr));
+            }
+        }
+        _ => (),
+    }
+}
+
+fn dial_failure(error: &Error) -> String {
+    match error {
+        Error::Io(cause) => match cause.kind() {
+            ErrorKind::TimedOut => "connect timeout".into(),
+            ErrorKind::WouldBlock => "handshake read timeout".into(),
+            ErrorKind::ConnectionRefused => "refused".into(),
+            ErrorKind::NetworkUnreachable | ErrorKind::HostUnreachable => "unreachable".into(),
+            ErrorKind::UnexpectedEof => "handshake eof".into(),
+            ErrorKind::ConnectionReset => "handshake reset".into(),
+            other => format!("io {other:?}"),
+        },
+        other => {
+            let text = other.to_string();
+            match () {
+                _ if text.contains("lacks block and witness") => "rejected: peer services".into(),
+                _ if text.contains("handshake timed out") => "handshake timeout".into(),
+                _ => format!("other: {}", text.chars().take(48).collect::<String>()),
+            }
+        }
+    }
+}
+
+fn session_failure(error: &Error) -> Option<String> {
+    match error {
+        Error::Io(cause) => match cause.kind() {
+            ErrorKind::WouldBlock | ErrorKind::TimedOut => None,
+            ErrorKind::UnexpectedEof => Some("eof".into()),
+            ErrorKind::ConnectionReset => Some("reset".into()),
+            other => Some(format!("io {other:?}")),
+        },
+        other => Some(format!(
+            "protocol: {}",
+            other.to_string().chars().take(48).collect::<String>()
+        )),
+    }
+}
+
+fn update(shared: &Shared, address: SocketAddr, change: impl FnOnce(&mut Session)) {
+    let mut stats = lock(&shared.stats);
+    let session = stats
+        .sessions
+        .iter_mut()
+        .rev()
+        .find(|session| session.address == address && session.closed.is_none());
+    if let Some(session) = session {
+        change(session);
+    }
+}
+
+fn announce(shared: &Shared, peer: &Peer) {
+    let Some(version) = &peer.version else {
+        return;
+    };
+    if !shared.quiet {
+        println!(
+            "{} peer  {:<26} {} proto {} height {} relay {} [{}]",
+            at(),
+            peer.address,
+            version.user_agent,
+            version.version,
+            version.start_height,
+            version.relay,
+            services(version.services)
+        );
+    }
+    if shared.verbose {
+        println!("        version {version:?}");
+    }
+}
+
+fn learned(shared: &Shared, peer: &mut Peer) {
     if peer.learned.is_empty() {
         return;
     }
-    let batch: Vec<SocketAddr> = std::mem::take(&mut peer.learned);
-    *total += batch.len();
-    let sample: Vec<String> = batch.iter().take(SAMPLE).map(ToString::to_string).collect();
-    println!(
-        "{} addr  {:<26} +{} (total {}): {}",
-        at(),
-        peer.address,
-        batch.len(),
-        total,
-        sample.join(" ")
-    );
-    for row in lock(&shared.tally)
-        .reached
-        .iter_mut()
-        .filter(|row| row.address == peer.address)
-    {
-        row.advertised = *total;
+    let batch = std::mem::take(&mut peer.learned);
+    let mut total = 0;
+    update(shared, peer.address, |session| {
+        session.advertised += batch.len();
+        total = session.advertised;
+    });
+    if !shared.quiet {
+        let sample: Vec<String> = batch.iter().take(SAMPLE).map(ToString::to_string).collect();
+        println!(
+            "{} addr  {:<26} +{} (total {}): {}",
+            at(),
+            peer.address,
+            batch.len(),
+            total,
+            sample.join(" ")
+        );
     }
     let mut discovery = lock(&shared.discovery);
     for address in batch {
@@ -196,21 +352,33 @@ fn advertised(shared: &Shared, peer: &mut Peer, total: &mut usize) {
 }
 
 fn listen(shared: &Shared, mut peer: Peer) {
-    connected(shared, &peer);
-    let mut total = 0;
+    announce(shared, &peer);
     while Instant::now() < shared.deadline {
-        match peer.absorb_next() {
-            Ok(()) => advertised(shared, &mut peer, &mut total),
-            Err(Error::Io(error))
-                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) =>
-            {
-                if shared.verbose {
-                    println!("{} idle  {:<26} {error}", at(), peer.address);
+        let outcome = peer.receive().and_then(|message| {
+            let name = message.command();
+            gossip(shared, &message);
+            update(shared, peer.address, |session| {
+                session.messages += 1;
+                if session.first.len() < FIRST {
+                    session.first.push(name);
                 }
-            }
+            });
+            peer.absorb(message)
+        });
+        match outcome {
+            Ok(()) => learned(shared, &mut peer),
             Err(error) => {
-                println!("{} drop  {:<26} {error}", at(), peer.address);
-                break;
+                let Some(reason) = session_failure(&error) else {
+                    continue;
+                };
+                if !shared.quiet {
+                    println!("{} drop  {:<26} {reason}: {error}", at(), peer.address);
+                }
+                update(shared, peer.address, |session| {
+                    session.closed = Some(elapsed());
+                    session.reason = Some(reason);
+                });
+                return;
             }
         }
     }
@@ -223,87 +391,275 @@ fn worker(shared: Arc<Shared>) {
             thread::sleep(Duration::from_millis(500));
             continue;
         };
-        match Peer::connect(shared.chain, address, shared.height) {
+        lock(&shared.stats).dials += 1;
+        match Peer::connect_with(shared.chain, address, shared.height, &shared.hello) {
             Ok(peer) => {
                 let agent = match &peer.version {
                     Some(version) => version.user_agent.clone(),
                     None => String::new(),
                 };
-                lock(&shared.tally).reached.push(Reached {
+                lock(&shared.stats).sessions.push(Session {
                     address,
                     agent,
                     height: peer.start_height,
+                    opened: elapsed(),
+                    closed: None,
+                    reason: None,
+                    messages: 0,
+                    first: Vec::new(),
                     advertised: 0,
                 });
                 listen(&shared, peer);
             }
             Err(error) => {
-                lock(&shared.tally).refused += 1;
+                let reason = dial_failure(&error);
                 if shared.verbose {
-                    println!("{} skip  {address:<26} {error}", at());
+                    println!("{} skip  {address:<26} {reason}: {error}", at());
                 }
+                *lock(&shared.stats).failures.entry(reason).or_insert(0) += 1;
             }
         }
     }
 }
 
-fn summary(tally: &Tally, seconds: u64) {
-    let mut heights: Vec<u64> = tally.reached.iter().map(|row| row.height).collect();
+fn families(gossip: &HashMap<String, &'static str>) -> String {
+    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for family in gossip.values() {
+        *counts.entry(family).or_insert(0) += 1;
+    }
+    let parts: Vec<String> = counts
+        .iter()
+        .map(|(name, count)| format!("{name} {count}"))
+        .collect();
+    parts.join(", ")
+}
+
+fn snapshot(shared: &Shared) {
+    let stats = lock(&shared.stats);
+    let now = elapsed();
+    let alive = stats
+        .sessions
+        .iter()
+        .filter(|session| session.closed.is_none())
+        .count();
+    let pool = lock(&shared.discovery).len();
+    println!(
+        "{} mark  seeds unique {} | gossip unique {} ({}) | dials {} | handshakes {} | alive {alive} | pool {pool} | t={now:.0}",
+        at(),
+        stats.seeded.len(),
+        stats.gossip.len(),
+        families(&stats.gossip),
+        stats.dials,
+        stats.sessions.len()
+    );
+}
+
+fn lifetime(session: &Session, end: f64) -> f64 {
+    match session.closed {
+        Some(closed) => closed - session.opened,
+        None => end - session.opened,
+    }
+}
+
+fn summary(shared: &Shared, options: &Options) {
+    snapshot(shared);
+    let stats = lock(&shared.stats);
+    let end = elapsed();
+    let mut buckets: BTreeMap<&str, usize> = BTreeMap::new();
+    let mut drops: BTreeMap<String, usize> = BTreeMap::new();
+    let (mut silent, mut talked) = (0, 0);
+    for session in &stats.sessions {
+        let life = lifetime(session, end);
+        let bucket = match life {
+            l if l < 5.0 => "a <5s",
+            l if l < 30.0 => "b 5-30s",
+            l if l < 60.0 => "c 30-60s",
+            l if l < 300.0 => "d 60-300s",
+            _ => "e 300s+",
+        };
+        *buckets.entry(bucket).or_insert(0) += 1;
+        let reason = match &session.reason {
+            Some(reason) => reason.clone(),
+            None => "alive at end".into(),
+        };
+        *drops.entry(reason).or_insert(0) += 1;
+        if session.closed.is_some() {
+            match session.messages {
+                0 => silent += 1,
+                _ => talked += 1,
+            }
+        }
+    }
+    let alive60 = stats
+        .sessions
+        .iter()
+        .filter(|session| lifetime(session, end) >= 60.0)
+        .count();
+    let mut heights: Vec<u64> = stats
+        .sessions
+        .iter()
+        .map(|session| session.height)
+        .collect();
     heights.sort_unstable();
     let median = match heights.get(heights.len() / 2) {
         Some(height) => height.to_string(),
         None => "-".into(),
     };
     let mut agents = BTreeMap::new();
-    for row in &tally.reached {
-        *agents.entry(row.agent.as_str()).or_insert(0) += 1;
+    for session in &stats.sessions {
+        *agents.entry(session.agent.as_str()).or_insert(0) += 1;
     }
-    println!("\n== summary after {seconds}s ==");
-    println!("peers reached      {}", tally.reached.len());
-    println!("peers refused      {}", tally.refused);
-    println!("median height      {median}");
+    println!("\n== summary after {:.0}s ==", end);
     println!(
-        "addresses learned  {}",
-        tally
-            .reached
-            .iter()
-            .map(|row| row.advertised)
-            .sum::<usize>()
+        "config   services {} relay {} agent {} peers {}",
+        services(options.hello.services),
+        options.hello.relay,
+        options.hello.user_agent,
+        options.peers
     );
-    println!("user agents        {}", agents.len());
-    for (agent, count) in agents {
-        println!("  {count:>3}  {agent}");
+    println!(
+        "connect  dials {} | handshakes {} | lived>=60s {alive60} | median height {median}",
+        stats.dials,
+        stats.sessions.len()
+    );
+    println!("lifetime {buckets:?}");
+    println!("ended    {drops:?} | dropped after sending nothing {silent}, after sending {talked}");
+    println!("failures {:?}", stats.failures);
+    println!(
+        "learned  advertised to us {} (witness-capable) | gossip unique {}",
+        stats
+            .sessions
+            .iter()
+            .map(|session| session.advertised)
+            .sum::<usize>(),
+        stats.gossip.len()
+    );
+    println!("agents   {agents:?}");
+    if options.verbose {
+        for session in &stats.sessions {
+            println!(
+                "session  {:<26} life {:>6.1}s msgs {:>4} first {:?} end {:?}",
+                session.address,
+                lifetime(session, end),
+                session.messages,
+                session.first,
+                session.reason
+            );
+        }
     }
+}
+
+fn catchup(chain: Chain, blocks: u64, seconds: u64) -> Result<(), Error> {
+    let directory = tempfile::tempdir()?;
+    let provider = P2pProvider::new(chain, directory.path())?;
+    let started = Instant::now();
+    provider.warm()?;
+    let mut last = 0;
+    let synced = loop {
+        let progress = provider.progress();
+        if progress.synced {
+            break progress;
+        }
+        if started.elapsed() > Duration::from_secs(seconds) {
+            println!(
+                "{} catchup headers not synced within {seconds}s: {progress:?}",
+                at()
+            );
+            return Ok(());
+        }
+        if started.elapsed().as_secs() / 10 != last {
+            last = started.elapsed().as_secs() / 10;
+            println!("{} catchup {progress:?}", at());
+        }
+        thread::sleep(Duration::from_millis(200));
+    };
+    let header_time = started.elapsed().as_secs_f64();
+    println!(
+        "{} catchup headers {} in {header_time:.1}s = {:.0} headers/s, peers {}",
+        at(),
+        synced.headers_synced,
+        synced.headers_synced as f64 / header_time,
+        synced.peers_connected
+    );
+    let (tip, _) = provider.verified_tip()?;
+    let fetched = Instant::now();
+    let (mut ok, mut failed, mut bytes) = (0u64, 0u64, 0usize);
+    for height in tip.saturating_sub(blocks - 1)..=tip {
+        match provider.verified_block(height) {
+            Ok(block) => {
+                ok += 1;
+                bytes += block.raw().len();
+            }
+            Err(error) => {
+                failed += 1;
+                println!("{} catchup block {height} failed: {error}", at());
+            }
+        }
+    }
+    let block_time = fetched.elapsed().as_secs_f64();
+    println!(
+        "{} catchup blocks {ok} ok {failed} failed, {bytes} bytes in {block_time:.1}s = {:.2} blocks/s, peers {}",
+        at(),
+        ok as f64 / block_time,
+        provider.progress().peers_connected
+    );
+    Ok(())
 }
 
 fn main() -> Result<(), Error> {
     let options = options()?;
-    let started = Instant::now();
+    elapsed();
+    if let Some(blocks) = options.catchup {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_target(false)
+            .init();
+        return catchup(options.chain, blocks, options.seconds);
+    }
     let height = match options.chain {
         Chain::LitecoinMainnet => LITECOIN_MAINNET_CHECKPOINT.height,
         _ => LITECOIN_TESTNET_CHECKPOINT.height,
     };
     println!(
-        "{} peer discovery: {} peers, {}s",
+        "{} peer discovery: {} peers, {}s, services {}, relay {}, agent {}",
         options.chain.label(),
         options.peers,
-        options.seconds
+        options.seconds,
+        services(options.hello.services),
+        options.hello.relay,
+        options.hello.user_agent
     );
-    let mut discovery = Discovery::new();
-    discovery.offer_seeded(resolve(options.chain, &options.seeds));
     let shared = Arc::new(Shared {
         chain: options.chain,
         height,
-        deadline: started + Duration::from_secs(options.seconds),
+        deadline: *START.get_or_init(Instant::now) + Duration::from_secs(options.seconds),
         verbose: options.verbose,
-        discovery: Mutex::new(discovery),
-        tally: Mutex::new(Tally::default()),
+        quiet: options.quiet,
+        hello: options.hello.clone(),
+        discovery: Mutex::new(Discovery::new()),
+        stats: Mutex::new(Stats::default()),
     });
+    if options.trace {
+        tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::TRACE)
+            .with_target(false)
+            .init();
+    }
+    let seeded = match options.pinned.is_empty() {
+        true => resolve(&shared, &options.seeds),
+        false => options.pinned.clone(),
+    };
+    lock(&shared.discovery).offer_seeded(seeded);
     for _ in 0..options.peers {
         let shared = shared.clone();
         thread::spawn(move || worker(shared));
     }
+    for mark in options.marks.iter().filter(|mark| **mark < options.seconds) {
+        let until = *START.get_or_init(Instant::now) + Duration::from_secs(*mark);
+        thread::sleep(until.saturating_duration_since(Instant::now()));
+        snapshot(&shared);
+    }
     thread::sleep(shared.deadline.saturating_duration_since(Instant::now()));
-    summary(&lock(&shared.tally), options.seconds);
+    summary(&shared, &options);
     Ok(())
 }

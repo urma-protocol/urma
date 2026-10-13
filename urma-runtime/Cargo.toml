@@ -33,4 +33,5 @@ rand = "0.8"
 zeroize = "1"
 
 [dev-dependencies]
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "registry"] }
 bech32 = "0.11"

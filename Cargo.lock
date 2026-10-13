@@ -3836,6 +3836,7 @@ dependencies = [
  "sha2",
  "tempfile",
  "tracing",
+ "tracing-subscriber",
  "url",
  "urma-chain",
  "urma-core",

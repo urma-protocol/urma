@@ -12,7 +12,7 @@ use bitcoin::p2p::message_blockdata::Inventory;
 use bitcoin::p2p::message_network::VersionMessage;
 use std::io::{Read, Write};
 
-pub(super) enum Message {
+pub enum Message {
     Version(VersionMessage),
     Verack,
     Ping(u64),
@@ -24,6 +24,24 @@ pub(super) enum Message {
     NotFound(Vec<Inventory>),
     Block(Vec<u8>),
     Other(String),
+}
+
+impl Message {
+    pub fn command(&self) -> String {
+        match self {
+            Self::Version(_) => "version".into(),
+            Self::Verack => "verack".into(),
+            Self::Ping(_) => "ping".into(),
+            Self::Pong(_) => "pong".into(),
+            Self::Addr(rows) => format!("addr({})", rows.len()),
+            Self::AddrV2(rows) => format!("addrv2({})", rows.len()),
+            Self::Headers(rows) => format!("headers({})", rows.len()),
+            Self::Inv(rows) => format!("inv({})", rows.len()),
+            Self::NotFound(rows) => format!("notfound({})", rows.len()),
+            Self::Block(raw) => format!("block({})", raw.len()),
+            Self::Other(name) => name.clone(),
+        }
+    }
 }
 
 pub(super) fn send(
