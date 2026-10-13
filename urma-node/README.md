@@ -1,11 +1,15 @@
-# URMA Node — implementation in progress
+# URMA Node
+
+The daemon and the desktop app are published standalone at
+<https://github.com/urma-protocol/urma-node>, synced from this tree until the
+libraries are on crates.io.
 
 URMA Node is an optional background archive for URMA applications. Its engine
 can also run inside a client. Existing publishing and recovery flows continue
 to work without installing or starting this service. No wallet signing or
 decryption keys belong in the archive.
 
-This development branch currently provides a transactional SQLite archive,
+It provides a transactional SQLite archive,
 an authenticated loopback status service, checkpoint-relative header ingestion
 and full-block scanning. It preserves transaction encodings separately from
 Bitcoin/Litecoin transparent projections. Selected headers, full-block scan
@@ -94,12 +98,10 @@ source calls and SQL commits are not forcibly interrupted. Failed acquisitions
 remain incomplete and the local status reports the last retention error.
 Pruned mode does not automatically download complete objects.
 
-Distributed peer discovery, remaining application adapters and automated Linux
-service installation are not yet delivered. The soft multipart cache target is
-described below.
-This development stage targets Linux for implementation and testing. Windows
-I/O/ACL porting, an installer and Windows Service integration are deferred and
-are not acceptance requirements for this stage. This is not a release candidate.
+Peer discovery and the soft multipart cache target are described below. The
+daemon targets Linux: `contrib/` holds a user-systemd unit and an operator
+checklist, with no installer. Windows I/O/ACL porting, an installer and Windows
+Service integration are not implemented.
 
 The standalone foreground process handles Linux SIGINT, SIGTERM and SIGHUP as
 cooperative stop requests, like authenticated HTTP shutdown. Inherited ignored
@@ -400,11 +402,6 @@ Header selection is a synthetic fixture: this is not a live Litecoin consensus
 test, a completeness claim from selective data, or a reconnect rate-limit test.
 The wrong-identity request must fail, with successful controls before and after;
 the probe does not classify the underlying handshake error.
-
-When running on Sprites, use the authenticated TCP proxy and retain the server's
-PeerId in the forwarded address. Its HTTP(S) URL is not a TCP/Noise endpoint.
-Such a run tests separate cloud processes through the proxy; it does not prove
-direct reachability, discovery, NAT traversal or relay support in URMA Node.
 
 Applications can depend on `urma-node-client` for the same bounded loopback HTTP
 client and API data types without linking the daemon, SQLite, Tokio or libp2p.
