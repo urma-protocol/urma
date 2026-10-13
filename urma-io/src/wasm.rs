@@ -33,6 +33,28 @@ pub fn read_regular(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Err
     .into())
 }
 
+pub fn read_admin(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "native administrator file read is unavailable on WASM: {} (limit {limit})",
+            path.display()
+        ),
+    )
+    .into())
+}
+
+pub fn check_admin(path: &Path) -> Result<(), Error> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "native administrator check is unavailable on WASM: {}",
+            path.display()
+        ),
+    )
+    .into())
+}
+
 pub fn read_shared(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,

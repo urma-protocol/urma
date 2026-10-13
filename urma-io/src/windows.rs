@@ -29,6 +29,7 @@ impl Policy {
     const DIRECTORY_INHERIT: &str = "OICI";
     const FILE_INHERIT: &str = "";
     const SHARED_READ: &str = "(A;;FR;;;BU)";
+    const READ_CONTROL: u32 = 0x0002_0000;
     const GENERIC_READ: u32 = 0x8000_0000;
     const GENERIC_WRITE: u32 = 0x4000_0000;
 }
@@ -159,4 +160,23 @@ pub fn read_private(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Err
 
 pub fn read_shared(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
     read_checked(path, limit, Grant::Write)
+}
+
+pub fn read_admin(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
+    read_checked(path, limit, Grant::Admin)
+}
+
+pub fn check_admin(path: &Path) -> Result<(), Error> {
+    let entry = OpenOptions::new()
+        .access_mode(Policy::READ_CONTROL)
+        .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    if entry.metadata()?.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "administrator-owned paths must not be reparse points",
+        )
+        .into());
+    }
+    refuse_untrusted(&entry, Grant::Admin)
 }

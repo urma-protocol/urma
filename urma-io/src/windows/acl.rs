@@ -30,6 +30,8 @@ struct Policy;
 
 impl Policy {
     const TRUSTED: [&str; 3] = ["S-1-5-18", "S-1-5-32-544", "S-1-3-4"];
+    const TRUSTED_INSTALLER: &str =
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
     const GENERIC_WRITE: u32 = 0x4000_0000;
     const GENERIC_ALL: u32 = 0x1000_0000;
     const ACCESS_ALLOWED: u8 = 0;
@@ -158,6 +160,7 @@ impl User {
 pub(super) enum Grant {
     Any,
     Write,
+    Admin,
 }
 
 fn grants(mask: u32, grant: &Grant) -> bool {
@@ -172,7 +175,7 @@ fn grants(mask: u32, grant: &Grant) -> bool {
         | Policy::GENERIC_ALL;
     match grant {
         Grant::Any => mask != 0,
-        Grant::Write => mask & write != 0,
+        Grant::Write | Grant::Admin => mask & write != 0,
     }
 }
 
@@ -212,11 +215,14 @@ fn check_dacl(owner: PSID, dacl: *mut ACL, grant: &Grant) -> Result<(), Error> {
     let mut trusted: Vec<PSID> = fixed.iter().map(|sid| sid.0).collect();
     trusted.push(user.sid());
     let owner_trusted = !owner.is_null() && contains(&trusted, owner);
+    let installer = sid(Policy::TRUSTED_INSTALLER)?;
+    let owner_installer = !owner.is_null() && contains(&[installer.0], owner);
     match grant {
         Grant::Write if !owner.is_null() => trusted.push(owner),
         Grant::Write => {}
         Grant::Any if owner_trusted => {}
-        Grant::Any => return Err(Error::PrivatePermissions),
+        Grant::Admin if owner_trusted || owner_installer => {}
+        Grant::Any | Grant::Admin => return Err(Error::PrivatePermissions),
     }
     if dacl.is_null() {
         return Err(Error::PrivatePermissions);
@@ -322,6 +328,39 @@ mod tests {
         let unowned = "O:S-1-5-21-9-9-9-1001D:P(A;;FA;;;S-1-5-80-1-2-3-4-5)";
         assert!(matches!(
             check(unowned, Grant::Write),
+            Err(Error::PrivatePermissions)
+        ));
+    }
+
+    #[test]
+    fn admin_files_need_an_admin_owner_and_only_admin_writers() {
+        let me = User::current().unwrap().sddl().unwrap();
+        let installer = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+        for owner in ["SY", "BA", installer, me.as_str()] {
+            let settings = format!("O:{owner}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FRFX;;;BU)");
+            check(&settings, Grant::Admin).unwrap();
+        }
+        let squatter = "S-1-5-21-9-9-9-1001";
+        let squatted = format!("O:{squatter}D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;BU)");
+        assert!(matches!(
+            check(&squatted, Grant::Admin),
+            Err(Error::PrivatePermissions)
+        ));
+        let owner_rights = format!("O:{squatter}D:P(A;;FA;;;OW)(A;;FA;;;SY)");
+        assert!(matches!(
+            check(&owner_rights, Grant::Admin),
+            Err(Error::PrivatePermissions)
+        ));
+        for writer in ["BU", "WD", "AU", squatter, "S-1-5-80-1-2-3-4-5"] {
+            let open = format!("O:BAD:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FW;;;{writer})");
+            assert!(matches!(
+                check(&open, Grant::Admin),
+                Err(Error::PrivatePermissions)
+            ));
+        }
+        let inherited = "O:BAD:(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)(A;CI;0x116;;;BU)";
+        assert!(matches!(
+            check(inherited, Grant::Admin),
             Err(Error::PrivatePermissions)
         ));
     }

@@ -56,6 +56,36 @@ pub fn read_private(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Err
     Ok(bytes)
 }
 
+fn admin_owned(metadata: &std::fs::Metadata) -> Result<(), Error> {
+    use std::os::unix::fs::MetadataExt;
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let owner_trusted = metadata.uid() == 0 || metadata.uid() == unsafe { libc::geteuid() };
+    match owner_trusted && metadata.mode() & 0o022 == 0 {
+        true => Ok(()),
+        false => Err(Error::PrivatePermissions),
+    }
+}
+
+pub fn read_admin(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
+    let file = open_regular(path)?;
+    admin_owned(&file.metadata()?)?;
+    let mut bytes = Zeroizing::new(Vec::new());
+    read_into(file, limit, &mut bytes)?;
+    Ok(bytes)
+}
+
+pub fn check_admin(path: &Path) -> Result<(), Error> {
+    let metadata = std::fs::symlink_metadata(path)?;
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "administrator-owned paths must not be symlinks",
+        )
+        .into());
+    }
+    admin_owned(&metadata)
+}
+
 pub fn read_shared(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
     let file = open_regular(path)?;
     if file.metadata()?.permissions().mode() & 0o027 != 0 {
