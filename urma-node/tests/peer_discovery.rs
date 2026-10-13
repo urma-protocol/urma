@@ -195,7 +195,7 @@ fn private(root: &Path) -> Value {
         ]),
         gossip_hint(&["/ip6/::1/tcp/1", "/ip6/fd00::1/tcp/1", "/ip6/fe80::1/tcp/1"]),
         // Mapped and reserved literals pass the wire check; the book drops them.
-        gossip_hint(&["/ip6/::ffff:8.8.8.8/tcp/1", "/ip4/240.0.0.1/tcp/1"]),
+        gossip_hint(&["/ip6/::ffff:10.0.0.1/tcp/1", "/ip4/240.0.0.1/tcp/1"]),
         own(&a),
     ];
     let g = RawPeer::gossiping(listed);

@@ -84,7 +84,8 @@ fn gossip_rejects_names_mapped_reserved_private_and_link_local_addresses() {
         "/dns6/peer.example/tcp/4001",
         "/dns/peer.example/tcp/4001",
         "/dnsaddr/peer.example",
-        "/ip6/::ffff:8.8.8.8/tcp/4001",
+        // A mapped address is judged as the IPv4 address it carries.
+        "/ip6/::ffff:127.0.0.1/tcp/4001",
         "/ip6/::ffff:10.0.0.1/tcp/4001",
         "/ip4/240.0.0.1/tcp/4001",
         "/ip4/192.0.2.1/tcp/4001",
@@ -114,7 +115,7 @@ fn gossip_rejects_names_mapped_reserved_private_and_link_local_addresses() {
         &[
             "/dns4/peer.example/tcp/1",
             "/ip4/9.9.9.9/tcp/1",
-            "/ip6/::ffff:9.9.9.9/tcp/1",
+            "/ip6/::ffff:192.168.1.1/tcp/1",
         ],
     );
     assert_eq!(merge(&mut book, &[mixed]), 1);
