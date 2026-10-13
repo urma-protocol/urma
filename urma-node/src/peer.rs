@@ -583,7 +583,7 @@ async fn run(
                     }
                     request_response::Event::OutboundFailure { request_id, error, .. } => {
                         if let Some(value) = pending.remove(&request_id) {
-                            value.answer.fail(Error::Invalid(format!("peer request: {error}")));
+                            value.answer.fail(Error::Transport(error.to_string()));
                         }
                     }
                     request_response::Event::InboundFailure { peer, request_id, .. }
@@ -697,7 +697,7 @@ fn validate_response(
     match response.result {
         Reply::Record(package) if package.chain_genesis == genesis => Ok(Some(*package)),
         Reply::Missing => Ok(None),
-        Reply::Busy => Err(Error::Busy("remote peer capacity".into())),
+        Reply::Busy => Err(Error::PeerBusy),
         _ => Err(Error::Invalid(
             "peer refused record or returned wrong network".into(),
         )),

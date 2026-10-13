@@ -89,7 +89,7 @@ pub(crate) fn validate_inventory(
     match response.result {
         Reply::Inventory(page) => check_page(&response.kind, page).map(Some),
         Reply::Missing => Ok(None),
-        Reply::Busy => Err(Error::Busy("remote peer capacity".into())),
+        Reply::Busy => Err(Error::PeerBusy),
         Reply::Record(_) | Reply::Parent(_) | Reply::Peers(_) => Err(Error::Invalid(
             "peer answered an inventory request with another kind".into(),
         )),
@@ -145,7 +145,7 @@ impl PeerSource {
         let range = (from_height, to_height);
         let deadline = Instant::now() + CALL_TIMEOUT;
         match self.inventory_until(range, after, limit, cancelled, deadline) {
-            Err(Error::Busy(_retryable)) => Ok(None),
+            Err(Error::Busy(_) | Error::PeerBusy) => Ok(None),
             other => other,
         }
     }

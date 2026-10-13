@@ -7,6 +7,11 @@ pub enum Error {
     CommitSource(String),
     Invalid(String),
     Busy(String),
+    /// A remote peer answered Busy: its capacity, not ours.
+    PeerBusy,
+    /// A peer request failed in transport (dial, timeout, closed connection,
+    /// I/O, unsupported protocol): no statement about the peer's honesty.
+    Transport(String),
     Stale,
 }
 
@@ -20,6 +25,8 @@ impl std::fmt::Display for Error {
             Self::CommitSource(e) => write!(f, "commit source: {e}"),
             Self::Invalid(e) => f.write_str(e),
             Self::Busy(e) => write!(f, "archive busy: {e}"),
+            Self::PeerBusy => f.write_str("remote peer busy"),
+            Self::Transport(e) => write!(f, "peer transport: {e}"),
             Self::Stale => f.write_str("result belongs to a superseded chain view"),
         }
     }

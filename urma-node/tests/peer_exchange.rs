@@ -114,7 +114,7 @@ fn fetch(
             began.elapsed() < CALL_TIMEOUT + Duration::from_secs(1),
             "source exceeded its documented call timeout"
         );
-        if !matches!(&result, Err(Error::Busy(_))) || attempt == 2 {
+        if !matches!(&result, Err(Error::Busy(_) | Error::PeerBusy)) || attempt == 2 {
             return result;
         }
         thread::sleep(Duration::from_millis(300));
@@ -487,10 +487,7 @@ fn wrong_identity(pair: &Pair, deadline: Instant) -> Value {
         .source(PeerAddress::new(wrong_id, wrong_address).unwrap());
     let first_id = pair.first.reveal.compute_txid();
     let error = fetch(&wrong, first_id, deadline).unwrap_err();
-    assert!(
-        matches!(&error, Error::Invalid(message) if message.starts_with("peer request:")),
-        "{error}"
-    );
+    assert!(matches!(&error, Error::Transport(_)), "{error}");
     assert_eq!(status(&pair.engine_b), before);
     assert!(pair.engine_b.record(first_id).unwrap().is_none());
     // Positive control excludes a dead/wrong TCP address as the explanation.

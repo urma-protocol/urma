@@ -367,7 +367,7 @@ pub(crate) fn validate_peers(
             }
             Ok(peers)
         }
-        Reply::Busy => Err(Error::Busy("remote peer capacity".into())),
+        Reply::Busy => Err(Error::PeerBusy),
         _ => Err(Error::Invalid(
             "peer refused the peers request or answered another kind".into(),
         )),
@@ -552,7 +552,7 @@ impl PeerNetwork {
         };
         match self.peers_of(peer, 0, cancelled, deadline) {
             Ok(_) => Ok(peer),
-            Err(Error::Busy(message)) => Err(Error::Busy(message)),
+            Err(busy @ (Error::Busy(_) | Error::PeerBusy)) => Err(busy),
             Err(error) => {
                 let _ = self.commands.try_send(Command::Disconnect(peer));
                 Err(error)

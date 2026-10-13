@@ -49,6 +49,8 @@ struct Range {
     more: bool,
     scanned_through: u64,
     generation: u64,
+    /// Consecutive Missing answers for records this range advertised.
+    missing: u32,
 }
 
 struct Peer {
@@ -61,7 +63,6 @@ struct Peer {
     last_error: Mutex<Option<RecordedError>>,
     backoff: Mutex<Backoff>,
     busy_turns: AtomicU32,
-    missing: AtomicU32,
 }
 
 /// Sync backoff after peer errors: consecutive blamed turns and the Unix
@@ -78,8 +79,8 @@ impl Peer {
     }
 }
 
-/// Why a step stopped early. `Blame` is a peer error; `Error` is ours or
-/// retryable.
+/// Why a step stopped early. `Blame` is a protocol violation by the peer;
+/// `Error` is ours, transport or retryable.
 enum Pause {
     Done,
     Abandon,
@@ -87,17 +88,22 @@ enum Pause {
     Blame(Error),
 }
 
-/// How one step ended for the peer it ran with.
+/// How one step ended for the peer it ran with: remote Busy builds a streak,
+/// local Busy and transport failures retry quietly.
 enum Turn {
     Quiet,
     Busy(Error),
+    Retry(Error),
     Blamed(Error),
 }
 
-/// A failed request blames the peer unless it is retryable or our reorg.
+/// A failed request blames the peer only for a protocol violation: never for
+/// capacity (ours or theirs), transport failure or our reorg.
 fn blame(error: Error) -> Pause {
     match error {
-        Error::Busy(_) | Error::Stale => Pause::Error(error),
+        Error::Busy(_) | Error::PeerBusy | Error::Transport(_) | Error::Stale => {
+            Pause::Error(error)
+        }
         other => Pause::Blame(other),
     }
 }
@@ -158,7 +164,6 @@ fn inventory_peer(label: String, source: PeerSource) -> Result<Peer, Error> {
             until: None,
         }),
         busy_turns: AtomicU32::new(0),
-        missing: AtomicU32::new(0),
     })
 }
 
@@ -229,9 +234,9 @@ impl Scheduler {
         Ok(())
     }
 
-    /// A blamed turn disconnects the peer and backs it off; Busy turns build a
-    /// streak that disconnects the peer at `BUSY_TURNS`; a quiet turn resets
-    /// both. Our own failures say nothing about the peer.
+    /// A blamed turn disconnects the peer and backs it off; remote Busy turns
+    /// build a streak that disconnects the peer at `BUSY_TURNS`; a quiet turn
+    /// resets both. Retries and our own failures say nothing about the peer.
     fn judge(
         &self,
         peer: &Peer,
@@ -260,7 +265,7 @@ impl Scheduler {
                 self.penalize(peer, now)?;
                 Ok(Err(error))
             }
-            Err(error) => Ok(Err(error)),
+            Ok(Turn::Retry(error)) | Err(error) => Ok(Err(error)),
         }
     }
 
@@ -338,7 +343,10 @@ impl Scheduler {
                 *slot = None;
                 Ok(Turn::Quiet)
             }
-            Err(Pause::Error(busy @ Error::Busy(_))) => Ok(Turn::Busy(busy)),
+            Err(Pause::Error(Error::PeerBusy)) => Ok(Turn::Busy(Error::PeerBusy)),
+            Err(Pause::Error(retry @ (Error::Busy(_) | Error::Transport(_)))) => {
+                Ok(Turn::Retry(retry))
+            }
             Err(Pause::Blame(error)) => {
                 *slot = None;
                 Ok(Turn::Blamed(error))
@@ -359,8 +367,8 @@ impl Scheduler {
     ) -> Result<(), Pause> {
         while let Some(range) = slot.as_mut() {
             round.open()?;
-            if let Some(entry) = range.entries.get(range.next) {
-                if !selected(engine, entry)? {
+            if let Some(&entry) = range.entries.get(range.next) {
+                if !selected(engine, &entry)? {
                     return Err(Pause::Abandon);
                 }
                 if engine.record(entry.txid)?.is_none() {
@@ -369,7 +377,8 @@ impl Scheduler {
                     }
                     round.fetched += 1;
                     pace(peer, round)?;
-                    self.acquire(peer, engine, entry, round.deadline)?;
+                    let missing = &mut range.missing;
+                    self.acquire(peer, engine, &entry, missing, round.deadline)?;
                 }
                 range.next += 1;
             } else if range.more {
@@ -406,12 +415,14 @@ impl Scheduler {
     /// Fetch one advertised record from the advertising peer and admit it. A
     /// peer that answers Missing leaves the entry listed-only: it neither blocks
     /// coverage nor is retried within this range. `MISSING_ANSWERS` Missing
-    /// answers in a row blame the peer; an invalid package always does.
+    /// answers in a row within one range blame the peer; an invalid package
+    /// always does.
     fn acquire(
         &self,
         peer: &Peer,
         engine: &Engine,
         entry: &Placement,
+        missing: &mut u32,
         deadline: Instant,
     ) -> Result<(), Pause> {
         let fetched = peer
@@ -419,26 +430,22 @@ impl Scheduler {
             .fetch_until(entry.txid, deadline)
             .map_err(blame)?;
         let Some(package) = fetched else {
-            let missing = peer.missing.fetch_add(1, Ordering::Relaxed) + 1;
-            if missing < Self::MISSING_ANSWERS {
+            *missing += 1;
+            if *missing < Self::MISSING_ANSWERS {
                 return Ok(());
             }
-            peer.missing.store(0, Ordering::Relaxed);
             return Err(Pause::Blame(Error::Invalid(
                 "peer reported advertised records missing".into(),
             )));
         };
-        peer.missing.store(0, Ordering::Relaxed);
+        *missing = 0;
         let receipt = match engine.admit_record(package) {
             Ok(receipt) => receipt,
-            Err(error @ (Error::Busy(_) | Error::Stale)) => return Err(Pause::Error(error)),
-            Err(error) => {
+            Err(invalid @ Error::Invalid(_)) => {
                 self.rejected.fetch_add(1, Ordering::Relaxed);
-                return Err(match error {
-                    Error::Invalid(_) => Pause::Blame(error),
-                    local => Pause::Error(local),
-                });
+                return Err(Pause::Blame(invalid));
             }
+            Err(local) => return Err(Pause::Error(local)),
         };
         self.admitted.fetch_add(1, Ordering::Relaxed);
         if !placed(&receipt, entry) {
@@ -522,6 +529,7 @@ fn open(peer: &Peer, engine: &Engine) -> Result<Option<Range>, Error> {
         more: true,
         scanned_through: 0,
         generation: status.generation,
+        missing: 0,
     }))
 }
 
