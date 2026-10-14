@@ -230,6 +230,44 @@ pub struct OverlayStatus {
     pub rejected: u64,
     pub peers: Vec<OverlayPeerStatus>,
     pub discovery: Option<DiscoveryStatus>,
+    /// Whether peers outside can dial this node, as AutoNAT last concluded.
+    #[serde(default)]
+    pub reachability: Reachability,
+    /// Relays holding an active reservation for this node, by peer ID.
+    #[serde(default)]
+    pub relays: Vec<String>,
+    #[serde(default)]
+    pub hole_punch: HolePunchStatus,
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum Reachability {
+    #[default]
+    Unknown,
+    Public,
+    Private,
+}
+
+/// How a peer is reached: over its own transport, or only through a relay
+/// circuit, which never carries data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum PeerLink {
+    Direct,
+    Relayed,
+}
+
+/// Direct-connection upgrades of relayed connections since start.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[non_exhaustive]
+pub struct HolePunchStatus {
+    pub attempts: u64,
+    pub successes: u64,
+    pub last_error: Option<String>,
+    pub last_error_at: Option<u64>,
 }
 
 /// Peer book and discovery counters. `reached` counts entries whose last dial
@@ -294,6 +332,9 @@ pub struct OverlayPeerStatus {
     pub backoff_until: Option<u64>,
     /// Unix second of this peer's last turn with an admission or coverage.
     pub last_progress_at: Option<u64>,
+    /// The peer's link right now; null while it has no connection.
+    #[serde(default)]
+    pub link: Option<PeerLink>,
 }
 
 #[cfg(test)]
