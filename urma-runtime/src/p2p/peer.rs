@@ -250,11 +250,11 @@ impl Peer {
             }
             Message::NotFound(items) => {
                 for item in items {
-                    if let Inventory::WitnessBlock(hash) | Inventory::Block(hash) = item {
-                        if self.requested.contains(&hash) {
-                            self.requested.retain(|asked| *asked != hash);
-                            self.lacking.push(hash);
-                        }
+                    if let Inventory::WitnessBlock(hash) | Inventory::Block(hash) = item
+                        && self.requested.contains(&hash)
+                    {
+                        self.requested.retain(|asked| *asked != hash);
+                        self.lacking.push(hash);
                     }
                 }
                 Ok(())

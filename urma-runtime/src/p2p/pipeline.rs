@@ -35,10 +35,10 @@ type Batch = (usize, Vec<(u64, BlockHash)>);
 
 impl InFlight {
     pub(super) fn holder(&self, hash: BlockHash) -> Holder {
-        for asked in self.asked.iter().filter(|asked| asked.hash == hash) {
-            return Holder::Peer(asked.address);
-        }
-        Holder::Nobody
+        let Some(asked) = self.asked.iter().find(|asked| asked.hash == hash) else {
+            return Holder::Nobody;
+        };
+        Holder::Peer(asked.address)
     }
 
     pub(super) fn forget(&mut self, hash: BlockHash) {
@@ -59,14 +59,14 @@ impl InFlight {
     }
 
     fn expected(&self, address: SocketAddr, hash: BlockHash) -> Expected {
-        let mut matching = self
+        let Some(asked) = self
             .asked
             .iter()
-            .filter(|asked| asked.address == address && asked.hash == hash);
-        for asked in matching.by_ref() {
-            return Expected::At(asked.height);
-        }
-        Expected::Unrequested
+            .find(|asked| asked.address == address && asked.hash == hash)
+        else {
+            return Expected::Unrequested;
+        };
+        Expected::At(asked.height)
     }
 
     fn progressed(&mut self, address: SocketAddr) {
