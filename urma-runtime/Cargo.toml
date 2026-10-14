@@ -1,6 +1,6 @@
 [package]
 name = "urma-runtime"
-version = "0.3.3"
+version = "0.3.4"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -12,7 +12,7 @@ include = ["Cargo.toml", "src/**/*.rs", "README.md", "LICENSE"]
 description = "URMA publication planning, network transports and recovery"
 
 [dependencies]
-urma-io = { version = "0.3.1", path = "../urma-io" }
+urma-io = { version = "0.3.3", path = "../urma-io" }
 minreq = { version = "2.14", features = ["https-rustls"] }
 rustls = { version = "0.21", features = ["dangerous_configuration"] }
 ring = "0.17"

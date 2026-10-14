@@ -1,6 +1,6 @@
 use crate::error::{Context, Error, ensure};
 use crate::{disk_plan::DiskPlan, planner::Planner};
-use crate::storage;
+use crate::{native_fs, storage};
 use bitcoin::{Txid, hashes::Hash};
 use sha2::{Digest, Sha256};
 use std::{
@@ -164,7 +164,7 @@ impl<'a, A: IdentitySigner> DiskWriter<'a, A> {
             &self.directory.join("plan.json"),
             &serde_json::to_vec_pretty(&plan)?,
         )?;
-        urma_io::sync_directory(self.directory)?;
+        native_fs::sync_landed(self.directory)?;
         plan.validate()?;
         Ok(plan)
     }

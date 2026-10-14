@@ -1,18 +1,20 @@
 use crate::error::{Error, ensure};
+#[cfg(not(target_arch = "wasm32"))]
+use crate::native_fs;
 use crate::{
     disk_plan::DiskPlan,
     node::Node,
     publish::{PublishReport, ensure_journal_distinct},
 };
 use crate::{node::Presence, storage};
+#[cfg(not(target_arch = "wasm32"))]
+use std::io::Write;
 use std::{
     collections::HashMap,
     fs::File,
     io::{BufRead, BufReader, Read},
     path::Path,
 };
-#[cfg(not(target_arch = "wasm32"))]
-use std::{fs::OpenOptions, io::Write};
 
 pub(crate) fn history(journal: &Path, id: &str) -> Result<HashMap<String, Presence>, Error> {
     let mut history = HashMap::new();
@@ -86,19 +88,14 @@ pub(crate) fn guard(plan: &DiskPlan, journal: &Path) -> Result<(), Error> {
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn observe(node: &Node, journal: &Path, report: &PublishReport) -> Result<(), Error> {
     let path = journal.with_extension("observations.jsonl");
-    let mut options = OpenOptions::new();
-    options.create(true).append(true);
-    #[cfg(unix)]
-    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
-    let mut file = options.open(&path)?;
+    let mut file = native_fs::append_private(&path)?;
     let mut bytes = serde_json::to_vec(
         &serde_json::json!({"source": node.inclusion_evidence(), "chain": node.chain(), "report": report}),
     )?;
     bytes.push(b'\n');
     file.write_all(&bytes)?;
     file.sync_all()?;
-    urma_io::sync_directory(urma_io::output_parent(&path))?;
-    Ok(())
+    native_fs::sync_landed(urma_io::output_parent(&path))
 }
 
 #[cfg(target_arch = "wasm32")]

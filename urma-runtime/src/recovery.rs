@@ -1,4 +1,5 @@
 use crate::multipart;
+use crate::native_fs;
 use crate::node::{Node, Presence};
 use crate::storage;
 use crate::{
@@ -54,8 +55,7 @@ fn retain_transaction(directory: &Path, path: &Path, bytes: &[u8]) -> Result<(),
         }
         Err(error) => return Err(Error::Io(error.error)),
     }
-    urma_io::sync_directory(&tx_directory)?;
-    Ok(())
+    native_fs::sync_landed(&tx_directory)
 }
 
 pub fn verified_record(node: &Node, txid: Txid) -> Result<VerifiedRecord, Error> {

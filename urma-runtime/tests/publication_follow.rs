@@ -127,6 +127,13 @@ fn restart_preserves_bytes_and_dependencies_and_reconciles_disappearances() {
         3
     );
     assert!(!first.report.complete);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let log = journal.with_extension("observations.jsonl");
+        let mode = std::fs::metadata(&log).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600, "observations log is private");
+    }
     assert!(
         first
             .observations
