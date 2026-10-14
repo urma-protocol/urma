@@ -66,6 +66,35 @@ fn admin_owned(metadata: &std::fs::Metadata) -> Result<(), Error> {
     }
 }
 
+pub fn open_private_append(path: &Path) -> Result<File, Error> {
+    use std::os::{fd::AsRawFd, unix::fs::MetadataExt};
+    let file = OpenOptions::new()
+        .append(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only regular private files can be appended to",
+        )
+        .into());
+    }
+    // SAFETY: geteuid has no preconditions and cannot fail.
+    let owned = metadata.uid() == unsafe { libc::geteuid() };
+    if metadata.nlink() != 1 || !owned || metadata.mode() & 0o077 != 0 {
+        return Err(Error::PrivatePermissions);
+    }
+    let fd = file.as_raw_fd();
+    // SAFETY: `fd` is open for the life of `file`; F_GETFL/F_SETFL only touch its flags.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    // SAFETY: as above.
+    if flags < 0 || unsafe { libc::fcntl(fd, libc::F_SETFL, flags & !libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error().into());
+    }
+    Ok(file)
+}
+
 pub fn read_admin(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
     let file = open_regular(path)?;
     admin_owned(&file.metadata()?)?;

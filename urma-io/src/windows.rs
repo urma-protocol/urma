@@ -162,6 +162,35 @@ pub fn read_shared(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Erro
     read_checked(path, limit, Grant::Write)
 }
 
+pub fn open_private_append(path: &Path) -> Result<File, Error> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        BY_HANDLE_FILE_INFORMATION, FILE_APPEND_DATA, GetFileInformationByHandle,
+    };
+    let file = OpenOptions::new()
+        .access_mode(FILE_APPEND_DATA | Policy::READ_CONTROL)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    // SAFETY: the handle is open for the call and `info` is a valid out pointer.
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(last_error().into());
+    }
+    let metadata = file.metadata()?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_file() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "only regular private files can be appended to",
+        )
+        .into());
+    }
+    if info.nNumberOfLinks != 1 {
+        return Err(Error::PrivatePermissions);
+    }
+    refuse_untrusted(&file, Grant::Any)?;
+    Ok(file)
+}
+
 pub fn read_admin(path: &Path, limit: usize) -> Result<Zeroizing<Vec<u8>>, Error> {
     read_checked(path, limit, Grant::Admin)
 }

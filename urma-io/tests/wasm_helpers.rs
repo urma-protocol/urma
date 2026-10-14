@@ -28,6 +28,10 @@ fn browser_native_file_helpers_fail_explicitly() {
             other => panic!("expected unsupported filesystem operation, got {other:?}"),
         }
     }
+    match wasm::open_private_append(path) {
+        Err(Error::Io(cause)) => assert_eq!(cause.kind(), ErrorKind::Unsupported),
+        other => panic!("expected unsupported filesystem operation, got {other:?}"),
+    }
     match wasm::check_admin(path) {
         Err(Error::Io(cause)) => assert_eq!(cause.kind(), ErrorKind::Unsupported),
         other => panic!("expected unsupported filesystem operation, got {other:?}"),

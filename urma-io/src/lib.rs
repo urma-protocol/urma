@@ -20,20 +20,20 @@ pub use native::digest;
 mod unix;
 #[cfg(unix)]
 pub use unix::{
-    check_admin, create_file, create_private_directory, read_admin, read_private, read_regular,
-    read_shared,
+    check_admin, create_file, create_private_directory, open_private_append, read_admin,
+    read_private, read_regular, read_shared,
 };
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 #[cfg(target_arch = "wasm32")]
 pub use wasm::{
-    check_admin, create_file, create_private_directory, read_admin, read_private, read_regular,
-    read_shared,
+    check_admin, create_file, create_private_directory, open_private_append, read_admin,
+    read_private, read_regular, read_shared,
 };
 #[cfg(windows)]
 mod windows;
 #[cfg(windows)]
 pub use windows::{
-    check_admin, create_file, create_private_directory, read_admin, read_private, read_regular,
-    read_shared, sync_directory,
+    check_admin, create_file, create_private_directory, open_private_append, read_admin,
+    read_private, read_regular, read_shared, sync_directory,
 };

@@ -39,7 +39,7 @@ fn main() -> Result<(), std::io::Error> {
 
 ## Where it fits
 
-For sensitive inputs on supported native targets, see `read_private`, `read_shared`, `read_admin`, `check_admin`, `read_regular`, `create_file` and `create_private_directory` in the API. These are used by [urma-identity](https://crates.io/crates/urma-identity), [urma-runtime](https://crates.io/crates/urma-runtime) and higher-level workflows.
+For sensitive inputs on supported native targets, see `read_private`, `read_shared`, `read_admin`, `check_admin`, `read_regular`, `create_file`, `open_private_append` and `create_private_directory` in the API. These are used by [urma-identity](https://crates.io/crates/urma-identity), [urma-runtime](https://crates.io/crates/urma-runtime) and higher-level workflows.
 
 ## Boundaries
 
