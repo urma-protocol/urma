@@ -1,6 +1,6 @@
 [package]
 name = "urma-cli"
-version.workspace = true
+version = "0.3.1"
 edition.workspace = true
 license.workspace = true
 publish.workspace = true
@@ -50,12 +50,12 @@ urma-workflows = { version = "0.3.0", path = "../urma-workflows" }
 urma-chain = { version = "0.3.0", path = "../urma-chain" }
 
 urma-wire = { version = "0.3.0", path = "../urma-wire" }
-urma-runtime = { version = "0.3.0", path = "../urma-runtime" }
+urma-runtime = { version = "0.3.4", path = "../urma-runtime" }
 
 urma-files = { version = "0.3.0", path = "../urma-files" }
 urma-git = { version = "0.3.0", path = "../urma-git" }
 urma-names = { version = "0.3.0", path = "../urma-names" }
-urma-node-client = { version = "0.5.0", path = "../urma-node-client" }
+urma-node-client = { version = "0.5.1", path = "../urma-node-client" }
 urma-web = { version = "0.3.0", path = "../urma-web" }
 
 [dev-dependencies]
