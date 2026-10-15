@@ -63,4 +63,4 @@ anyhow = "1"
 
 # Actual-service consumer fixtures only; the production CLI uses node-client.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-urma-node = "0.6.0"
+urma-node = "0.7.3"
