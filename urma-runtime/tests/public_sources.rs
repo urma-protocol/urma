@@ -92,3 +92,24 @@ fn live_wrong_network_source_falls_back_and_explorer_recovers_the_same_bytes() {
     let verified = urma_runtime::recovery::verified_record(&explorer, root).unwrap();
     assert_eq!(verified.txid(), root);
 }
+
+#[test]
+#[ignore = "read-only public HTTPS gate; no identity, signing or broadcast"]
+fn live_explorer_never_reports_an_unknown_transaction_as_pending() {
+    let explorer = Node::with_public_sources(
+        Chain::LitecoinTestnet,
+        vec![PublicEndpoint::Esplora(
+            "https://litecoinspace.org/testnet/api".into(),
+        )],
+    )
+    .unwrap();
+    let unknown = "ab".repeat(32).parse().unwrap();
+    assert!(matches!(
+        explorer.presence(unknown).unwrap(),
+        Presence::Missing
+    ));
+    assert!(matches!(
+        explorer.presence(ROOT.parse().unwrap()).unwrap(),
+        Presence::Confirmed { .. }
+    ));
+}

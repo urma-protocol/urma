@@ -26,7 +26,7 @@ impl Api<'_> {
         if args.get(1).context("missing transaction verbosity")? == &json!(false) {
             return Ok(json!(self.text(&format!("tx/{txid}/hex"))?));
         }
-        let status = self.json_get(&format!("tx/{txid}/status"))?;
+        let status = self.json_get(&format!("tx/{txid}"))?["status"].clone();
         if status["confirmed"] == false {
             return Ok(json!({"confirmations":0}));
         }
