@@ -85,6 +85,12 @@ pub struct Selection {
     pub next_change: u32,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Liveness {
+    Scanned,
+    Remembered,
+}
+
 fn path_text<S: Serializer>(path: &KeyPath, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.collect_str(&format_args!("{}/{}", path.branch.index(), path.index))
 }
@@ -154,9 +160,36 @@ impl Node {
         per_input: u64,
     ) -> Result<Selection, Error> {
         let view = self.wallet(account)?;
+        self.chosen(account, view.coins, minimum, per_input, Liveness::Scanned)
+    }
+
+    pub fn select_from(
+        &self,
+        account: &Account,
+        mut coins: Vec<Coin>,
+        minimum: u64,
+        per_input: u64,
+    ) -> Result<Selection, Error> {
+        coins.sort_by_key(|coin| (Reverse(coin.value), coin.outpoint));
+        coins.dedup_by_key(|coin| coin.outpoint);
+        self.chosen(account, coins, minimum, per_input, Liveness::Remembered)
+    }
+
+    fn chosen(
+        &self,
+        account: &Account,
+        coins: Vec<Coin>,
+        minimum: u64,
+        per_input: u64,
+        liveness: Liveness,
+    ) -> Result<Selection, Error> {
+        let next_change = coins
+            .iter()
+            .filter(|coin| coin.path.branch == Branch::Internal)
+            .fold(0, |next, coin| next.max(coin.path.index + 1));
         let mut chosen = Vec::new();
         let mut total = 0u64;
-        for coin in view.coins {
+        for coin in coins {
             if covered(total, chosen.len(), minimum, per_input)? {
                 break;
             }
@@ -165,6 +198,10 @@ impl Node {
                 "funding needs more than {} inputs; consolidate the wallet first",
                 config::WALLET_MAX_INPUTS
             );
+            if liveness == Liveness::Remembered && !self.live(account, &coin)? {
+                tracing::warn!(outpoint = %coin.outpoint, "remembered coin is spent or unconfirmed; skipped");
+                continue;
+            }
             total = total.checked_add(coin.value).context("funding overflow")?;
             chosen.push(coin);
         }
@@ -183,7 +220,7 @@ impl Node {
         Ok(Selection {
             inputs,
             total,
-            next_change: view.next_change,
+            next_change,
         })
     }
 

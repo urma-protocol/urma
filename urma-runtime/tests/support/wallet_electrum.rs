@@ -36,6 +36,7 @@ pub struct Fixture {
     header: Header,
     rows: HashMap<String, Vec<Value>>,
     pub listed: Mutex<Vec<String>>,
+    pub spent: Mutex<Vec<u32>>,
 }
 
 pub fn scripthash(script: &ScriptBuf) -> String {
@@ -86,6 +87,7 @@ impl Fixture {
             header,
             rows,
             listed: Mutex::new(Vec::new()),
+            spent: Mutex::new(Vec::new()),
         }
     }
 
@@ -118,7 +120,15 @@ impl Fixture {
             }
             "blockchain.scripthash.listunspent" => {
                 let key = params[0].as_str().unwrap().to_owned();
-                let rows = self.rows.get(&key).cloned().unwrap_or_default();
+                let spent = self.spent.lock().unwrap();
+                let rows = self
+                    .rows
+                    .get(&key)
+                    .cloned()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter(|row| !spent.contains(&u32::try_from(row["tx_pos"].as_u64().unwrap()).unwrap()))
+                    .collect();
                 self.listed.lock().unwrap().push(key);
                 Ok(Value::Array(rows))
             }

@@ -1,6 +1,7 @@
 use crate::error::{Error, ensure};
 use crate::publication::PublicPlan;
 use crate::storage;
+use crate::wallet::Coin;
 use crate::{node::Node, planner::Planner, validation};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -84,6 +85,19 @@ pub fn prepare_atomic(
     limits: PlanLimits,
 ) -> Result<PublicationPlan, Error> {
     let mut planner = Planner::new(node, author, funder, limits, 1)?;
+    planner.append(&record.encode()?)?;
+    planner.finish()
+}
+
+pub fn prepare_atomic_from(
+    node: &Node,
+    author: &impl IdentitySigner,
+    funder: &Account,
+    record: &PublicRecord,
+    limits: PlanLimits,
+    coins: Vec<Coin>,
+) -> Result<PublicationPlan, Error> {
+    let mut planner = Planner::remembered(node, author, funder, limits, 1, coins)?;
     planner.append(&record.encode()?)?;
     planner.finish()
 }

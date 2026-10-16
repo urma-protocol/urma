@@ -2,7 +2,7 @@ use crate::config;
 use crate::error::{Context, Error, ensure};
 use crate::publication::{PublicPlan, prepare_signed_bytes};
 use crate::transaction::decode;
-use crate::wallet::FundingInput;
+use crate::wallet::{Coin, FundingInput};
 use crate::{
     node::Node,
     plan::{PlanLimits, PublicationPlan},
@@ -47,6 +47,25 @@ impl<'a, A: IdentitySigner> Planner<'a, A> {
         limits: PlanLimits,
         records: u32,
     ) -> Result<Self, Error> {
+        let minimum = Self::minimum(node, &limits, records)?;
+        let selection = node.select_coins(funder, minimum, 0)?;
+        Self::funded(node, author, funder, limits, selection.inputs)
+    }
+
+    pub(crate) fn remembered(
+        node: &Node,
+        author: &'a A,
+        funder: &'a Account,
+        limits: PlanLimits,
+        records: u32,
+        coins: Vec<Coin>,
+    ) -> Result<Self, Error> {
+        let minimum = Self::minimum(node, &limits, records)?;
+        let selection = node.select_from(funder, coins, minimum, 0)?;
+        Self::funded(node, author, funder, limits, selection.inputs)
+    }
+
+    fn minimum(node: &Node, limits: &PlanLimits, records: u32) -> Result<u64, Error> {
         ensure!(
             records > 0 && records <= limits.max_records,
             "publication exceeds caller record budget"
@@ -55,15 +74,23 @@ impl<'a, A: IdentitySigner> Planner<'a, A> {
             (1..=100).contains(&limits.fee_rate) && limits.max_fee > 0,
             "invalid publication fee limits"
         );
-        let minimum = limits
+        limits
             .max_fee
             .checked_add((u64::from(records) + 1) * config::publication_return(node.chain()))
-            .context("funding budget overflow")?;
-        let selection = node.select_coins(funder, minimum, 0)?;
+            .context("funding budget overflow")
+    }
+
+    fn funded(
+        node: &Node,
+        author: &'a A,
+        funder: &'a Account,
+        limits: PlanLimits,
+        inputs: Vec<FundingInput>,
+    ) -> Result<Self, Error> {
         Ok(Self {
             author,
             funder,
-            inputs: selection.inputs,
+            inputs,
             limits,
             plan: PublicationPlan {
                 version: 1,

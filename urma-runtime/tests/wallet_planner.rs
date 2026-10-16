@@ -11,7 +11,8 @@ use urma_core::format::PublicRecord;
 use urma_runtime::{
     config,
     node::Node,
-    plan::{PlanLimits, PublicationPlan, prepare_atomic, prepare_multipart},
+    plan::{PlanLimits, PublicationPlan, prepare_atomic, prepare_atomic_from, prepare_multipart},
+    wallet::Coin,
 };
 use urma_wallet::{
     account::{Account, Branch, KeyPath},
@@ -85,6 +86,85 @@ fn atomic_plan_returns_to_the_designated_address_from_the_largest_coin() {
         config::publication_return(account.chain())
     );
     assert_eq!(plan.root_txid, reveal.compute_txid().to_string());
+}
+
+fn remembered(fixture: &wallet_electrum::Fixture, coins: &[(KeyPath, u64)]) -> Vec<Coin> {
+    coins
+        .iter()
+        .enumerate()
+        .map(|(vout, (path, value))| Coin {
+            outpoint: fixture.outpoint(u32::try_from(vout).unwrap()),
+            value: *value,
+            height: 1,
+            path: *path,
+        })
+        .collect()
+}
+
+#[test]
+fn remembered_coins_fund_the_same_plan_without_walking_the_address_gap() {
+    let account = funder();
+    let coins = [
+        (KeyPath::new(Branch::Internal, 3), 200_000),
+        (KeyPath::new(Branch::External, 7), 300_000),
+    ];
+    let (fixture, mock) = start(&account, &coins);
+    let node = mock.node();
+    let scanned = atomic(&node, &account, 20_000);
+    let walked = fixture.listed.lock().unwrap().len();
+    assert!(walked > 2 * usize::try_from(config::WALLET_GAP).unwrap());
+    let record = PublicRecord::Post("wallet v2 return".into());
+    let plan = prepare_atomic_from(
+        &node,
+        &author(),
+        &account,
+        &record,
+        limits(20_000, 1),
+        remembered(&fixture, &coins),
+    )
+    .unwrap();
+    assert_eq!(plan.records[0].commit, scanned.records[0].commit);
+    assert_eq!(plan.records[0].reveal, scanned.records[0].reveal);
+    assert!(fixture.listed.lock().unwrap().len() - walked <= 2);
+}
+
+#[test]
+fn remembered_coins_that_were_spent_are_skipped_and_an_empty_memory_fails() {
+    let account = funder();
+    let coins = [
+        (KeyPath::new(Branch::Internal, 3), 200_000),
+        (KeyPath::new(Branch::External, 7), 300_000),
+    ];
+    let (fixture, mock) = start(&account, &coins);
+    let node = mock.node();
+    fixture.spent.lock().unwrap().push(1);
+    let record = PublicRecord::Post("wallet v2 return".into());
+    let plan = prepare_atomic_from(
+        &node,
+        &author(),
+        &account,
+        &record,
+        limits(20_000, 1),
+        remembered(&fixture, &coins),
+    )
+    .unwrap();
+    let commit = decode(&plan.records[0].commit);
+    assert_eq!(commit.input.len(), 1);
+    assert_eq!(commit.input[0].previous_output, fixture.outpoint(0));
+    drop(node);
+    fixture.spent.lock().unwrap().push(0);
+    let refused = match prepare_atomic_from(
+        &mock.node(),
+        &author(),
+        &account,
+        &record,
+        limits(20_000, 1),
+        remembered(&fixture, &coins),
+    ) {
+        Ok(_plan) => panic!("spent coins must not fund a plan"),
+        Err(error) => error.to_string(),
+    };
+    assert!(refused.contains("do not cover"));
 }
 
 #[test]
